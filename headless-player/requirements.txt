@@ -1,0 +1,12 @@
+fastapi>=0.110.0,<0.112.0
+uvicorn[standard]>=0.29.0,<0.31.0
+Pillow>=10.0.0,<11.0.0
+netifaces>=0.11.0,<0.12.0
+requests>=2.31.0,<3.0.0
+
+# Backend opzionali:
+# Installarli solo se necessari (lo script setup.sh chiede conferma)
+python-vlc>=3.0.0; platform_system != "Windows"  # VLC backend (richiede libvlc installata nel sistema)
+PyQt5>=5.15.0,<5.16.0  # Backend PyQt (headless fullscreen window)
+
+# NOTE: GStreamer bindings (PyGObject) non sono installati via pip qui: usare pacchetti di sistema (python3-gi, gir1.2-gst-1.0, gstreamer1.0-plugins-*)

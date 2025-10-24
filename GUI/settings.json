@@ -1,0 +1,20 @@
+{
+  "network": {
+    "scan_ranges": [
+      "192.168.1.0/24"
+    ],
+    "player_port": 8080,
+    "ping_interval": 10.0,
+    "status_poll_ms": 1000,
+    "api_key": null
+  },
+  "media": {
+    "media_root": "C:\\Users\\Riccardo\\Downloads\\organized",
+    "server_port": 9000
+  },
+  "update": {
+    "auto_build": true,
+    "bundle_path": null,
+    "serve_port": 8000
+  }
+}

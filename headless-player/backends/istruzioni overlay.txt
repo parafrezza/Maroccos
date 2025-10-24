@@ -1,0 +1,29 @@
+istruzioni overlay
+
+Come provarlo (device Linux)
+Scopri un plane overlay KMS:
+Usa modetest per elencare connettori/plane e trovare un plane con supporto ARGB/alpha e zpos alto.
+Esempio (da device):
+modetest -c -p
+annota un plane-id “overlay” e uno zpos elevato
+Imposta gli env:
+OVERLAY_ENABLED=1
+OVERLAY_USE_KMS=1
+OVERLAY_KMS_PLANE_ID=<plane-id trovato>
+OVERLAY_ZPOS=3 (o superiore al plane del video)
+Nota: se il tuo kmssink non supporta il parametro "zpos" (errore "no property zpos in element kmssink"), imposta OVERLAY_ZPOS=-1 per disabilitarne l'uso.
+Utente del servizio nel gruppo render (già previsto in setup.sh)
+Test:
+POST /visual/ftb?seconds=1.0 → overlay nero sale a 1.0 (FTB)
+POST /visual/fade_in?seconds=1.0 → overlay scende a 0.0 e poi si spegne
+Gli endpoint risponderanno con {"ok": true, "method": "overlay"} quando l’overlay è usato.
+
+Se modetest non è presente:
+- Su Debian/Ubuntu: installalo con `sudo apt-get update && sudo apt-get install -y libdrm-tests`.
+- In alternativa, puoi ispezionare i plane via debugfs:
+	1) `sudo mount -t debugfs none /sys/kernel/debug` (se non già montato)
+	2) `cat /sys/kernel/debug/dri/0/planes` (o prova con dri/1) per elencare i plane e i relativi ID/Property (cerca ARGB/alpha)
+
+Per verificare le proprietà supportate dal tuo kmssink:
+`gst-inspect-1.0 kmssink | grep -E "plane-id|zpos|connector|property"`
+Se "zpos" non appare tra le proprietà, usare OVERLAY_ZPOS=-1 (disabilita il passaggio della proprietà nello startup della pipeline).
