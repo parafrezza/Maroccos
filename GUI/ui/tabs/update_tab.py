@@ -248,7 +248,8 @@ class UpdateTab(QWidget):
     @staticmethod
     def _order_frameworks(options: list[str]) -> list[str]:
         seen = set()
-        priority = {"cvlc": 0, "gst": 1}
+        # Mostra MPV per primo, poi CVLC, poi GST, poi PYQT; il resto in ordine alfabetico
+        priority = {"mpv": 0, "cvlc": 1, "gst": 2, "pyqt": 3}
         sorted_opts = sorted(
             (opt for opt in options if opt),
             key=lambda name: (priority.get(name, 99), name),

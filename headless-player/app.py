@@ -5,6 +5,7 @@ from typing import Optional, Any
 from urllib.request import urlopen, Request
 
 from fastapi import FastAPI, Query, Body
+from fastapi import UploadFile, File
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -70,8 +71,8 @@ OVERLAY_ZPOS = int(os.environ.get("OVERLAY_ZPOS", "-1"))
 
 from backends import BACKEND_CLASSES, available_backends
 
-# Default framework: usa cvlc di default (fallback automatico a gst se cvlc non è disponibile)
-current_framework = {"name": "cvlc", "backend": None}
+# Default framework: usa mpv di default (persistenza in config.json se presente)
+current_framework = {"name": "mpv", "backend": None}
 UDP_ENABLED = True
 
 # --- UDP Log streaming to GUI ---
@@ -1926,6 +1927,24 @@ def api_faststart_prepare(
             except Exception:
                 pass
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+    elif current_framework["name"] == "mpv":
+        try:
+            ensure_backend()
+            backend = current_framework.get("backend")
+            assert backend is not None
+            backend.faststart_prepare(chosen)  # type: ignore[attr-defined]
+            faststart["prepared_path"] = chosen
+            try:
+                gui_log("faststart_prepare MPV", data={"path": chosen})
+            except Exception:
+                pass
+            return {"ok": True, "prepared": chosen}
+        except Exception as e:
+            try:
+                gui_log("faststart_prepare error", level="ERROR", data={"path": chosen, "error": str(e)})
+            except Exception:
+                pass
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
     # Altri backend: best-effort
     faststart["prepared_path"] = chosen
     return {"ok": True, "prepared": chosen, "note": "preload best-effort"}
@@ -1959,13 +1978,13 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
             except Exception:
                 pass
             return {"ok": True}
-        # cvlc/vlc
+        # cvlc/vlc/mpv
         try:
             ensure_backend()
             backend = current_framework.get("backend")
             if not backend:
                 raise RuntimeError("Backend non disponibile")
-            if current_framework["name"] == "cvlc" and faststart.get("prepared_path"):
+            if current_framework["name"] in {"cvlc", "mpv"} and faststart.get("prepared_path"):
                 # riprendi se già preparato
                 try:
                     backend.faststart_go()  # type: ignore[attr-defined]
@@ -1983,7 +2002,7 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                 GLib.timeout_add(int(max(0.0, seconds) * 1000) + 50, _hide)
             faststart["prepared_path"] = None
             try:
-                gui_log("faststart_go CVLC", data={"seconds": seconds, "path": target})
+                gui_log("faststart_go %s" % current_framework["name"].upper(), data={"seconds": seconds, "path": target})
             except Exception:
                 pass
             return {"ok": True}
@@ -2086,7 +2105,14 @@ def apply_update(archive: Path):
                 # Consenti eccezioni per i file neri di default
                 if relpath not in {"media/black_1280_720.png", "media/black.png"}:
                     continue
-            shutil.copy2(Path(root)/name, dest)
+            src_file = Path(root) / name
+            dst_file = dest / name
+            try:
+                shutil.copy2(src_file, dest)
+            except PermissionError as e:
+                raise PermissionError(f"Permesso negato su '{dst_file}'. Esegui /maintenance/fix_permissions e riprova.") from e
+            except Exception as e:
+                raise RuntimeError(f"Errore copiando '{src_file}' -> '{dst_file}': {e}") from e
 
     shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3118,6 +3144,63 @@ def download_asset_get(url: str, filename: Optional[str] = None):
     """Alias GET per compatibilità: /download_asset?url=...&filename=..."""
     return _handle_download_asset(url, filename)
 
+@app.post("/upload_asset")
+async def upload_asset(file: UploadFile = File(...), filename: Optional[str] = Query(None)):
+    """Upload diretto dal client GUI al player.
+
+    Accetta multipart/form-data con campo 'file'.
+    Parametro opzionale 'filename' per definire il nome di destinazione in media/.
+    """
+    MEDIA_DIR.mkdir(exist_ok=True)
+    try:
+        target_name = (filename or file.filename or "asset.bin").strip()
+    except Exception:
+        target_name = "asset.bin"
+    try:
+        dest = _safe_media_path(target_name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    try:
+        # Scrivi a chunk per ridurre RAM
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        try:
+            os.replace(tmp, dest)
+        except PermissionError as e:
+            # Prova a forzare i permessi sul file di destinazione se già presente, poi ritenta
+            try:
+                os.chmod(dest, 0o644)
+            except Exception:
+                pass
+            try:
+                os.replace(tmp, dest)
+            except Exception:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "ok": False,
+                        "error": f"Permesso negato su '{dest}'. Esegui /maintenance/fix_permissions e riprova.",
+                    },
+                )
+        size = dest.stat().st_size
+        print(f"[UPLOAD] Ricevuto file: {dest} ({size} bytes)", flush=True)
+        return {"ok": True, "stored": str(dest), "size": size}
+    except Exception as e:
+        try:
+            tmp.unlink(missing_ok=True)  # type: ignore[name-defined]
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
 @app.get("/network/ethernet/status")
 def ethernet_status():
     """Ritorna stato connessioni ethernet e indirizzi IP v4."""
@@ -3417,6 +3500,50 @@ def api_run_setup(force: bool = Body(False, embed=True)):
         except Exception as e:
             maintenance["status"] = "error"; maintenance["error"] = str(e); log_maintenance(f"Errore esecuzione setup: {e}")
 
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "status": maintenance["status"]}
+
+@app.post("/maintenance/fix_permissions")
+def api_fix_permissions():
+    """Tenta di correggere ownership/permessi su APP_DIR per consentire l'update.
+
+    Esegue pochi comandi mirati via sudo (richiede regola sudoers già installata da setup.sh):
+      - chown -R APP_USER:APP_GROUP APP_DIR
+      - setfacl ricorsivi e di default per u:video,g:video
+    Non riavvia la macchina.
+    """
+    if maintenance["status"] == "running":
+        return JSONResponse(status_code=409, content={"ok": False, "error": "maintenance già in esecuzione"})
+    maintenance["status"] = "running"; maintenance["error"] = None
+    log_maintenance("Fix permissions su APP_DIR…")
+
+    app_dir = str(APP_DIR)
+    app_user = os.environ.get("APP_USER", "video")
+    app_group = os.environ.get("APP_GROUP", "video")
+
+    def worker():
+        try:
+            cmds = [
+                ["sudo", "-n", "chown", "-R", f"{app_user}:{app_group}", app_dir],
+                ["sudo", "-n", "setfacl", "-R", "-m", f"u:{app_user}:rwx,g:{app_group}:rwx", app_dir],
+                ["sudo", "-n", "setfacl", "-dR", "-m", f"u:{app_user}:rwx,g:{app_group}:rwx", app_dir],
+            ]
+            for cmd in cmds:
+                try:
+                    log_maintenance(f"Eseguo: {' '.join(cmd)}")
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, text=True)
+                except subprocess.CalledProcessError as exc:
+                    out = (exc.stderr or exc.stdout or "").strip()
+                    log_maintenance(f"Comando fallito: {' '.join(cmd)} => {out}")
+                    raise
+                except Exception as exc:
+                    log_maintenance(f"Errore: {exc}")
+                    raise
+            maintenance["status"] = "ok"
+            log_maintenance("Permessi corretti.")
+        except Exception as e:
+            maintenance["status"] = "error"; maintenance["error"] = str(e)
+        
     threading.Thread(target=worker, daemon=True).start()
     return {"ok": True, "status": maintenance["status"]}
 

@@ -1,9 +1,9 @@
 # Headless Video Player (Raspberry Pi 3B)
 
-Riproduttore headless controllato via API FastAPI, backend video pluggable (GStreamer / CVLC / PyQt) + controlli remoti HTTP e UDP.
+Riproduttore headless controllato via API FastAPI, backend video pluggable (GStreamer / CVLC / PyQt / MPV) + controlli remoti HTTP e UDP.
 
 ## Novità principali
-- Backend modulare: `cvlc` (default), `gst`, `pyqt` selezionabile via `/change_framework` e persistito in `config.json`.
+- Backend modulare: `mpv` (default), `gst`, `cvlc`, `pyqt` selezionabile via `/change_framework` e persistito in `config.json`.
 - Parametro temporale `in_time` (epoch futuro o delay in secondi) per sincronizzare: `/play`, `/ping`, `/change_framework` (e comandi UDP equivalenti).
 - Fade software coerente su tutti i backend (GStreamer: alpha/brightness, CVLC: preferibilmente overlay; PyQt: opacity finestra).
 - Overlay KMS opzionale (abilitato via setup) per Fade-To-Black e fade-in cross-backend.
@@ -37,12 +37,15 @@ sudo systemctl start headless-player
 
 ## Backend video
 Endpoint:
-- `GET /framework` → `{ current, available }`
-- `POST /change_framework` body: `{ "name": "vlc", "in_time": 1730400000 }`
   - `in_time`: se presente pianifica lo switch futuro (epoch o delay secondi).
   - Persistenza automatica.
 
-Nota: playlist completa solo su backend `gst`. CVLC/PyQt gestiscono un singolo file (con `loop`).
+Nota: playlist completa solo su backend `gst`. CVLC/PyQt/MPV gestiscono un singolo file (con `loop`).
+Nota: playlist completa solo su backend `gst`. CVLC/PyQt/MPV gestiscono un singolo file (con `loop`).
+
+Backend `mpv`:
+- Richiede `mpv` installato nel sistema (installato da `setup.sh`).
+- Supporta play/stop/pause/resume/loop via IPC JSON. Nessun fast-start/preload nativo; per i fade visivi si usa l'overlay KMS dell'app se attivo.
 
 ## Parametro temporale `in_time`
 Accettato da `/play`, `/ping`, `/change_framework` e dai comandi UDP (`play`, `ping`, `change_framework`).
@@ -153,6 +156,7 @@ Suggerimenti:
 - Abilita di default `OVERLAY_ENABLED=1`, `OVERLAY_USE_KMS=1` nel servizio systemd.
 - Imposta `VLC_EXTRA_ARGS` (es. `--no-video-title-show --no-sub-autodetect-file --image-duration=36000`).
 - Rende persistenti i permessi su `/opt/headless-player` via ACL default e `UMask=0002` nel servizio.
+ - Installa `mpv` via APT (oltre a VLC, PyQt5) per il backend dedicato.
 
 ## Fast-start e "sempre nero" con CVLC
 Riduce la latenza all'avvio coordinando preload e overlay nero. Con `cvlc` il player mantiene sempre uno schermo nero quando è idle.
@@ -213,6 +217,7 @@ Strumento `tools/massive_updater.py` (PC) per:
 - Nessun mixing audio/video multiplo nei backend alternativi.
 - Precisione scheduling dipende da clock di sistema (sincronizzare via NTP per sincronizzazioni multi-device).
 - VLC/PyQt: fade basato su brightness/opacity non gamma-correct.
+ - MPV: backend leggero; niente fast-start/preload nativo. Per i fade visivi usa l'overlay dove disponibile.
 
 ## Roadmap possibile
 - Statistiche latenza effettiva start vs `in_time`.
@@ -336,7 +341,7 @@ Invoke-RestMethod -Method POST http://127.0.0.1:8080/test/off
 
 ```powershell
 Invoke-RestMethod -Method GET http://127.0.0.1:8080/framework | ConvertTo-Json -Depth 3
-Invoke-RestMethod -Method POST http://127.0.0.1:8080/change_framework -ContentType application/json -Body (@{ name="vlc"; in_time=2 } | ConvertTo-Json)
+Invoke-RestMethod -Method POST http://127.0.0.1:8080/change_framework -ContentType application/json -Body (@{ name="mpv"; in_time=2 } | ConvertTo-Json)
 ```
 
 - Abilita UDP a runtime (persistito in config.json):

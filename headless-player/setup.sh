@@ -71,9 +71,10 @@ apt-get install -y \
   network-manager rsync acl || true
 
 echo ""
-echo "==> Installo backend aggiuntivi (VLC, PyQt5)"
-PKG_EXTRA="vlc python3-vlc python3-pyqt5 python3-pyqt5.qtmultimedia"
+echo "==> Installo backend aggiuntivi (VLC, MPV, PyQt5)"
+PKG_EXTRA="vlc mpv python3-vlc python3-pyqt5 python3-pyqt5.qtmultimedia"
 apt-get install -y $PKG_EXTRA || echo "[WARN] Installazione pacchetti extra fallita (continua)"
+
 
 echo "==> Imposto governor CPU su 'performance'"
 apt-get install -y cpufrequtils || true

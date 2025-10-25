@@ -7,7 +7,7 @@
     { "name": "healthz", "request": { "method": "GET", "url": "{{base_url}}/healthz" } },
     { "name": "status", "request": { "method": "GET", "url": "{{base_url}}/status" } },
     { "name": "framework get", "request": { "method": "GET", "url": "{{base_url}}/framework" } },
-    { "name": "change framework (immediate)", "request": { "method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": "{{base_url}}/change_framework", "body": {"mode": "raw", "raw": "{\n  \"name\": \"vlc\"\n}" } } },
+  { "name": "change framework (immediate)", "request": { "method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": "{{base_url}}/change_framework", "body": {"mode": "raw", "raw": "{\n  \"name\": \"mpv\"\n}" } } },
     { "name": "change framework (scheduled)", "request": { "method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": "{{base_url}}/change_framework", "body": {"mode": "raw", "raw": "{\n  \"name\": \"gst\",\n  \"in_time\": {{epoch_future}}\n}" } } },
     { "name": "play", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "url": "{{base_url}}/play", "body": { "mode": "raw", "raw": "{\n  \"filename\": \"clip.mp4\",\n  \"loop\": false,\n  \"fade_in_seconds\": 0.6,\n  \"fade_out_seconds\": 0.4\n}" } } },
     { "name": "play scheduled (epoch)", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": "{{base_url}}/play", "body": {"mode": "raw", "raw": "{\n  \"filename\": \"clip.mp4\",\n  \"in_time\": {{epoch_future}},\n  \"fade_out_seconds\": 0.5,\n  \"fade_in_seconds\": 0.5\n}"}}},

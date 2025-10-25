@@ -288,24 +288,30 @@ class ApplicationController(QObject):
         if not target_list:
             self.logMessage.emit("Nessun player selezionato per upload")
             return
-        if not self._file_server:
-            self.logMessage.emit("File server non attivo: impossibile procedere con upload")
-            return
         root = self.state.config.media.media_root
-        if not root:
-            self.logMessage.emit("Media root non configurata")
-            return
-        try:
-            rel_path = media_path.relative_to(root)
-        except ValueError:
-            self.logMessage.emit(f"Il file {media_path} non appartiene alla cartella media")
-            return
-        media_url = f"http://{self._host_ip()}:{self.state.config.media.server_port}/{rel_path.as_posix()}"
-        self.logMessage.emit(
-            f"Richiesta download asset per {rel_path.name} ({rel_path.as_posix()}) verso {len(target_list)} player"
-        )
+        rel_path_str: str | None = None
+        media_url: str | None = None
+        # Prova percorso relativo solo se root configurata
+        if root:
+            try:
+                rel_path = media_path.relative_to(root)
+                rel_path_str = rel_path.as_posix()
+            except ValueError:
+                rel_path_str = None
+        # Se file server attivo e abbiamo relativo, usa pull URL; altrimenti si andrà in push
+        if self._file_server and rel_path_str:
+            media_url = f"http://{self._host_ip()}:{self.state.config.media.server_port}/{rel_path_str}"
+            self.logMessage.emit(
+                f"Richiesta download asset (pull) per {Path(rel_path_str).name} ({rel_path_str}) verso {len(target_list)} player"
+            )
+        else:
+            # Push diretto: usa solo il nome file
+            self.logMessage.emit(
+                f"Upload diretto (push) per {media_path.name} verso {len(target_list)} player"
+            )
+        target_name = (rel_path_str or media_path.name)
         for player in target_list:
-            self._executor.submit(self._invoke_upload, player, media_url, rel_path.as_posix())
+            self._executor.submit(self._invoke_upload, player, media_url, target_name, media_path)
 
     def _submit_command(
         self,
@@ -332,13 +338,26 @@ class ApplicationController(QObject):
         except Exception as exc:  # pragma: no cover
             self.logMessage.emit(f"Command {command} su {player.ip} fallito: {exc}")
 
-    def _invoke_upload(self, player: PlayerRecord, media_url: str, target: str) -> None:
+    def _invoke_upload(self, player: PlayerRecord, media_url: str | None, target: str, local_path: Path | None = None) -> None:
         client = self._client_for(player)
-        try:
-            response = client.upload_media(media_url, target)
-            self.commandCompleted.emit(player.ip, response)
-        except Exception as exc:
-            self.logMessage.emit(f"Upload verso {player.ip} fallito: {exc}")
+        # Se abbiamo una URL da cui il device può scaricare, prova pull prima
+        if media_url:
+            try:
+                response = client.upload_media(media_url, target)
+                self.commandCompleted.emit(player.ip, response)
+                return
+            except Exception as exc:
+                self.logMessage.emit(f"Upload pull fallito su {player.ip} ({exc}); provo push diretto…")
+        # Fallback o percorso primario: push upload
+        if local_path and local_path.exists():
+            try:
+                resp2 = client.upload_media_push(local_path, Path(target).name)
+                self.commandCompleted.emit(player.ip, resp2)
+                return
+            except Exception as exc2:
+                self.logMessage.emit(f"Upload push verso {player.ip} fallito: {exc2}")
+        else:
+            self.logMessage.emit(f"Upload verso {player.ip} fallito: file locale non trovato")
 
     def _invoke_autoplay_toggle(
         self,

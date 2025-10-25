@@ -60,6 +60,28 @@ class ApiClient:
             payload["filename"] = Path(target_path).name
         return self.request("post", "/download_asset", json=payload, timeout=120)
 
+    def upload_media_push(self, file_path: Path, target_name: str | None = None) -> dict[str, Any]:
+        """Upload a file directly to the player using multipart/form-data.
+
+        This is a fallback when the player cannot reach our local file server.
+        """
+        url = f"{self.base_url}/upload_asset"
+        name = Path(target_name or file_path.name).name
+        params = {"filename": name}
+        headers = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        with open(file_path, "rb") as fh:
+            files = {
+                "file": (name, fh, "application/octet-stream"),
+            }
+            resp = requests.post(url, files=files, params=params, timeout=180, headers=headers)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except ValueError:
+            return {"ok": True, "status_code": resp.status_code}
+
     def update_player(self, version: str, bundle_url: str, checksum: str | None = None) -> dict[str, Any]:
         """Kick off a two-phase update process on the player."""
         payload: dict[str, Any] = {"version": version, "url": bundle_url}

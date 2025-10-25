@@ -36,7 +36,7 @@ try:
 except Exception:
 	pass
 try:
-	from . import omxplayer_backend  # noqa: F401
+	from . import mpv_backend  # noqa: F401
 except Exception:
 	pass
 
