@@ -460,7 +460,7 @@ preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipel
 fade_seq = 0  # Sequenziatore per cancellare fade sovrapposti
 
 # Overlay controller (pipeline separata su plane dedicato)
-overlay = {"pipeline": None, "alpha": None, "active": False}
+overlay = {"pipeline": None, "alpha": None, "active": False, "current_alpha": 0.0}
 # Ultimo risultato del probe overlay (per /overlay/status)
 overlay_probe_info = {"detected": False, "method": None, "plane_id": None, "zpos_supported": None, "error": None}
 
@@ -980,6 +980,7 @@ def overlay_show(alpha: float = 1.0):
                 overlay["alpha"].set_property("alpha", target_alpha)
             except Exception:
                 pass
+        overlay["current_alpha"] = target_alpha
         return
     # Se non abbiamo ancora un plane_id valido su KMS, prova autodetect prima di creare la pipeline
     if OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
@@ -997,6 +998,7 @@ def overlay_show(alpha: float = 1.0):
         if overlay["alpha"]:
             overlay["alpha"].set_property("alpha", target_alpha)
         p.set_state(Gst.State.PLAYING)
+        overlay["current_alpha"] = target_alpha
         print("[OVERLAY] Attivato", flush=True)
     except Exception as e:
         overlay["pipeline"] = None
@@ -1014,27 +1016,31 @@ def overlay_hide():
         overlay["pipeline"] = None
         overlay["alpha"] = None
         overlay["active"] = False
-        print("[OVERLAY] Disattivato", flush=True)
+    overlay["current_alpha"] = 0.0
+    print("[OVERLAY] Disattivato", flush=True)
 
 def overlay_set_alpha(value: float):
     if not overlay["active"] or not overlay["alpha"]:
         return False
     try:
-        overlay["alpha"].set_property("alpha", max(0.0, min(1.0, float(value))))
+        val = max(0.0, min(1.0, float(value)))
+        overlay["alpha"].set_property("alpha", val)
+        overlay["current_alpha"] = val
         return True
     except Exception:
         return False
 
 def overlay_fade_to(target: float, duration_s: float = 1.0):
     if not overlay["active"] or not overlay["alpha"]:
-        overlay_show(alpha=1.0 if target >= 1.0 else 0.0)
+        start = overlay.get("current_alpha", target)
+        overlay_show(alpha=max(0.0, min(1.0, float(start))))
     if duration_s <= 0:
         overlay_set_alpha(target)
         return True
     try:
         cur = float(overlay["alpha"].get_property("alpha"))
     except Exception:
-        cur = 1.0
+        cur = float(overlay.get("current_alpha", target))
     steps = max(1, int(duration_s / (FADE_INTERVAL_MS / 1000.0)))
     step_val = (max(0.0, min(1.0, target)) - cur) / steps
     seq = {"i": 0, "val": cur}
@@ -1043,7 +1049,9 @@ def overlay_fade_to(target: float, duration_s: float = 1.0):
             return False
         seq["val"] += step_val
         final = (seq["i"] + 1) >= steps
-        overlay["alpha"].set_property("alpha", max(0.0, min(1.0, target if final else seq["val"])) )
+        new_val = max(0.0, min(1.0, target if final else seq["val"]))
+        overlay["alpha"].set_property("alpha", new_val)
+        overlay["current_alpha"] = new_val
         seq["i"] += 1
         return not final
     GLib.timeout_add(FADE_INTERVAL_MS, stepper)
@@ -2335,6 +2343,7 @@ def status():
         "player_state": player["state"],
         "splash_active": splash["active"],
         "overlay_active": overlay["active"],
+    "overlay_alpha": overlay.get("current_alpha"),
         "device_name": DEVICE_NAME,
         "name": DEVICE_NAME,
         "current_media": current_name,
@@ -3065,11 +3074,26 @@ def api_overlay_hide():
         return {"ok": False, "error": str(e)}
 
 @app.post("/overlay/fade")
-def api_overlay_fade(target: float = Query(0.0), seconds: float = Query(1.0), in_time: float | None = Query(None)):
+def api_overlay_fade(target: float | None = Query(None), seconds: float = Query(1.0), in_time: float | None = Query(None)):
     try:
+        desired = target
+        if desired is None:
+            try:
+                cur = float(overlay.get("current_alpha", 0.0))
+            except Exception:
+                cur = 0.0
+            desired = 0.0 if cur > 0.5 else 1.0
+        desired = max(0.0, min(1.0, desired))
+
         def _do():
-            overlay_show(alpha=1.0 if target >= 1.0 else 0.0)
-            overlay_fade_to(max(0.0, min(1.0, target)), max(0.0, seconds))
+<<<<<<< HEAD
+            if not overlay.get("active") or not overlay.get("alpha"):
+                start = overlay.get("current_alpha", desired)
+                overlay_show(alpha=max(0.0, min(1.0, float(start))))
+=======
+            overlay_show(alpha=1.0 if desired >= 1.0 else overlay.get("current_alpha", 0.0))
+>>>>>>> 0c6bd49 ()
+            overlay_fade_to(desired, max(0.0, seconds))
             return False
         if in_time:
             try:
@@ -3084,16 +3108,16 @@ def api_overlay_fade(target: float = Query(0.0), seconds: float = Query(1.0), in
                     return False
                 delay = schedule_action(in_time, _wrap)
                 try:
-                    gui_log("overlay_fade_scheduled", data={"target": target, "seconds": seconds, "at": t})
+                    gui_log("overlay_fade_scheduled", data={"target": desired, "seconds": seconds, "at": t})
                 except Exception:
                     pass
-                return {"ok": True, "scheduled": True, "delay": delay}
+                return {"ok": True, "scheduled": True, "delay": delay, "target": desired}
         _do()
         try:
-            gui_log("overlay_fade", data={"target": target, "seconds": seconds})
+            gui_log("overlay_fade", data={"target": desired, "seconds": seconds})
         except Exception:
             pass
-        return {"ok": True}
+        return {"ok": True, "target": desired, "alpha": overlay.get("current_alpha")}
     except Exception as e:
         try:
             gui_log("overlay_fade error", level="ERROR", data={"target": target, "seconds": seconds, "error": str(e)})
@@ -3102,7 +3126,7 @@ def api_overlay_fade(target: float = Query(0.0), seconds: float = Query(1.0), in
         return {"ok": False, "error": str(e)}
 
 @app.post("/overlay/fade_at")
-def api_overlay_fade_at(target: float = Query(0.0), seconds: float = Query(1.0), at: float = Query(...)):
+def api_overlay_fade_at(target: float | None = Query(None), seconds: float = Query(1.0), at: float = Query(...)):
     # Alias con parametro esplicito 'at'
     return api_overlay_fade(target=target, seconds=seconds, in_time=at)
 
@@ -3114,6 +3138,7 @@ def api_overlay_status():
         "use_kms": OVERLAY_USE_KMS,
         "plane_id": OVERLAY_KMS_PLANE_ID,
         "zpos": OVERLAY_ZPOS,
+        "alpha": overlay.get("current_alpha"),
         "probe": overlay_probe_info,
     }
 
