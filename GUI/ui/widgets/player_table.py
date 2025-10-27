@@ -27,8 +27,13 @@ class PlayerStatusTable(QTableWidget):
         # Consenti editing solo sulla colonna Nome (0)
         self.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.setAlternatingRowColors(True)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        # Auto-layout: mantieni tutte le colonne visibili senza scrollbar orizzontale
+        # - Colonna 2 (State/LED) dimensione fissa
+        # - Le altre colonne si distribuiscono in proporzione al viewport
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Fixed)
+        header.setStretchLastSection(False)
 
     def upsert_record(self, *, name: str, ip: str, state: str, last_seen: str, version: str, status_text: str | None = None) -> None:
         """Insert or update the row for a player."""
@@ -50,6 +55,8 @@ class PlayerStatusTable(QTableWidget):
         self._set_item(row, 3, last_seen)
         self._set_item(row, 4, version)
         self._set_item(row, 5, status_text or "")
+        # Re-alloca larghezze dopo aggiornamento contenuto
+        self._auto_resize_columns()
 
     def _find_row(self, ip: str) -> int | None:
         for row in range(self.rowCount()):
@@ -77,3 +84,35 @@ class PlayerStatusTable(QTableWidget):
         for index in self.selectionModel().selectedRows(1):
             selected.append(index.data())
         return selected
+
+    # --------------------------
+    # Layout helpers
+    # --------------------------
+    def resizeEvent(self, event):  # noqa: D401
+        super().resizeEvent(event)
+        self._auto_resize_columns()
+
+    def _auto_resize_columns(self) -> None:
+        if self.columnCount() != len(_COLUMNS):
+            return
+        viewport_w = max(0, self.viewport().width())
+        # Colonna LED/State (index 2): fissa
+        led_w = 28
+        self.setColumnWidth(2, led_w)
+        # Spazio residuo
+        avail = max(0, viewport_w - led_w)
+        if avail <= 0:
+            return
+        # Pesi: Name(0)=2, IP(1)=1, Last Seen(3)=1, Version(4)=1, Status(5)=2
+        weights = {0: 2, 1: 1, 3: 1, 4: 1, 5: 2}
+        total = sum(weights.values())
+        # Calcola larghezze proporzionali
+        widths = {i: int(avail * weights[i] / total) for i in weights}
+        # Imposta larghezze
+        for i, w in widths.items():
+            self.setColumnWidth(i, max(60 if i in (0, 5) else 40, w))
+        # Garantisce che non compaia scrollbar orizzontale per piccoli arrotondamenti
+        remainder = avail - sum(widths.values())
+        if remainder > 0:
+            # Aggiungi il resto alla colonna Name
+            self.setColumnWidth(0, self.columnWidth(0) + remainder)

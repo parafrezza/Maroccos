@@ -48,6 +48,7 @@ class ApplicationController(QObject):
     autoplayStatusReceived = Signal(str, dict)
     frameworkStatusReceived = Signal(str, dict)
     statusReceived = Signal(str, dict)
+    playlistPhaseChanged = Signal(str)
 
     def __init__(self, settings_path: Path) -> None:
         super().__init__()
@@ -172,13 +173,29 @@ class ApplicationController(QObject):
     def _format_media_item(self, item: MediaItem) -> dict:
         root = self.state.config.media.media_root
         label = item.path.name
+        # duration formatting HH:MM:SS (optional)
+        dur = item.duration_s
+        dur_txt = None
+        if isinstance(dur, (int, float)) and dur >= 0:
+            total = int(dur)
+            h = total // 3600
+            m = (total % 3600) // 60
+            s = total % 60
+            if h > 0:
+                dur_txt = f"{h:d}:{m:02d}:{s:02d}"
+            else:
+                dur_txt = f"{m:02d}:{s:02d}"
         if root and item.path.is_relative_to(root):
             rel = item.path.relative_to(root)
             size_mb = item.size / (1024 * 1024)
-            label = f"{rel.as_posix()} ({size_mb:.1f} MB)"
-            return {"path": str(item.path), "label": label, "relative": rel.as_posix()}
+            if dur_txt:
+                label = f"{rel.as_posix()} ({size_mb:.1f} MB, {dur_txt})"
+            else:
+                label = f"{rel.as_posix()} ({size_mb:.1f} MB)"
+            return {"path": str(item.path), "label": label, "relative": rel.as_posix(), "duration": dur}
         size_mb = item.size / (1024 * 1024)
-        return {"path": str(item.path), "label": f"{label} ({size_mb:.1f} MB)", "relative": item.path.name}
+        base_label = f"{label} ({size_mb:.1f} MB)" if not dur_txt else f"{label} ({size_mb:.1f} MB, {dur_txt})"
+        return {"path": str(item.path), "label": base_label, "relative": item.path.name, "duration": dur}
 
     def _start_file_server(self) -> None:
         media_cfg = self.state.config.media
@@ -312,6 +329,80 @@ class ApplicationController(QObject):
         target_name = (rel_path_str or media_path.name)
         for player in target_list:
             self._executor.submit(self._invoke_upload, player, media_url, target_name, media_path)
+
+    # ------------------------------------------------------------------
+    # Playlist orchestration
+    # ------------------------------------------------------------------
+    def push_playlist(self, items: list[str], targets: Iterable[PlayerRecord], *, loop: bool = True, clear_before: bool = False) -> None:
+        """Chain clear (optional), uploads, and apply in background; UI stays responsive."""
+        targets_list = list(targets)
+        if not targets_list:
+            self.logMessage.emit("Nessun player selezionato per push playlist")
+            return
+        if not items:
+            self.logMessage.emit("Playlist vuota: nulla da inviare")
+            return
+        self._executor.submit(self._perform_push_playlist, items, targets_list, loop, clear_before)
+
+    def _perform_push_playlist(self, items: list[str], targets_list: list[PlayerRecord], loop: bool, clear_before: bool) -> None:
+        root = self.state.config.media.media_root
+        # Phase 1: optional clear with wait
+        if clear_before:
+            self.playlistPhaseChanged.emit("clearing")
+            futs: list[concurrent.futures.Future[bool]] = []
+            for player in targets_list:
+                futs.append(self._executor.submit(self._invoke_media_clear_sync, player))
+            ok_all = True
+            for f in concurrent.futures.as_completed(futs):
+                try:
+                    ok = f.result()
+                except Exception:
+                    ok = False
+                ok_all = ok_all and ok
+            if not ok_all:
+                self.logMessage.emit("Alcuni device non hanno completato lo svuotamento media")
+        # Phase 2: uploads
+        self.playlistPhaseChanged.emit("uploading")
+        for rel in items:
+            try:
+                p = Path(rel)
+                local_path: Path
+                if root and not p.is_absolute():
+                    local_path = (root / rel)
+                else:
+                    local_path = p
+                self.upload_media(local_path, targets_list)
+            except Exception as exc:
+                self.logMessage.emit(f"Errore preparando upload per {rel}: {exc}")
+        # Phase 3: apply
+        self.playlistPhaseChanged.emit("applying")
+        for player in targets_list:
+            self._executor.submit(self._invoke_apply_playlist, player, items, loop)
+
+    def _invoke_media_clear_sync(self, player: PlayerRecord) -> bool:
+        client = self._client_for(player)
+        try:
+            resp = client.request("post", "/media/clear", params={"confirm": 1}, timeout=120)
+            self.commandCompleted.emit(player.ip, resp if isinstance(resp, dict) else {"ok": True})
+            return bool((isinstance(resp, dict) and resp.get("ok", True)) or resp)
+        except Exception as exc:
+            self.logMessage.emit(f"Clear media su {player.ip} fallito: {exc}")
+            return False
+
+    def _invoke_apply_playlist(self, player: PlayerRecord, items: list[str], loop: bool) -> None:
+        client = self._client_for(player)
+        try:
+            payload: dict[str, Any] = {"items": items, "loop": bool(loop)}
+            response = client.request("post", "/playlist/apply", json=payload, timeout=30)
+            self.commandCompleted.emit(player.ip, response)
+        except requests.HTTPError as exc:  # pragma: no cover
+            status = getattr(exc.response, "status_code", None)
+            if status == 404:
+                self.commandCompleted.emit(player.ip, {"ok": False, "error": "Endpoint /playlist/apply non supportato (404)"})
+            else:
+                self.logMessage.emit(f"Apply playlist su {player.ip} fallito: {exc}")
+        except Exception as exc:  # pragma: no cover
+            self.logMessage.emit(f"Apply playlist su {player.ip} fallito: {exc}")
 
     def _submit_command(
         self,

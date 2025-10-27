@@ -32,15 +32,15 @@ class UpdateTab(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-
         layout = QHBoxLayout(self)
 
-        # Invece di una seconda lista di device, mostra solo un riepilogo (la selezione avviene nella lista a sinistra)
+        side_panel = QVBoxLayout()
+
+        # Sposta il riepilogo/selezione dispositivi nella colonna di destra
+        # (prima era al centro/sinistra della tab)
         self._inventory_label = QLabel("Seleziona i device dalla lista a sinistra")
         self._inventory_label.setWordWrap(True)
-        layout.addWidget(self._inventory_label, stretch=3)
-
-        side_panel = QVBoxLayout()
+        side_panel.addWidget(self._inventory_label)
 
         update_box = QGroupBox("Aggiornamento")
         update_layout = QVBoxLayout(update_box)
@@ -120,7 +120,8 @@ class UpdateTab(QWidget):
         side_panel.addWidget(device_box)
 
         side_panel.addStretch(1)
-        layout.addLayout(side_panel, stretch=2)
+        # Ora la tab utilizza solo la colonna di destra; rimuoviamo la colonna sinistra vuota
+        layout.addLayout(side_panel, stretch=1)
 
         self.set_framework_state(current=None, available=[])
         # Stato bundle e abilitazione azioni

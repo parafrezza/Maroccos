@@ -40,6 +40,12 @@ except ImportError:
     print("[ERRORE] Richiede il pacchetto 'requests'. Installare e riprovare.")
     sys.exit(2)
 
+# SSH opzionale per fix permessi lato device (fallback automatico)
+try:
+    import paramiko  # type: ignore
+except Exception:
+    paramiko = None  # type: ignore
+
 SCRIPT_ROOT = Path(__file__).resolve().parent
 APP_DIR = SCRIPT_ROOT / 'headless-player'
 RELEASES_DIR = APP_DIR / 'releases'
@@ -416,6 +422,80 @@ def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str]
                     if r2.status_code == 400 and 'Nessun pacchetto scaricato' in msg:
                         time.sleep(2.0)
                         continue
+                    # Se permessi negati, prova una riparazione veloce e ritenta una volta
+                    msg_lower = (msg or "").lower()
+                    if (r2.status_code in (403, 500)) and ("permesso negato" in msg_lower or "permission" in msg_lower):
+                        if verbose:
+                            log(f"DEBUG UPDATE: {ip} apply PermissionError: provo /maintenance/fix_permissions e retry")
+                        try:
+                            fx = requests.post(f"http://{ip}:{port}/maintenance/fix_permissions", headers=headers, timeout=5.0)
+                            # Poll breve fino a ok/error
+                            t_dead = time.time() + 20.0
+                            while time.time() < t_dead:
+                                st = requests.get(f"http://{ip}:{port}/maintenance/status", headers=headers, timeout=3.0)
+                                if st.ok:
+                                    js = st.json() or {}
+                                    s = js.get("status") or js.get("maintenance_status")
+                                    if s in ("ok", "error"):
+                                        break
+                                time.sleep(0.8)
+                        except Exception as _exc:
+                            if verbose:
+                                log(f"DEBUG UPDATE: {ip} fix_permissions errore: {_exc}")
+                        # Effettua un solo retry immediato
+                        try:
+                            r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=max(timeout, 10.0))
+                            apply_response_json = r2.json() if r2.content else None
+                            apply_ok = r2.status_code == 200 and (apply_response_json and apply_response_json.get('ok'))
+                            if apply_ok:
+                                break
+                            msg = (apply_response_json or {}).get('error') or (apply_response_json or {}).get('message') or ''
+                        except Exception:
+                            pass
+
+                        # Fallback 2: se ancora PermissionError, tenta fix via SSH (extra/extra)
+                        if not apply_ok and (paramiko is not None):
+                            if verbose:
+                                log(f"DEBUG UPDATE: {ip} retry fallito: tento fix SSH permessi e nuovo retry apply")
+                            try:
+                                client = paramiko.SSHClient()  # type: ignore
+                                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # type: ignore
+                                client.connect(hostname=ip, port=22, username="extra", password="extra", timeout=8)
+                                cmd = (
+                                    "sudo -S -p '' sh -c "
+                                    "'mkdir -p /opt/headless-player/media; "
+                                    "chown -R video:video /opt/headless-player; "
+                                    "chmod -R g+rwX /opt/headless-player; "
+                                    "setfacl -R -m u:video:rwx,g:video:rwx /opt/headless-player 2>/dev/null || true; "
+                                    "setfacl -dR -m u:video:rwx,g:video:rwx /opt/headless-player 2>/dev/null || true'"
+                                )
+                                stdin, stdout, stderr = client.exec_command(cmd, get_pty=False)
+                                try:
+                                    stdin.write("extra\n")
+                                    stdin.flush()
+                                except Exception:
+                                    pass
+                                # attende fine comando
+                                _ = stdout.channel.recv_exit_status()  # type: ignore[attr-defined]
+                            except Exception as _exc:
+                                if verbose:
+                                    log(f"DEBUG UPDATE: {ip} SSH fix fallito: {_exc}")
+                            finally:
+                                try:
+                                    client.close()
+                                except Exception:
+                                    pass
+                            # Ritenta apply ancora una volta
+                            try:
+                                r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=max(timeout, 10.0))
+                                apply_response_json = r2.json() if r2.content else None
+                                apply_ok = r2.status_code == 200 and (apply_response_json and apply_response_json.get('ok'))
+                                if apply_ok:
+                                    break
+                                msg = (apply_response_json or {}).get('error') or (apply_response_json or {}).get('message') or ''
+                            except Exception:
+                                pass
+
                     # altri errori: non vale la pena ritentare
                     break
                 except requests.exceptions.ConnectionError:

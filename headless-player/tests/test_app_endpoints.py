@@ -242,3 +242,25 @@ def test_play_scheduled_with_in_time(fastapi_app):
         body = r.json()
         assert body.get("ok") is True
         assert body.get("scheduled") is True
+
+
+def test_playlist_apply_sets_show_ready(fastapi_app):
+    from fastapi.testclient import TestClient
+    import importlib
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    f1 = media_dir / "a.mp4"
+    f2 = media_dir / "b.mp4"
+    _write_fake_mp4(f1)
+    _write_fake_mp4(f2)
+    with TestClient(fastapi_app) as client:
+        r = client.post("/playlist/apply", json={"items": ["a.mp4", "b.mp4"], "loop": False})
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("ok") is True
+        assert body.get("prepared")
+        st = client.get("/status")
+        assert st.status_code == 200
+        sbody = st.json()
+        assert sbody.get("show_ready") is True

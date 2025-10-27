@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, QTimer
+from PySide6.QtNetwork import QUdpSocket, QHostAddress
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -71,6 +72,24 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._poll_status_tick)
         self._status_primary = None
+        # Playlist push tracking
+        self._playlist_pending: set[str] = set()
+        self._playlist_active: bool = False
+        # Countdown to start_show
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(200)
+        self._countdown_timer.timeout.connect(self._update_countdown)
+        self._show_start_epoch: float | None = None
+        # UDP listener for "start N" commands
+        self._udp_socket = QUdpSocket(self)
+        try:
+            # ShareAddress/ReuseAddressHint to avoid bind issues on some OSes
+            flags = QUdpSocket.ShareAddress | QUdpSocket.ReuseAddressHint
+            self._udp_socket.bind(QHostAddress.AnyIPv4, 9999, flags)
+            self._udp_socket.readyRead.connect(self._handle_udp_ready_read)
+            self._append_log("UDP listener attivo su 0.0.0.0:9999 (comando 'start N')")
+        except Exception as exc:
+            self._append_log(f"UDP listener non avviato: {exc}")
 
     # ------------------------------------------------------------------
     # Wiring
@@ -99,6 +118,11 @@ class MainWindow(QMainWindow):
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
         self._commands_tab.uploadRequested.connect(self._handle_upload)
         self._commands_tab.mediaDirectoryRequested.connect(self._choose_media_directory)
+        # Playlist wiring
+        self._commands_tab.playlistChanged.connect(self._handle_playlist_changed)
+        self._commands_tab.playlistPushRequested.connect(self._handle_push_playlist)
+        self._commands_tab.startShowRequested.connect(self._handle_start_show)
+        ctrl.playlistPhaseChanged.connect(self._handle_playlist_phase)
 
         self._update_tab.buildRequested.connect(ctrl.build_bundle)
         self._update_tab.deployRequested.connect(self._handle_deploy)
@@ -318,9 +342,36 @@ class MainWindow(QMainWindow):
         fs_ready = fs_ready or bool(payload.get("faststart_ready") or payload.get("faststart_prepared"))
         self._commands_tab.set_faststart_ready(bool(fs_ready))
 
+        # Playlist ready aggregation: when pushing, mark device ready on show_ready
+        try:
+            if self._playlist_active and isinstance(payload, dict) and payload.get("show_ready"):
+                if ip in self._playlist_pending:
+                    self._playlist_pending.discard(ip)
+                if not self._playlist_pending:
+                    # All ready -> clear state and set LED green and banner
+                    self._playlist_active = False
+                    try:
+                        self._commands_tab.set_playlist_led("green")
+                        self._commands_tab.set_banner("Playlist pronta su tutti i device", level="success")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # Current device name
         device_name = payload.get("device_name") or payload.get("name") or ""
         self._update_tab.set_device_name_current(str(device_name))
+        # Show running LED from player_state
+        try:
+            state = str(payload.get("player_state") or payload.get("state") or "")
+            self._commands_tab.set_show_running(state == "playing")
+            # If playing started, stop countdown
+            if state == "playing" and self._countdown_timer.isActive():
+                self._countdown_timer.stop()
+                self._show_start_epoch = None
+                self._commands_tab.set_countdown_text("In corso")
+        except Exception:
+            pass
 
     def _handle_command_completed(self, ip: str, response: dict) -> None:
         self._append_log(f"[{ip}] {response}")
@@ -384,6 +435,17 @@ class MainWindow(QMainWindow):
             ms_val = int(ms)
         except Exception:
             return
+        # Robustezza: se il timer non fosse ancora inizializzato, crealo ora
+        try:
+            timer = getattr(self, "_status_timer")
+        except Exception:
+            timer = None
+        if timer is None:
+            try:
+                self._status_timer = QTimer(self)
+                self._status_timer.timeout.connect(self._poll_status_tick)
+            except Exception:
+                return
         self._status_timer.setInterval(ms_val)
         self._controller.set_status_poll_ms(ms_val)
 
@@ -393,3 +455,133 @@ class MainWindow(QMainWindow):
         if not targets:
             return
         self._controller.send_misc_command("device_name_set", {"name": new_name}, targets)
+
+    # -----------------------------
+    # Playlist handlers
+    # -----------------------------
+    def _handle_playlist_changed(self, items: list[str]) -> None:
+        # Any change marks playlist as dirty; LED handled in tab
+        # Reset pending state
+        self._playlist_active = False
+        self._playlist_pending.clear()
+
+    def _handle_push_playlist(self, items: list[str], clear_before: bool) -> None:
+        if not self._selected_players:
+            return
+        # Track pending devices for LED aggregation
+        self._playlist_pending = {p.ip for p in self._selected_players}
+        self._playlist_active = True
+        # Banner during phases
+        if clear_before:
+            try:
+                self._commands_tab.set_banner("Svuotamento media sui device…", level="progress")
+            except Exception:
+                pass
+        else:
+            try:
+                self._commands_tab.set_banner("Upload playlist in corso…", level="progress")
+            except Exception:
+                pass
+        # Pass clear_before flag to controller
+        self._controller.push_playlist(items, self._selected_players, clear_before=bool(clear_before))
+
+    def _handle_start_show(self, in_time: float | None) -> None:
+        """Handle START SHOW button or UDP trigger.
+        in_time is expected to be an absolute epoch seconds timestamp if provided.
+        If None, start as soon as possible.
+        """
+        # Determine targets: if none selected, use all known players
+        targets = list(self._selected_players) if self._selected_players else list(self._controller.player_registry.current_players())
+        if not targets:
+            self._append_log("Nessun player noto per START SHOW")
+            return
+        import time as _time
+        now = _time.time()
+        start_epoch: float
+        if isinstance(in_time, (int, float)) and float(in_time) > now - 1:
+            start_epoch = float(in_time)
+        else:
+            # Immediate (small delay to allow propagation)
+            start_epoch = now + 0.2
+        # Update countdown UI
+        self._show_start_epoch = start_epoch
+        remaining = start_epoch - now
+        if remaining > 0:
+            self._countdown_timer.start()
+        else:
+            self._countdown_timer.stop()
+            self._commands_tab.set_countdown_text("In corso")
+        # Issue faststart_go with in_time
+        payload = {"in_time": start_epoch}
+        self._controller.send_misc_command("faststart_go", payload, targets)
+
+    def _update_countdown(self) -> None:
+        import time as _time
+        if self._show_start_epoch is None:
+            self._countdown_timer.stop()
+            self._commands_tab.set_countdown_text("T- —")
+            return
+        now = _time.time()
+        dt = self._show_start_epoch - now
+        if dt <= 0:
+            self._countdown_timer.stop()
+            self._show_start_epoch = None
+            self._commands_tab.set_countdown_text("In corso")
+            # Mark running LED preemptively
+            self._commands_tab.set_show_running(True)
+            return
+        # Format as T- M:SS or T- S.s
+        if dt >= 60:
+            m = int(dt // 60)
+            s = int(dt % 60)
+            txt = f"T- {m:d}:{s:02d}"
+        elif dt >= 10:
+            s = int(dt)
+            txt = f"T- {s:02d}s"
+        else:
+            txt = f"T- {dt:0.1f}s"
+        self._commands_tab.set_countdown_text(txt)
+
+    def _handle_udp_ready_read(self) -> None:
+        """Parse UDP commands like 'start N' on port 9999 and trigger start_show."""
+        import time as _time
+        try:
+            while self._udp_socket.hasPendingDatagrams():
+                size = self._udp_socket.pendingDatagramSize()
+                if size <= 0:
+                    break
+                data, host, port = self._udp_socket.readDatagram(size)
+                try:
+                    text = (data.decode(errors="ignore").strip().lower())
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                if text.startswith("start"):
+                    parts = text.split()
+                    secs = 0.0
+                    if len(parts) >= 2:
+                        try:
+                            secs = float(parts[1])
+                        except Exception:
+                            secs = 0.0
+                    secs = max(0.0, secs)
+                    epoch = _time.time() + secs
+                    self._append_log(f"[UDP {host.toString()}:{port}] start {secs:.1f} -> epoch {epoch:.3f}")
+                    self._handle_start_show(epoch)
+        except Exception as exc:
+            self._append_log(f"UDP read error: {exc}")
+
+    def _handle_playlist_phase(self, phase: str) -> None:
+        # Update banner according to phase
+        try:
+            if phase == "clearing":
+                self._commands_tab.set_banner("Svuotamento media sui device…", level="progress")
+            elif phase == "uploading":
+                self._commands_tab.set_banner("Upload playlist in corso…", level="progress")
+            elif phase == "applying":
+                self._commands_tab.set_banner("Applicazione playlist ai device…", level="progress")
+            elif phase == "ready":
+                self._commands_tab.set_banner("Playlist pronta su tutti i device", level="success")
+        except Exception:
+            pass

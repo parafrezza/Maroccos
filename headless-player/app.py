@@ -451,6 +451,9 @@ overlay = {"pipeline": None, "alpha": None, "active": False}
 # Fast-start state
 faststart = {"prepared_path": None}
 
+# Show readiness state (usato dalla GUI per LED verde dopo push playlist)
+show_state = {"ready": False, "for": None, "ts": None}
+
 # Test mode state
 test_mode = {"pipeline": None, "src": None, "active": False, "ticker": None, "x": 0, "y": 0}
 
@@ -1446,6 +1449,11 @@ def start_play(fade_in_seconds: float = 0.5):
     # Persist last media
     persist_settings()
     _autoplay_on_play_started(VIDEO_PATH)
+    # Una volta che si avvia la riproduzione, la readiness per il "go" può considerarsi consumata
+    try:
+        show_state.update({"ready": False})
+    except Exception:
+        pass
 
 def pause_play():
     if current_framework["name"] != "gst":
@@ -2181,7 +2189,9 @@ def status():
             "synced": False,
             "method": None,
             "offset_ms": 0,
-        }
+        },
+        "show_ready": bool(show_state.get("ready")),
+        "ready_for": show_state.get("for"),
     }
 
 @app.post("/hide_splash")
@@ -2418,7 +2428,7 @@ def api_play(
             gui_log("play", data={"path": VIDEO_PATH, "backend": current_framework["name"], "loop": player.get("loop")})
         except Exception:
             pass
-        return {"ok": True, "playing": VIDEO_PATH, "backend": current_framework["name"], "scheduled": False}
+    return {"ok": True, "playing": VIDEO_PATH, "backend": current_framework["name"], "scheduled": False}
 
     # Fade-out + scheduling: se in_time futuro, pianifica fade-out prima
     if in_time:
@@ -2509,7 +2519,7 @@ def api_play(
         elif current_framework["name"] != "gst":
             ensure_backend()
             be = current_framework.get("backend")
-            if hasattr(be, "fade_out") and callable(getattr(be, "fade_out")) and be.is_playing():
+            if hasattr(be, "fade_out") and callable(getattr(be, "fade_out")) and be and hasattr(be, "is_playing") and be.is_playing():
                 try:
                     def after_alt():
                         start_logic()
@@ -3380,6 +3390,92 @@ def api_playlist(loop: bool = Body(True, embed=True)):
     stop_play()
     start_play_with_path(items[0])
     return {"ok": True, "count": len(items), "current": items[0], "loop": loop, "items": items, "scan": scan}
+
+@app.post("/playlist/apply")
+def api_playlist_apply(payload: dict = Body(...)):
+    """Applica una playlist esplicita e pre-carica il primo elemento in pausa a t=0.
+
+    Body JSON atteso:
+      { "items": ["file1.mp4", "file2.mp4", ...], "loop": true }
+
+    - Gli elementi possono essere nomi file dentro media/ oppure percorsi assoluti già dentro media/.
+    - Non avvia la riproduzione: prepara il primo elemento per fast-start.
+    - Espone show_ready=true in /status e invia un evento UDP alla GUI se sottoscritta.
+    """
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Body JSON richiesto"})
+    items_in = payload.get("items")
+    loop = bool(payload.get("loop", True))
+    if not isinstance(items_in, list) or not items_in:
+        return JSONResponse(status_code=422, content={"ok": False, "error": "Campo 'items' mancante o vuoto"})
+
+    resolved: list[str] = []
+    missing: list[str] = []
+    invalid: list[str] = []
+    for it in items_in:
+        try:
+            name = str(it).strip()
+        except Exception:
+            continue
+        if not name:
+            continue
+        p = Path(name)
+        if not p.is_absolute():
+            p = MEDIA_DIR / name
+        # Confina a MEDIA_DIR
+        try:
+            p = p.resolve()
+            if not str(p).startswith(str(MEDIA_DIR.resolve())):
+                invalid.append(name); continue
+        except Exception:
+            invalid.append(name); continue
+        if not p.exists():
+            missing.append(name); continue
+        # opzionale: verifica header valido
+        if not validate_media_file(p):
+            invalid.append(name); continue
+        resolved.append(str(p))
+
+    if not resolved:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Nessun item valido trovato", "missing": missing, "invalid": invalid})
+
+    # Aggiorna stato playlist ma non avvia
+    playlist["items"] = resolved
+    playlist["index"] = 0
+    playlist["loop"] = loop
+
+    first = resolved[0]
+    # Precarica il primo elemento con fast-start per backend
+    try:
+        if current_framework["name"] == "gst":
+            prepare_pipeline_for(first)
+            faststart["prepared_path"] = first
+        else:
+            ensure_backend()
+            be = current_framework.get("backend")
+            if be is None:
+                raise RuntimeError("Backend non disponibile")
+            if hasattr(be, "faststart_prepare"):
+                be.faststart_prepare(first)  # type: ignore[attr-defined]
+                faststart["prepared_path"] = first
+            else:
+                # Fallback: non tutti i backend supportano faststart esplicito; non avviare
+                faststart["prepared_path"] = first
+    except Exception as e:
+        try:
+            gui_log("playlist_apply error", level="ERROR", kind="playlist", data={"error": str(e)})
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+    # Marca readiness e notifica via UDP log
+    try:
+        show_state.update({"ready": True, "for": first, "ts": time.time()})
+        gui_log("show_ready", level="INFO", kind="playlist", data={"for": first})
+    except Exception:
+        pass
+
+    return {"ok": True, "count": len(resolved), "prepared": first, "loop": loop, "missing": missing, "invalid": invalid}
 
 @app.get("/playlist/status")
 def api_playlist_status():

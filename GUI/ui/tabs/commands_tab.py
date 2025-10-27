@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 
-from PySide6.QtCore import Qt, Signal, QTimer, QDateTime
+from PySide6.QtCore import Qt, Signal, QTimer, QDateTime, QMimeData
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -26,6 +28,87 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Custom DnD MIME for media items dragged from the media list to the playlist
+_MEDIA_MIME = "application/x-maroccos-mediaitems"
+_RELATIVE_ROLE = Qt.UserRole + 1
+
+
+class MediaListWidget(QListWidget):
+    """Source list that provides custom MIME payload for external drag."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setDragDropMode(QAbstractItemView.DragOnly)
+
+    def mimeTypes(self) -> list[str]:  # type: ignore[override]
+        return [_MEDIA_MIME]
+
+    def mimeData(self, items: list[QListWidgetItem]) -> QMimeData:  # type: ignore[override]
+        md = QMimeData()
+        payload: list[dict[str, Any]] = []
+        for it in items:
+            try:
+                rel = it.data(_RELATIVE_ROLE) or it.data(Qt.UserRole)
+            except Exception:
+                rel = None
+            payload.append({"label": it.text(), "rel": rel})
+        try:
+            raw = json.dumps(payload).encode("utf-8")
+        except Exception:
+            raw = b"[]"
+        md.setData(_MEDIA_MIME, raw)
+        return md
+
+
+class PlaylistWidget(QListWidget):
+    """Target list that accepts media items drops and allows internal reordering."""
+
+    itemsAdded = Signal(list)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasFormat(_MEDIA_MIME):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasFormat(_MEDIA_MIME):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasFormat(_MEDIA_MIME):
+            try:
+                data = bytes(event.mimeData().data(_MEDIA_MIME))
+                items = json.loads(data.decode("utf-8", errors="ignore"))
+            except Exception:
+                items = []
+            added: list[str] = []
+            for ent in items or []:
+                try:
+                    label = ent.get("label") or "(sconosciuto)"
+                    rel = ent.get("rel") or label
+                except Exception:
+                    label = "(sconosciuto)"
+                    rel = label
+                it = QListWidgetItem(label)
+                it.setData(Qt.UserRole, rel)
+                self.addItem(it)
+                added.append(str(rel))
+            if added:
+                self.itemsAdded.emit(added)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
 
 class CommandsTab(QWidget):
     """Expose playback commands, media upload helpers, and system actions."""
@@ -34,6 +117,10 @@ class CommandsTab(QWidget):
     miscCommandTriggered = Signal(str, dict)
     uploadRequested = Signal(str)
     mediaDirectoryRequested = Signal()
+    # Playlist signals
+    playlistChanged = Signal(list)
+    playlistPushRequested = Signal(list, bool)
+    startShowRequested = Signal(object)
 
     _RELATIVE_ROLE = Qt.UserRole + 1
 
@@ -193,7 +280,8 @@ class CommandsTab(QWidget):
         choose_row.addWidget(self._choose_dir_button)
         choose_row.addStretch(1)
         media_layout.addLayout(choose_row)
-        self._media_list = QListWidget()
+        # Media list with external drag enabled
+        self._media_list = MediaListWidget()
         self._media_list.itemSelectionChanged.connect(self._on_media_selection_changed)
         media_layout.addWidget(self._media_list)
         self._upload_button = QPushButton("Upload")
@@ -210,6 +298,82 @@ class CommandsTab(QWidget):
         self._blinking = False
         self._blink_state = False
 
+        # Playlist box
+        playlist_box = QGroupBox("Playlist")
+        playlist_layout = QVBoxLayout(playlist_box)
+        help_row = QHBoxLayout()
+        help_row.addWidget(QLabel("Trascina dalla lista media qui sotto; riordina con drag&drop"))
+        help_row.addStretch(1)
+        playlist_layout.addLayout(help_row)
+
+        # Comandi rapidi
+        quick_row = QHBoxLayout()
+        self._add_to_playlist = QPushButton("Aggiungi selezionato →")
+        self._add_to_playlist.clicked.connect(self._add_selected_to_playlist)
+        quick_row.addWidget(self._add_to_playlist)
+        self._remove_from_playlist = QPushButton("Rimuovi")
+        self._remove_from_playlist.clicked.connect(self._remove_selected_from_playlist)
+        quick_row.addWidget(self._remove_from_playlist)
+        quick_row.addStretch(1)
+        playlist_layout.addLayout(quick_row)
+
+        # Playlist accepts drops from media list and allows internal reorder
+        self._playlist = PlaylistWidget()
+        # Riordino interno tramite drag&drop
+        self._playlist.setDragDropMode(QAbstractItemView.InternalMove)
+        self._playlist.itemsAdded.connect(lambda _items: self._emit_playlist_changed())
+        self._playlist.model().rowsMoved.connect(self._emit_playlist_changed)
+        playlist_layout.addWidget(self._playlist)
+
+        bottom_row = QHBoxLayout()
+        self._push_playlist = QPushButton("Push Playlist")
+        self._push_playlist.clicked.connect(self._emit_push_playlist)
+        self._push_playlist.setEnabled(False)
+        bottom_row.addWidget(self._push_playlist)
+        # Clear-before-push option
+        self._clear_before_push = QCheckBox("Svuota media sui device prima del push")
+        bottom_row.addWidget(self._clear_before_push)
+        bottom_row.addSpacing(8)
+        bottom_row.addWidget(QLabel("Stato:"))
+        self._playlist_led = QLabel()
+        self._playlist_led.setFixedSize(14, 14)
+        self._set_playlist_led_color("gray")
+        bottom_row.addWidget(self._playlist_led)
+        # Start Show controls
+        bottom_row.addSpacing(16)
+        self._start_show = QPushButton("START SHOW")
+        # Red prominent style
+        self._start_show.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold;")
+        self._start_show.clicked.connect(self._emit_start_show)
+        bottom_row.addWidget(self._start_show)
+        # Show running LED
+        bottom_row.addSpacing(8)
+        bottom_row.addWidget(QLabel("Show:"))
+        self._show_led = QLabel()
+        self._show_led.setFixedSize(14, 14)
+        self._set_show_led(False)
+        bottom_row.addWidget(self._show_led)
+        # Countdown and total TC
+        bottom_row.addSpacing(12)
+        self._countdown_label = QLabel("T- —")
+        self._total_tc_label = QLabel("Totale: —")
+        bottom_row.addWidget(self._countdown_label)
+        bottom_row.addSpacing(6)
+        bottom_row.addWidget(self._total_tc_label)
+        bottom_row.addStretch(1)
+        playlist_layout.addLayout(bottom_row)
+        # Banner row under playlist controls
+        banner_row = QHBoxLayout()
+        self._banner_label = QLabel("")
+        self._banner_label.setStyleSheet("color: #333333;")
+        banner_row.addWidget(self._banner_label)
+        banner_row.addStretch(1)
+        playlist_layout.addLayout(banner_row)
+
+        layout.addWidget(playlist_box, 2, 1)
+        # durations map for computing total TC
+        self._media_durations: dict[str, float] = {}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -220,6 +384,10 @@ class CommandsTab(QWidget):
             button.setEnabled(enabled)
         self._update_misc_button(enabled)
         self._update_upload_button(enabled)
+        # Playlist controls
+        self._add_to_playlist.setEnabled(enabled)
+        self._remove_from_playlist.setEnabled(enabled)
+        self._push_playlist.setEnabled(enabled and self._playlist.count() > 0)
         # Toggle auxiliary controls
         for btn in (
             self._overlay_show,
@@ -240,10 +408,20 @@ class CommandsTab(QWidget):
             list_item = QListWidgetItem(item["label"])
             list_item.setData(Qt.UserRole, item["path"])
             list_item.setData(self._RELATIVE_ROLE, item.get("relative"))
+            # store duration mapping for total TC (keyed by relative or basename)
+            if item.get("relative") and isinstance(item.get("duration"), (int, float)):
+                self._media_durations[str(item["relative"])] = float(item["duration"])
+            elif isinstance(item.get("duration"), (int, float)):
+                from pathlib import Path as _Path
+                self._media_durations[_Path(item["path"]).name] = float(item["duration"])
             self._media_list.addItem(list_item)
         if self._media_list.count() > 0:
             self._media_list.setCurrentRow(0)
         self._update_upload_button(self._targets_enabled)
+        # Playlist: abilita Aggiungi se ci sono elementi e target
+        self._add_to_playlist.setEnabled(self._targets_enabled and self._media_list.count() > 0)
+        # update total TC after media refresh
+        self._update_total_tc()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -488,6 +666,110 @@ class CommandsTab(QWidget):
     def _update_upload_button(self, targets_enabled: bool) -> None:
         has_item = self._media_list.currentItem() is not None
         self._upload_button.setEnabled(targets_enabled and has_item)
+        # Push abilitato in base alla presenza elementi e target
+        self._push_playlist.setEnabled(self._targets_enabled and self._playlist.count() > 0)
+
+    # ------------------------------------------------------------------
+    # Playlist helpers
+    # ------------------------------------------------------------------
+    def _add_selected_to_playlist(self) -> None:
+        item = self._media_list.currentItem()
+        if not item:
+            return
+        label = item.text()
+        rel = item.data(self._RELATIVE_ROLE) or item.data(Qt.UserRole)
+        if not rel:
+            return
+        entry = QListWidgetItem(label)
+        entry.setData(Qt.UserRole, rel)
+        self._playlist.addItem(entry)
+        self._emit_playlist_changed()
+
+    def _remove_selected_from_playlist(self) -> None:
+        row = self._playlist.currentRow()
+        if row < 0:
+            return
+        it = self._playlist.takeItem(row)
+        try:
+            del it
+        except Exception:
+            pass
+        self._emit_playlist_changed()
+
+    def _emit_playlist_changed(self) -> None:
+        items: list[str] = []
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            rel = it.data(Qt.UserRole) or it.text()
+            items.append(str(rel))
+        # LED rosso (dirty)
+        self._set_playlist_led_color("red")
+        self.playlistChanged.emit(items)
+        self._push_playlist.setEnabled(self._targets_enabled and len(items) > 0)
+        self._update_total_tc()
+
+    def _emit_push_playlist(self) -> None:
+        items: list[str] = []
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            rel = it.data(Qt.UserRole) or it.text()
+            items.append(str(rel))
+        if not items:
+            return
+        # LED arancione (in progress)
+        self._set_playlist_led_color("orange")
+        self.playlistPushRequested.emit(items, self._clear_before_push.isChecked())
+
+    def _set_playlist_led_color(self, state: str) -> None:
+        colors = {
+            "red": "#e74c3c",
+            "orange": "#f39c12",
+            "green": "#2ecc71",
+            "gray": "#AAAAAA",
+        }
+        color = colors.get(state, "#AAAAAA")
+        try:
+            self._playlist_led.setStyleSheet(f"background-color: {color}; border-radius: 7px;")
+        except Exception:
+            pass
+
+    def _set_show_led(self, running: bool) -> None:
+        color = "#e74c3c" if running else "#AAAAAA"
+        try:
+            self._show_led.setStyleSheet(f"background-color: {color}; border-radius: 7px;")
+        except Exception:
+            pass
+
+    def set_show_running(self, running: bool) -> None:
+        self._set_show_led(running)
+
+    def set_countdown_text(self, text: str) -> None:
+        self._countdown_label.setText(text)
+
+    def set_total_timecode_text(self, text: str) -> None:
+        self._total_tc_label.setText(text)
+
+    def set_playlist_led(self, state: str) -> None:
+        """Public setter to control the playlist LED color (red/orange/green/gray)."""
+        self._set_playlist_led_color(state)
+
+    def set_banner(self, text: str | None, level: str = "info") -> None:
+        """Set a status banner below playlist controls.
+        level in {info, progress, success, error} controls the style.
+        """
+        if not text:
+            self._banner_label.setText("")
+            self._banner_label.setStyleSheet("color: #333333;")
+            return
+        colors = {
+            "info": "#2c3e50",
+            "progress": "#8e44ad",
+            "success": "#2ecc71",
+            "error": "#e74c3c",
+        }
+        color = colors.get(level, "#2c3e50")
+        self._banner_label.setStyleSheet(f"color: {color}; font-weight: 500;")
+        self._banner_label.setText(text)
 
     # ------------------------------------------------------------------
     # Scheduling helpers
@@ -548,3 +830,32 @@ class CommandsTab(QWidget):
             return float(rel_secs.value())
         except Exception:
             return None
+
+    def _emit_start_show(self) -> None:
+        # Use scheduling controls if enabled
+        in_time = None
+        if self._schedule_checkbox.isChecked():
+            in_time = self._compute_in_time_epoch_seconds()
+        self.startShowRequested.emit(in_time)
+
+    def _update_total_tc(self) -> None:
+        # Sum durations for items in playlist
+        total = 0.0
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            key = str(it.data(Qt.UserRole) or it.text())
+            dur = self._media_durations.get(key)
+            if isinstance(dur, (int, float)) and dur >= 0:
+                total += float(dur)
+        # format HH:MM:SS
+        t = int(total)
+        h = t // 3600
+        m = (t % 3600) // 60
+        s = t % 60
+        if t <= 0:
+            txt = "Totale: —"
+        elif h > 0:
+            txt = f"Totale: {h:d}:{m:02d}:{s:02d}"
+        else:
+            txt = f"Totale: {m:02d}:{s:02d}"
+        self.set_total_timecode_text(txt)
