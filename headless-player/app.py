@@ -1520,17 +1520,6 @@ def start_play_with_path(path: str):
 
 def start_play(fade_in_seconds: float = 0.5):
     print(f"[PLAYER] Avvio riproduzione: {VIDEO_PATH}", flush=True)
-    # Se overlay nero è attivo dall'idle, nascondilo subito (fade breve) per evitare flash
-    try:
-        if OVERLAY_ENABLED and overlay.get("active"):
-            overlay_fade_to(0.0, 0.2)
-            def _hide():
-                try: overlay_hide()
-                except Exception: pass
-                return False
-            GLib.timeout_add(250, _hide)
-    except Exception:
-        pass
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
@@ -1543,6 +1532,36 @@ def start_play(fade_in_seconds: float = 0.5):
             print(f"[PLAYER] Errore backend: {exc}", flush=True)
             player["state"] = "error"
             return
+        # Per backend non-GST (es. cvlc): esegui fade-out overlay SOLO quando il contenuto risulta davvero in playing
+        try:
+            if OVERLAY_ENABLED:
+                def _fade_when_ready(retries=[0]):
+                    try:
+                        be = current_framework.get("backend")
+                        ready = bool(be and hasattr(be, "is_playing") and be.is_playing())
+                    except Exception:
+                        ready = False
+                    if ready:
+                        overlay_fade_to(0.0, max(0.1, float(fade_in_seconds) or 0.5))
+                        def _hide():
+                            try:
+                                overlay_hide()
+                            except Exception:
+                                pass
+                            return False
+                        GLib.timeout_add(600, _hide)
+                        return False
+                    # riprova per ~3s (30 tentativi ogni 100ms)
+                    retries[0] += 1
+                    if retries[0] >= 30:
+                        # fallback: esegui comunque fade-out breve per evitare fantasma prompt
+                        overlay_fade_to(0.0, 0.2)
+                        GLib.timeout_add(400, lambda: (overlay_hide(), False)[1])
+                        return False
+                    return True
+                GLib.timeout_add(100, _fade_when_ready)
+        except Exception:
+            pass
         persist_settings()
         _autoplay_on_play_started(VIDEO_PATH)
         return
@@ -1650,9 +1669,14 @@ def stop_play():
         gui_log("stop")
     except Exception:
         pass
-    # Se lo splash è nascosto, mostra immagine nera in pausa
+    # Se lo splash è nascosto, riporta a nero: prima prova con overlay (fade-in morbido), poi idle black
     try:
         if not splash.get("active"):
+            try:
+                if OVERLAY_ENABLED:
+                    overlay_fade_to(1.0, 0.5)
+            except Exception:
+                pass
             show_idle_black()
     except Exception:
         pass

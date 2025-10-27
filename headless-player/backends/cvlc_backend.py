@@ -76,12 +76,19 @@ class CvlcBackend:
                             try:
                                 splash = self._globals.get("splash")
                                 if splash and not splash.get("active"):
+                                    # Prima riporta overlay a nero con un fade morbido; poi assicurati del nero idle
+                                    try:
+                                        overlay_fade = self._globals.get("overlay_fade_to")
+                                        if callable(overlay_fade):
+                                            overlay_fade(1.0, 0.5)
+                                    except Exception:
+                                        pass
                                     show_idle = self._globals.get("show_idle_black")
                                     if callable(show_idle):
                                         show_idle()
                                         # Aggiorna stato globale
                                         try:
-                                            self._globals["player"]["state"] = "paused"
+                                            self._globals["player"]["state"] = "stopped"
                                         except Exception:
                                             pass
                             except Exception:
