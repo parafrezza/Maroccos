@@ -1,0 +1,74 @@
+{
+  "started_at": 1761576914.706226,
+  "framework": "mpv",
+  "targets": [
+    {
+      "host_called": "192.168.1.167",
+      "device_ip": "192.168.10.220",
+      "device_name": "quattro",
+      "steps": {
+        "stop": {
+          "ok": true,
+          "at": 1761576922.6969757,
+          "state": "paused"
+        },
+        "upload": {
+          "at": 1761576923.7192955,
+          "files": [
+            {
+              "name": "testbars_10_TC.mp4",
+              "ok": false
+            }
+          ]
+        },
+        "apply": {
+          "ok": true,
+          "at": 1761576924.5435529,
+          "prepared": "testbars_10_TC.mp4"
+        },
+        "ready": {
+          "ok": true,
+          "at": 1761576924.6641293,
+          "for": "testbars_10_TC.mp4"
+        }
+      }
+    },
+    {
+      "host_called": "192.168.1.204",
+      "device_ip": "192.168.10.220",
+      "device_name": "3B",
+      "steps": {
+        "stop": {
+          "ok": true,
+          "at": 1761576922.7520146,
+          "state": "paused"
+        },
+        "upload": {
+          "at": 1761576923.7617493,
+          "files": [
+            {
+              "name": "testbars_10_TC.mp4",
+              "ok": false
+            }
+          ]
+        },
+        "apply": {
+          "ok": false,
+          "at": 1761576924.6225164,
+          "prepared": null
+        },
+        "ready": {
+          "ok": false,
+          "at": 1761576954.861066,
+          "for": null
+        }
+      }
+    }
+  ],
+  "media": [
+    "testbars_10_TC.mp4"
+  ],
+  "delay": 5.0,
+  "finished_at": 1761576954.8613074,
+  "aborted": "not_ready"
+}

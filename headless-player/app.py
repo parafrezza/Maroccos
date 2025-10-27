@@ -29,7 +29,7 @@ USE_HW_DECODER = os.environ.get("USE_HW_DECODER", "1") == "1"
 TARGET_WIDTH = int(os.environ.get("TARGET_WIDTH", "1280"))
 TARGET_HEIGHT = int(os.environ.get("TARGET_HEIGHT", "720"))
 TARGET_FPS = os.environ.get("TARGET_FPS", "25/1")
-FADE_INTERVAL_MS = 50
+FADE_INTERVAL_MS = 40
 VIDEO_PATH = str(MEDIA_DIR / "orcanmado.mp4")
 APP_PORT = int(os.environ.get("APP_PORT", "8080"))
 SPLASH_BLACK = os.environ.get("SPLASH_BLACK", "0") == "1"
@@ -397,13 +397,26 @@ def schedule_action(in_time: float | None, func, *args, **kwargs):
       - valore piccolo (<1e9): interpretato come delay relativo in secondi
     Ritorna delay effettivo.
     """
+    # Usa un token per poter invalidare tutte le azioni pianificate (hard stop)
+    created_epoch = globals().get("SCHEDULE_EPOCH", 0)
+
+    def _guarded_call():
+        # Se nel frattempo è stato incrementato l'epoch, salta l'azione
+        if created_epoch != globals().get("SCHEDULE_EPOCH", 0):
+            return False
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            pass
+        return False
+
     if not in_time:
-        GLib.idle_add(lambda: func(*args, **kwargs))
+        GLib.idle_add(_guarded_call)
         return 0.0
     try:
         t = float(in_time)
     except Exception:
-        GLib.idle_add(lambda: func(*args, **kwargs))
+        GLib.idle_add(_guarded_call)
         return 0.0
     now = time.time()
     if t >= 1e9:  # epoch
@@ -411,10 +424,10 @@ def schedule_action(in_time: float | None, func, *args, **kwargs):
     else:
         delay = max(0.0, t)
     if delay == 0:
-        GLib.idle_add(lambda: func(*args, **kwargs))
+        GLib.idle_add(_guarded_call)
     else:
         ms = int(delay * 1000)
-        GLib.timeout_add(ms, lambda: (func(*args, **kwargs), False)[1])
+        GLib.timeout_add(ms, _guarded_call)
     return delay
 # Crea un video di test se non esiste
 def create_test_video():
@@ -462,6 +475,43 @@ schedule_info = {
     "play_at": None,          # epoch seconds
     "overlay_fade_at": None,  # epoch seconds
 }
+
+# Token globale per invalidare tutte le azioni pianificate: incrementato su hard stop
+SCHEDULE_EPOCH = 0
+
+def cancel_all_schedules():
+    """Invalida tutte le azioni pianificate e ferma timer/monitor noti.
+
+    - incrementa SCHEDULE_EPOCH per invalidare i callback pianificati via schedule_action
+    - azzera schedule_info
+    - cancella timer di autoplay e il monitor
+    - ferma il ticker di test mode
+    """
+    try:
+        globals()["SCHEDULE_EPOCH"] = int(globals().get("SCHEDULE_EPOCH", 0)) + 1
+    except Exception:
+        globals()["SCHEDULE_EPOCH"] = 1
+    try:
+        schedule_info["play_at"] = None
+        schedule_info["overlay_fade_at"] = None
+    except Exception:
+        pass
+    # Autoplay timers
+    try:
+        _autoplay_cancel_timer()
+        _autoplay_cancel_monitor()
+    except Exception:
+        pass
+    # Test mode ticker
+    try:
+        if test_mode.get("ticker"):
+            try:
+                GLib.source_remove(test_mode["ticker"])
+            except Exception:
+                pass
+            test_mode["ticker"] = None
+    except Exception:
+        pass
 
 AUTOPLAY_SPLASH_DELAY_S = 5.0
 AUTOPLAY_FADE_SECONDS = 1.0
@@ -1963,8 +2013,9 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
     if not target:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Nessun media pronto"})
     def _go_now():
+        # Dichiarazione globale all'inizio della funzione annidata per evitare SyntaxError
+        global VIDEO_PATH
         if current_framework["name"] == "gst":
-            global VIDEO_PATH
             VIDEO_PATH = target
             if not adopt_preloaded(target):
                 # Fallback: start normal
@@ -1980,9 +2031,20 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                     GLib.timeout_add(int(max(0.0, seconds) * 1000) + 50, _hide)
             except Exception as e:
                 print(f"[FASTSTART] Overlay fade error: {e}", flush=True)
+            # Assicura stato in PLAYING anche su GST
+            try:
+                if player.get("pipeline"):
+                    try:
+                        player["pipeline"].set_state(Gst.State.PLAYING)
+                    except Exception:
+                        pass
+                player["state"] = "playing"
+            except Exception:
+                pass
             faststart["prepared_path"] = None
             try:
                 gui_log("faststart_go GST", data={"seconds": seconds, "path": target})
+                gui_log("playing", data={"path": target, "backend": "gst", "loop": player.get("loop")})
             except Exception:
                 pass
             return {"ok": True}
@@ -1992,14 +2054,40 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
             backend = current_framework.get("backend")
             if not backend:
                 raise RuntimeError("Backend non disponibile")
+            # 1) Prova ripresa veloce se già preparato, altrimenti play diretto
+            resumed = False
             if current_framework["name"] in {"cvlc", "mpv"} and faststart.get("prepared_path"):
-                # riprendi se già preparato
                 try:
                     backend.faststart_go()  # type: ignore[attr-defined]
+                    resumed = True
                 except Exception:
-                    backend.play(target, loop=player.get("loop", False), fade_in=0.0)
-            else:
+                    resumed = False
+            if not resumed:
                 backend.play(target, loop=player.get("loop", False), fade_in=0.0)
+            # 2) Verifica best-effort e fallback a resume/play se ancora in pausa
+            try:
+                playing = bool(getattr(backend, "is_playing", lambda: True)())
+            except Exception:
+                playing = True
+            if not playing:
+                try:
+                    # tenta un resume esplicito (se supportato)
+                    getattr(backend, "resume", lambda: None)()
+                except Exception:
+                    pass
+                try:
+                    playing = bool(getattr(backend, "is_playing", lambda: True)())
+                except Exception:
+                    playing = True
+                if not playing:
+                    # forza un play esplicito come ultima spiaggia
+                    backend.play(target, loop=player.get("loop", False), fade_in=0.0)
+            # Aggiorna stato locale e VIDEO_PATH
+            try:
+                VIDEO_PATH = target
+                player["state"] = "playing"
+            except Exception:
+                pass
             # Overlay fade
             if OVERLAY_ENABLED:
                 overlay_fade_to(0.0, seconds)
@@ -2011,6 +2099,7 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
             faststart["prepared_path"] = None
             try:
                 gui_log("faststart_go %s" % current_framework["name"].upper(), data={"seconds": seconds, "path": target})
+                gui_log("playing", data={"path": target, "backend": current_framework["name"], "loop": player.get("loop")})
             except Exception:
                 pass
             return {"ok": True}
@@ -2670,7 +2759,49 @@ def api_loop(on: int = Query(1)):
 
 @app.post("/stop")
 def api_stop():
-    stop_play()
+    # Invalida azioni pianificate e ferma tutti i timer noti
+    try:
+        cancel_all_schedules()
+    except Exception:
+        pass
+    # Ferma riproduzione backend/pipeline e sgancia preload
+    try:
+        stop_play()
+    except Exception:
+        pass
+    try:
+        if preloaded.get("pipeline"):
+            try:
+                preloaded["pipeline"].set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
+    except Exception:
+        pass
+    # Resetta faststart e readiness show
+    try:
+        faststart["prepared_path"] = None
+    except Exception:
+        pass
+    try:
+        show_state.update({"ready": False, "for": None})
+    except Exception:
+        pass
+    # Forza overlay nero pieno (best-effort) per garantire schermo nero immediato
+    try:
+        if OVERLAY_ENABLED:
+            overlay_show(alpha=1.0)
+        else:
+            # Fallback: mostra nero di idle (pipeline dedicata)
+            show_idle_black()
+    except Exception:
+        # Se overlay fallisce, tenta comunque idle black
+        try:
+            show_idle_black()
+        except Exception:
+            pass
+    # Stato
+    player["state"] = "stopped"
     return {"ok": True, "state": player.get("state", "stopped")}
 
 @app.post("/fade_in")

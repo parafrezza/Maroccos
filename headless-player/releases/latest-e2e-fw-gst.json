@@ -1,0 +1,53 @@
+{
+  "started_at": 1761578179.9065375,
+  "framework": "gst",
+  "targets": [
+    {
+      "host_called": "192.168.1.167",
+      "device_ip": "192.168.1.167",
+      "device_name": "quattro",
+      "steps": {
+        "stop": {
+          "ok": true,
+          "at": 1761578186.3541243,
+          "state": "stopped"
+        },
+        "upload": {
+          "at": 1761578187.2126703,
+          "files": [
+            {
+              "name": "testbars_10_TC.mp4",
+              "ok": false
+            }
+          ]
+        },
+        "apply": {
+          "ok": true,
+          "at": 1761578190.2915766,
+          "prepared": "testbars_10_TC.mp4"
+        },
+        "ready": {
+          "ok": true,
+          "at": 1761578190.3287373,
+          "for": "testbars_10_TC.mp4"
+        },
+        "go": {
+          "ok": true,
+          "at": 1761578190.3796015,
+          "in_time": 1761578195.3287656
+        },
+        "verify_playing": {
+          "ok": false,
+          "at": 1761578200.5442288,
+          "state": "paused"
+        }
+      }
+    }
+  ],
+  "media": [
+    "testbars_10_TC.mp4"
+  ],
+  "delay": 5.0,
+  "udp_logs_count": 4,
+  "finished_at": 1761578201.5635426
+}

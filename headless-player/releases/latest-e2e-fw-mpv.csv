@@ -1,0 +1,2 @@
+host_called,device_ip,device_name,stop_ok,apply_ok,ready_ok,go_ok,verify_ok
+192.168.1.167,192.168.1.167,quattro,True,True,True,True,True
