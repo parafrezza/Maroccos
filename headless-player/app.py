@@ -84,6 +84,10 @@ LOG_UDP_PORT = 7788
 # Identità dispositivo (persistita in config)
 DEVICE_NAME = os.environ.get("DEVICE_NAME", "")
 
+# Durate overlay configurabili (default 1s)
+OVERLAY_FADE_OUT_ON_PLAY_S = float(os.environ.get("OVERLAY_FADE_OUT_ON_PLAY_S", "1.0"))
+OVERLAY_FADE_IN_ON_STOP_S = float(os.environ.get("OVERLAY_FADE_IN_ON_STOP_S", "1.0"))
+
 VLC_HTTP_HOST = os.environ.get("VLC_HTTP_HOST", "127.0.0.1")
 VLC_HTTP_PORT = int(os.environ.get("VLC_HTTP_PORT", "8090"))
 VLC_HTTP_USER = os.environ.get("VLC_HTTP_USER", "")
@@ -102,7 +106,7 @@ def load_persisted_framework():
             if fw and fw in BACKEND_CLASSES:
                 current_framework["name"] = fw
                 print(f"[CONFIG] Framework persistito: {fw}", flush=True)
-            global USE_KMS, USE_HW_DECODER, TARGET_WIDTH, TARGET_HEIGHT, TARGET_FPS, SPLASH_BLACK, UDP_ENABLED, VIDEO_PATH, VLC_HTTP_PASSWORD, DEVICE_NAME, LOG_UDP_ENABLED, LOG_UDP_HOST, LOG_UDP_PORT
+            global USE_KMS, USE_HW_DECODER, TARGET_WIDTH, TARGET_HEIGHT, TARGET_FPS, SPLASH_BLACK, UDP_ENABLED, VIDEO_PATH, VLC_HTTP_PASSWORD, DEVICE_NAME, LOG_UDP_ENABLED, LOG_UDP_HOST, LOG_UDP_PORT, OVERLAY_FADE_OUT_ON_PLAY_S, OVERLAY_FADE_IN_ON_STOP_S
             if "USE_KMS" in data: USE_KMS = bool(data.get("USE_KMS"))
             if "USE_HW_DECODER" in data: USE_HW_DECODER = bool(data.get("USE_HW_DECODER"))
             if "TARGET_WIDTH" in data: TARGET_WIDTH = int(data.get("TARGET_WIDTH") or TARGET_WIDTH)
@@ -119,6 +123,15 @@ def load_persisted_framework():
                 VLC_HTTP_PASSWORD = str(password)
             if name := data.get("device_name"):
                 DEVICE_NAME = str(name)
+            # Overlay durations (optional)
+            try:
+                OVERLAY_FADE_OUT_ON_PLAY_S = float(data.get("overlay_fade_out_on_play_s", data.get("OVERLAY_FADE_OUT_ON_PLAY_S", OVERLAY_FADE_OUT_ON_PLAY_S)))
+            except Exception:
+                pass
+            try:
+                OVERLAY_FADE_IN_ON_STOP_S = float(data.get("overlay_fade_in_on_stop_s", data.get("OVERLAY_FADE_IN_ON_STOP_S", OVERLAY_FADE_IN_ON_STOP_S)))
+            except Exception:
+                pass
             # Log UDP config (optional)
             LOG_UDP_ENABLED = bool(data.get("log_udp_enabled", data.get("LOG_UDP_ENABLED", False)))
             LOG_UDP_HOST = str(data.get("log_udp_host", data.get("LOG_UDP_HOST", LOG_UDP_HOST or "")))
@@ -163,6 +176,8 @@ def persist_settings(extra: dict | None = None):
             "log_udp_enabled": LOG_UDP_ENABLED,
             "log_udp_host": LOG_UDP_HOST,
             "log_udp_port": LOG_UDP_PORT,
+            "overlay_fade_out_on_play_s": OVERLAY_FADE_OUT_ON_PLAY_S,
+            "overlay_fade_in_on_stop_s": OVERLAY_FADE_IN_ON_STOP_S,
         })
         # Rimuovi chiavi legacy non più supportate
         for legacy_key in ("osc_enabled", "OSC_ENABLED"):
@@ -239,6 +254,10 @@ def init_backend(name: str, persist: bool = False):
         current_framework["name"] = n
         current_framework["backend"] = be
         print(f"[BACKEND] Inizializzato backend: {n}", flush=True)
+        try:
+            gui_log("backend_init", data={"name": n})
+        except Exception:
+            pass
         if persist:
             _persist_framework(n)
         return True
@@ -1542,18 +1561,27 @@ def start_play(fade_in_seconds: float = 0.5):
                     except Exception:
                         ready = False
                     if ready:
-                        overlay_fade_to(0.0, max(0.1, float(fade_in_seconds) or 0.5))
+                        try:
+                            gui_log("overlay_fade_out_ready", data={"duration": OVERLAY_FADE_OUT_ON_PLAY_S})
+                        except Exception:
+                            pass
+                        overlay_fade_to(0.0, max(0.05, float(OVERLAY_FADE_OUT_ON_PLAY_S)))
                         def _hide():
                             try:
                                 overlay_hide()
+                                gui_log("overlay_hidden_after_start")
                             except Exception:
                                 pass
                             return False
-                        GLib.timeout_add(600, _hide)
+                        GLib.timeout_add(int(max(0.2, OVERLAY_FADE_OUT_ON_PLAY_S) * 1000 + 100), _hide)
                         return False
                     # riprova per ~3s (30 tentativi ogni 100ms)
                     retries[0] += 1
                     if retries[0] >= 30:
+                        try:
+                            gui_log("overlay_fade_out_fallback", level="WARNING", data={"duration": 0.2})
+                        except Exception:
+                            pass
                         # fallback: esegui comunque fade-out breve per evitare fantasma prompt
                         overlay_fade_to(0.0, 0.2)
                         GLib.timeout_add(400, lambda: (overlay_hide(), False)[1])
@@ -1674,7 +1702,12 @@ def stop_play():
         if not splash.get("active"):
             try:
                 if OVERLAY_ENABLED:
-                    overlay_fade_to(1.0, 0.5)
+                    gui_log("overlay_fade_in_on_stop", data={"duration": OVERLAY_FADE_IN_ON_STOP_S})
+                    overlay_fade_to(1.0, max(0.05, float(OVERLAY_FADE_IN_ON_STOP_S)))
+            except Exception:
+                pass
+            try:
+                gui_log("idle_black_show")
             except Exception:
                 pass
             show_idle_black()
@@ -3238,7 +3271,7 @@ def api_settings_reload(data: Optional[dict] = Body(None)):
     """Aggiorna impostazioni runtime e ricrea la pipeline e lo splash se attivo.
     Accetta JSON tipo: {"USE_KMS": false, "USE_HW_DECODER": true, "TARGET_WIDTH": 1280, ... , "restart_play": true, "SPLASH_BLACK": false}
     """
-    global USE_KMS, USE_HW_DECODER, TARGET_WIDTH, TARGET_HEIGHT, TARGET_FPS, SPLASH_BLACK
+    global USE_KMS, USE_HW_DECODER, TARGET_WIDTH, TARGET_HEIGHT, TARGET_FPS, SPLASH_BLACK, OVERLAY_FADE_OUT_ON_PLAY_S, OVERLAY_FADE_IN_ON_STOP_S
     data = data or {}
     changes = {}
     if "USE_KMS" in data:
@@ -3279,6 +3312,20 @@ def api_settings_reload(data: Optional[dict] = Body(None)):
         restart_auto = data.get("restart_autoplay", True)
         _autoplay_set_enabled(bool(target), restart=bool(restart_auto))
         changes["autoplay_enabled"] = autoplay.get("enabled", False)
+
+    # Overlay fade durations (accept both snake_case and UPPERCASE)
+    if "overlay_fade_out_on_play_s" in data or "OVERLAY_FADE_OUT_ON_PLAY_S" in data:
+        try:
+            OVERLAY_FADE_OUT_ON_PLAY_S = float(data.get("overlay_fade_out_on_play_s", data.get("OVERLAY_FADE_OUT_ON_PLAY_S")))
+            changes["overlay_fade_out_on_play_s"] = OVERLAY_FADE_OUT_ON_PLAY_S
+        except Exception:
+            pass
+    if "overlay_fade_in_on_stop_s" in data or "OVERLAY_FADE_IN_ON_STOP_S" in data:
+        try:
+            OVERLAY_FADE_IN_ON_STOP_S = float(data.get("overlay_fade_in_on_stop_s", data.get("OVERLAY_FADE_IN_ON_STOP_S")))
+            changes["overlay_fade_in_on_stop_s"] = OVERLAY_FADE_IN_ON_STOP_S
+        except Exception:
+            pass
 
     restart_play = bool(data.get("restart_play", True))
 
