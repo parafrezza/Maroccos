@@ -2612,7 +2612,7 @@ def api_play(
             gui_log("play", data={"path": VIDEO_PATH, "backend": current_framework["name"], "loop": player.get("loop")})
         except Exception:
             pass
-    return {"ok": True, "playing": VIDEO_PATH, "backend": current_framework["name"], "scheduled": False}
+    # Nota: non restituire qui; consenti al ramo di scheduling/fade-out di eseguire.
 
     # Fade-out + scheduling: se in_time futuro, pianifica fade-out prima
     if in_time:
