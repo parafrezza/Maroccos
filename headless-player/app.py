@@ -3086,13 +3086,9 @@ def api_overlay_fade(target: float | None = Query(None), seconds: float = Query(
         desired = max(0.0, min(1.0, desired))
 
         def _do():
-<<<<<<< HEAD
             if not overlay.get("active") or not overlay.get("alpha"):
                 start = overlay.get("current_alpha", desired)
                 overlay_show(alpha=max(0.0, min(1.0, float(start))))
-=======
-            overlay_show(alpha=1.0 if desired >= 1.0 else overlay.get("current_alpha", 0.0))
->>>>>>> 0c6bd49 ()
             overlay_fade_to(desired, max(0.0, seconds))
             return False
         if in_time:
