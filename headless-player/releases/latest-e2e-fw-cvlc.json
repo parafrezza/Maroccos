@@ -1,5 +1,5 @@
 {
-  "started_at": 1761578218.4236054,
+  "started_at": 1761581112.43965,
   "framework": "cvlc",
   "targets": [
     {
@@ -9,37 +9,37 @@
       "steps": {
         "stop": {
           "ok": true,
-          "at": 1761578222.6335804,
+          "at": 1761581115.9237683,
           "state": "stopped"
         },
         "upload": {
-          "at": 1761578223.5962982,
+          "at": 1761581116.0077834,
           "files": [
             {
               "name": "testbars_10_TC.mp4",
-              "ok": false
+              "ok": true
             }
           ]
         },
         "apply": {
           "ok": true,
-          "at": 1761578226.6932359,
+          "at": 1761581117.178627,
           "prepared": "testbars_10_TC.mp4"
         },
         "ready": {
           "ok": true,
-          "at": 1761578226.8163402,
+          "at": 1761581117.2062395,
           "for": "testbars_10_TC.mp4"
         },
         "go": {
           "ok": true,
-          "at": 1761578226.9331963,
-          "in_time": 1761578231.816353
+          "at": 1761581117.236596,
+          "in_time": 1761581122.206273
         },
         "verify_playing": {
-          "ok": false,
-          "at": 1761578236.8520045,
-          "state": "paused"
+          "ok": true,
+          "at": 1761581122.3356483,
+          "state": "playing"
         }
       }
     }
@@ -48,6 +48,6 @@
     "testbars_10_TC.mp4"
   ],
   "delay": 5.0,
-  "udp_logs_count": 7,
-  "finished_at": 1761578237.8933046
+  "udp_logs_count": 5,
+  "finished_at": 1761581123.361173
 }

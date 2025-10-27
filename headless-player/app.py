@@ -12,6 +12,7 @@ import uvicorn
 from PIL import Image, ImageDraw, ImageFont
 import netifaces
 import json
+import re
 
 import gi
 gi.require_version("Gst", "1.0")
@@ -71,8 +72,8 @@ OVERLAY_ZPOS = int(os.environ.get("OVERLAY_ZPOS", "-1"))
 
 from backends import BACKEND_CLASSES, available_backends
 
-# Default framework: usa mpv di default (persistenza in config.json se presente)
-current_framework = {"name": "mpv", "backend": None}
+# Default framework: usa cvlc di default (persistenza in config.json se presente)
+current_framework = {"name": "cvlc", "backend": None}
 UDP_ENABLED = True
 
 # --- UDP Log streaming to GUI ---
@@ -460,6 +461,8 @@ fade_seq = 0  # Sequenziatore per cancellare fade sovrapposti
 
 # Overlay controller (pipeline separata su plane dedicato)
 overlay = {"pipeline": None, "alpha": None, "active": False}
+# Ultimo risultato del probe overlay (per /overlay/status)
+overlay_probe_info = {"detected": False, "method": None, "plane_id": None, "zpos_supported": None, "error": None}
 
 # Fast-start state
 faststart = {"prepared_path": None}
@@ -925,54 +928,7 @@ def hide_splash():
         splash["active"] = False
         print("[SPLASH] Splash chiuso", flush=True)
 
-def show_idle_black() -> bool:
-    """Mostra l'immagine nera di default in pausa quando non c'è splash e non si sta riproducendo nulla."""
-    try:
-        if splash.get("active"):
-            return False
-        if not BLACK_IMAGE.exists():
-            return False
-        if current_framework["name"] == "cvlc":
-            ensure_backend()
-            backend = current_framework.get("backend")
-            if backend and hasattr(backend, "faststart_prepare"):
-                try:
-                    backend.faststart_prepare(str(BLACK_IMAGE))  # type: ignore[attr-defined]
-                    faststart["prepared_path"] = str(BLACK_IMAGE)
-                    return True
-                except Exception as e:
-                    print(f"[IDLE] cvlc prepare fallita: {e}", flush=True)
-        # GStreamer
-        p, vb, af = build_player_pipeline(str(BLACK_IMAGE))
-        p.set_state(Gst.State.PAUSED)
-        try:
-            p.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 0)
-        except Exception:
-            pass
-        def _kick():
-            try:
-                p.set_state(Gst.State.PLAYING)
-            except Exception:
-                pass
-            def _pause_back():
-                try:
-                    p.set_state(Gst.State.PAUSED)
-                except Exception:
-                    pass
-                return False
-            GLib.timeout_add(80, _pause_back)
-            return False
-        GLib.idle_add(_kick)
-        if player.get("pipeline"):
-            try:
-                player["pipeline"].set_state(Gst.State.NULL)
-            except Exception:
-                pass
-        player.update({"pipeline": p, "vb": vb, "alpha": af, "state": "paused"})
-        return True
-    except Exception as e:
-        print(f"[IDLE] Errore show_idle_black: {e}", flush=True)
-        return False
+ 
 
 # ---------- Overlay KMS (plane separato) ----------
 def build_overlay_pipeline():
@@ -1013,20 +969,33 @@ def overlay_show(alpha: float = 1.0):
     """Mostra overlay nero (alpha 1.0 = pieno nero)."""
     if not OVERLAY_ENABLED:
         raise RuntimeError("Overlay disabilitato")
+    target_alpha = max(0.0, min(1.0, float(alpha)))
     if overlay["active"] and overlay["pipeline"]:
         try:
-            if overlay["alpha"]:
-                overlay["alpha"].set_property("alpha", max(0.0, min(1.0, alpha)))
+            overlay["pipeline"].set_state(Gst.State.PLAYING)
         except Exception:
             pass
+        if overlay["alpha"]:
+            try:
+                overlay["alpha"].set_property("alpha", target_alpha)
+            except Exception:
+                pass
         return
+    # Se non abbiamo ancora un plane_id valido su KMS, prova autodetect prima di creare la pipeline
+    if OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
+        try:
+            res = overlay_probe(auto_persist=True)
+            if res.get("detected"):
+                print(f"[OVERLAY] Plane rilevato automaticamente: id={res.get('plane_id')}", flush=True)
+        except Exception as probe_exc:
+            print(f"[OVERLAY] Probe plane fallita (proseguo comunque): {probe_exc}", flush=True)
     try:
         p, a = build_overlay_pipeline()
         overlay["pipeline"] = p
         overlay["alpha"] = a
         overlay["active"] = True
         if overlay["alpha"]:
-            overlay["alpha"].set_property("alpha", max(0.0, min(1.0, alpha)))
+            overlay["alpha"].set_property("alpha", target_alpha)
         p.set_state(Gst.State.PLAYING)
         print("[OVERLAY] Attivato", flush=True)
     except Exception as e:
@@ -1079,6 +1048,107 @@ def overlay_fade_to(target: float, duration_s: float = 1.0):
         return not final
     GLib.timeout_add(FADE_INTERVAL_MS, stepper)
     return True
+
+# ---------- Overlay auto-detect (KMS plane) ----------
+def _probe_overlay_plane_sysfs() -> tuple[int | None, bool | None]:
+    """Prova a rilevare un plane overlay da sysfs (/sys/class/drm/...).
+    Ritorna (plane_id, zpos_supported).
+    """
+    try:
+        root = Path("/sys/class/drm")
+        if not root.exists():
+            return None, None
+        paths = list(root.glob("card*-plane*"))
+        paths += list(root.glob("card*/plane*"))
+        candidates: list[tuple[int, bool]] = []
+        for p in paths:
+            try:
+                match = re.search(r"plane(?:-|)(\d+)", p.name)
+                if not match:
+                    continue
+                plane_id = int(match.group(1))
+            except Exception:
+                continue
+            try:
+                t = (p / "type").read_text().strip()
+            except Exception:
+                t = ""
+            if t.lower() == "overlay":
+                zpos_supported = (p / "zpos").exists() or (p / "zpos_range").exists()
+                candidates.append((plane_id, zpos_supported))
+        if candidates:
+            # Preferisci quello che dichiara zpos
+            candidates.sort(key=lambda x: (not x[1], x[0]))
+            return candidates[0][0], candidates[0][1]
+        return None, None
+    except Exception:
+        return None, None
+
+def _probe_overlay_plane_modetest() -> tuple[int | None, bool | None]:
+    """Fallback: usa 'modetest -p' se disponibile per trovare un plane 'Overlay'."""
+    try:
+        out = subprocess.run(["bash", "-lc", "modetest -p 2>/dev/null"], capture_output=True, text=True, timeout=2)
+        txt = out.stdout or ""
+        if not txt:
+            return None, None
+        # Trova blocchi 'plane id N' e guarda se include 'type: Overlay'
+        plane_blocks = re.split(r"(?m)^\s*plane id ", txt)
+        best_id: int | None = None
+        for block in plane_blocks:
+            m = re.match(r"(\d+).*", block)
+            if not m:
+                continue
+            pid = int(m.group(1))
+            if re.search(r"(?mi)type\s*:\s*Overlay", block):
+                best_id = pid
+                break
+        return (best_id, None)
+    except Exception:
+        return None, None
+
+def overlay_probe(auto_persist: bool = True) -> dict:
+    """Rileva automaticamente un plane overlay KMS e aggiorna OVERLAY_KMS_PLANE_ID se trovato."""
+    info = {"detected": False, "method": None, "plane_id": None, "zpos_supported": None, "error": None}
+    if not OVERLAY_USE_KMS:
+        info["error"] = "OVERLAY_USE_KMS=0"
+        overlay_probe_info.update(info)
+        return info
+    # 1) Sysfs
+    pid, zpos_sup = _probe_overlay_plane_sysfs()
+    if pid:
+        try:
+            globals()["OVERLAY_KMS_PLANE_ID"] = int(pid)
+        except Exception:
+            pass
+        info.update({"detected": True, "method": "sysfs", "plane_id": pid, "zpos_supported": zpos_sup})
+        overlay_probe_info.update(info)
+        try:
+            if auto_persist:
+                persist_settings({"OVERLAY_KMS_PLANE_ID": OVERLAY_KMS_PLANE_ID})
+        except Exception:
+            pass
+        print(f"[OVERLAY] Plane auto-rilevato via sysfs: id={pid}, zpos_supported={zpos_sup}", flush=True)
+        return info
+    # 2) modetest fallback
+    pid2, zpos_sup2 = _probe_overlay_plane_modetest()
+    if pid2:
+        try:
+            globals()["OVERLAY_KMS_PLANE_ID"] = int(pid2)
+        except Exception:
+            pass
+        info.update({"detected": True, "method": "modetest", "plane_id": pid2, "zpos_supported": zpos_sup2})
+        overlay_probe_info.update(info)
+        try:
+            if auto_persist:
+                persist_settings({"OVERLAY_KMS_PLANE_ID": OVERLAY_KMS_PLANE_ID})
+        except Exception:
+            pass
+        print(f"[OVERLAY] Plane auto-rilevato via modetest: id={pid2}", flush=True)
+        return info
+    info["error"] = "Nessun plane overlay trovato"
+    overlay_probe_info.update(info)
+    print("[OVERLAY] Auto-rilevamento plane fallito", flush=True)
+    return info
 
 # ---------- Player pipeline ----------
 def decoder_name():
@@ -2229,6 +2299,22 @@ def on_start():
         threading.Thread(target=_udp_thread, daemon=True).start()
     if autoplay.get("enabled"):
         GLib.idle_add(lambda: (_autoplay_schedule_initial(), False)[1])
+    # Overlay: auto-probe plane al boot (best-effort) se abilitato e non configurato
+    def _overlay_boot_probe():
+        try:
+            if OVERLAY_ENABLED and OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
+                print("[STARTUP] Overlay abilitato ma plane non impostato: eseguo auto-probe…", flush=True)
+                res = overlay_probe(auto_persist=True)
+                print(f"[STARTUP] Overlay probe: {res}", flush=True)
+                # Se trovato, mostra subito overlay nero stabile per idle
+                if res.get("detected"):
+                    try:
+                        overlay_show(alpha=1.0)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[STARTUP] Overlay probe errore: {e}", flush=True)
+    threading.Thread(target=_overlay_boot_probe, daemon=True).start()
 
 @app.get("/healthz")
 def healthz():
@@ -2875,7 +2961,7 @@ def api_visual_ftb(seconds: float = Query(1.0), in_time: float | None = Query(No
         backend = current_framework.get("backend")
         # Se backend implementa visual_fade_out, usalo; altrimenti tenta fade_out standard
         # Preferisci overlay KMS se disponibile
-        if OVERLAY_ENABLED and OVERLAY_USE_KMS and OVERLAY_KMS_PLANE_ID > 0:
+        if OVERLAY_ENABLED:
             try:
                 overlay_show(alpha=0.0)
                 overlay_fade_to(1.0, seconds)
@@ -2909,7 +2995,7 @@ def api_visual_fade_in(seconds: float = Query(1.0), in_time: float | None = Quer
         ensure_backend()
         backend = current_framework.get("backend")
         # Preferisci overlay KMS se disponibile
-        if OVERLAY_ENABLED and OVERLAY_USE_KMS and OVERLAY_KMS_PLANE_ID > 0:
+        if OVERLAY_ENABLED:
             try:
                 overlay_show(alpha=1.0)
                 overlay_fade_to(0.0, seconds)
@@ -2945,7 +3031,12 @@ def api_overlay_show(alpha: float = Query(1.0)):
             gui_log("overlay_show", data={"alpha": alpha})
         except Exception:
             pass
-        return {"ok": True, "alpha": alpha}
+        return {
+            "ok": True,
+            "alpha": alpha,
+            "active": overlay.get("active", False),
+            "probe": overlay_probe_info,
+        }
     except Exception as e:
         try:
             gui_log("overlay_show error", level="ERROR", data={"alpha": alpha, "error": str(e)})
@@ -2961,7 +3052,11 @@ def api_overlay_hide():
             gui_log("overlay_hide")
         except Exception:
             pass
-        return {"ok": True}
+        return {
+            "ok": True,
+            "active": overlay.get("active", False),
+            "probe": overlay_probe_info,
+        }
     except Exception as e:
         try:
             gui_log("overlay_hide error", level="ERROR", data={"error": str(e)})
@@ -3010,6 +3105,26 @@ def api_overlay_fade(target: float = Query(0.0), seconds: float = Query(1.0), in
 def api_overlay_fade_at(target: float = Query(0.0), seconds: float = Query(1.0), at: float = Query(...)):
     # Alias con parametro esplicito 'at'
     return api_overlay_fade(target=target, seconds=seconds, in_time=at)
+
+@app.get("/overlay/status")
+def api_overlay_status():
+    return {
+        "ok": True,
+        "enabled": OVERLAY_ENABLED,
+        "use_kms": OVERLAY_USE_KMS,
+        "plane_id": OVERLAY_KMS_PLANE_ID,
+        "zpos": OVERLAY_ZPOS,
+        "probe": overlay_probe_info,
+    }
+
+@app.post("/overlay/probe")
+def api_overlay_probe():
+    try:
+        res = overlay_probe(auto_persist=True)
+        return {"ok": True, "result": res}
+    except Exception as e:
+        overlay_probe_info.update({"detected": False, "error": str(e)})
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 @app.get("/media")
 def list_media():
