@@ -60,6 +60,8 @@ class CvlcController:
             env.setdefault("VLC_HTTP_HOST", self.host)
             env.setdefault("VLC_HTTP_PORT", str(self.port))
             env.setdefault("VLC_HTTP_PASSWORD", self.password)
+            # Mitiga errori legati a PulseAudio/XDG su ambienti headless
+            env.setdefault("XDG_RUNTIME_DIR", "/tmp")
 
             # Log file per diagnosi avvio VLC
             log_path = env.get("CVLC_LOG", "/tmp/cvlc_stderr.log")

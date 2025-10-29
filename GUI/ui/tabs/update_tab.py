@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,6 +30,7 @@ class UpdateTab(QWidget):
     autoplayToggled = Signal(bool)
     deviceNameRequested = Signal(str)
     pollIntervalChanged = Signal(int)
+    overlayDurationsApplied = Signal(float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +95,23 @@ class UpdateTab(QWidget):
             self._poll_selector.addItem(f"{ms} ms", ms)
         self._poll_selector.currentIndexChanged.connect(self._on_poll_changed)
         settings_layout.addRow("Polling /status", self._poll_selector)
+
+        # Overlay fade durations
+        self._overlay_fade_out = QDoubleSpinBox()
+        self._overlay_fade_out.setRange(0.0, 10.0)
+        self._overlay_fade_out.setSingleStep(0.1)
+        self._overlay_fade_out.setValue(1.0)
+        settings_layout.addRow("Overlay fade-out su Play (s)", self._overlay_fade_out)
+
+        self._overlay_fade_in = QDoubleSpinBox()
+        self._overlay_fade_in.setRange(0.0, 10.0)
+        self._overlay_fade_in.setSingleStep(0.1)
+        self._overlay_fade_in.setValue(1.0)
+        settings_layout.addRow("Overlay fade-in su Stop (s)", self._overlay_fade_in)
+
+        self._overlay_apply_btn = QPushButton("Applica ai selezionati")
+        self._overlay_apply_btn.clicked.connect(self._emit_overlay_apply)
+        settings_layout.addRow("", self._overlay_apply_btn)
         side_panel.addWidget(settings_box)
 
         autoplay_box = QGroupBox("Autoplay")
@@ -151,6 +170,14 @@ class UpdateTab(QWidget):
         ms = int(self._poll_selector.currentData())
         self.pollIntervalChanged.emit(ms)
 
+    def _emit_overlay_apply(self) -> None:
+        try:
+            out_s = float(self._overlay_fade_out.value())
+            in_s = float(self._overlay_fade_in.value())
+        except Exception:
+            return
+        self.overlayDurationsApplied.emit(out_s, in_s)
+
     def set_autoplay(self, enabled: bool) -> None:
         self._autoplay_toggle.setChecked(enabled)
 
@@ -163,6 +190,11 @@ class UpdateTab(QWidget):
         self._device_name_button.setEnabled(enabled)
         self._framework_actions_enabled = enabled
         self._update_framework_enabled()
+        # Abilita applicazione overlay solo se ci sono target
+        try:
+            self._overlay_apply_btn.setEnabled(enabled)
+        except Exception:
+            pass
 
     def set_build_state(self, running: bool, message: str | None = None) -> None:
         self._build_button.setEnabled(not running)

@@ -1,12 +1,14 @@
 import os, io, threading, socket, shutil, tarfile, zipfile, time, tempfile
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Optional, Any
 from urllib.request import urlopen, Request
 
 from fastapi import FastAPI, Query, Body
 from fastapi import UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+import asyncio
 import uvicorn
 
 from PIL import Image, ImageDraw, ImageFont
@@ -99,6 +101,10 @@ except Exception:
     GLib = _DummyGLib
     GObject = None
 
+import gi
+gi.require_version("Gst", "1.0")
+gi.require_version("GObject", "2.0")
+from gi.repository import Gst, GObject, GLib
 # ---------- Config ----------
 APP_DIR = Path(__file__).resolve().parent
 MEDIA_DIR = APP_DIR / "media"
@@ -176,6 +182,9 @@ VLC_EXTRA_ARGS = [arg for arg in os.environ.get("VLC_EXTRA_ARGS", "").split() if
 # Assicura che le immagini restino a schermo: imposta image-duration lungo se non presente
 if not any(a.startswith("--image-duration") for a in VLC_EXTRA_ARGS):
     VLC_EXTRA_ARGS.extend(["--image-duration=36000"])  # 10 ore
+# Mitigazione errori ALSA/XDG: usa aout dummy e disabilita audio se non specificato
+if not any(a.startswith("--aout=") for a in VLC_EXTRA_ARGS):
+    VLC_EXTRA_ARGS.extend(["--aout=dummy", "--no-audio"])  # headless: niente audio
 
 # ---------- Config persistence & backend init (ripristinate) ----------
 def load_persisted_framework():
@@ -553,6 +562,22 @@ app = FastAPI(title="Headless Video Player")
 
 main_loop = GLib.MainLoop()
 player = {"pipeline": None, "vb": None, "alpha": None, "loop": False, "state": "stopped"}
+# Simple explicit FSM view for client UIs: idle | preparing | playing | stopping
+fsm = {"state": "idle", "previous": None, "last_change": time.time(), "reason": None, "action": None, "error": None, "end_monitor_id": None}
+
+def _fsm_set(state: str, *, reason: str | None = None, action: str | None = None, error: str | None = None) -> None:
+    try:
+        prev = fsm.get("state")
+        fsm.update({
+            "previous": prev,
+            "state": state,
+            "last_change": time.time(),
+            "reason": reason,
+            "action": action,
+            "error": error,
+        })
+    except Exception:
+        pass
 playlist = {"items": [], "index": -1, "loop": True}
 splash = {"pipeline": None, "active": False}  # Tracking splash (se attivo copre lo schermo)
 preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipeline pre-caricata per prossimo elemento playlist
@@ -560,6 +585,8 @@ fade_seq = 0  # Sequenziatore per cancellare fade sovrapposti
 
 # Overlay controller (pipeline separata su plane dedicato)
 overlay = {"pipeline": None, "alpha": None, "active": False, "current_alpha": 0.0}
+# Sequenziatore per annullare fade overlay sovrapposti
+overlay_fade_seq = 0
 # Ultimo risultato del probe overlay (per /overlay/status)
 overlay_probe_info = {"detected": False, "method": None, "plane_id": None, "zpos_supported": None, "error": None}
 
@@ -1018,6 +1045,7 @@ def show_splash_until_play():
     pipeline.set_state(Gst.State.PLAYING)
     GLib.idle_add(push_splash_frame, src)
     print("[SPLASH] Splash avviato (attivo fino al primo play)", flush=True)
+    _fsm_set("idle")
 
 def hide_splash():
     if splash["active"] and splash["pipeline"]:
@@ -1080,7 +1108,7 @@ def overlay_show(alpha: float = 1.0):
             except Exception:
                 pass
         overlay["current_alpha"] = target_alpha
-        return
+    return
     # Se non abbiamo ancora un plane_id valido su KMS, prova autodetect prima di creare la pipeline
     if OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
         try:
@@ -1117,6 +1145,11 @@ def overlay_hide():
         overlay["active"] = False
     overlay["current_alpha"] = 0.0
     print("[OVERLAY] Disattivato", flush=True)
+    # Invalida eventuali fade pendenti
+    try:
+        globals()["overlay_fade_seq"] = int(globals().get("overlay_fade_seq", 0)) + 1
+    except Exception:
+        pass
 
 def overlay_set_alpha(value: float):
     if not overlay["active"] or not overlay["alpha"]:
@@ -1142,8 +1175,17 @@ def overlay_fade_to(target: float, duration_s: float = 1.0):
         cur = float(overlay.get("current_alpha", target))
     steps = max(1, int(duration_s / (FADE_INTERVAL_MS / 1000.0)))
     step_val = (max(0.0, min(1.0, target)) - cur) / steps
+    # Token di cancellazione
+    try:
+        globals()["overlay_fade_seq"] = int(globals().get("overlay_fade_seq", 0)) + 1
+    except Exception:
+        globals()["overlay_fade_seq"] = 1
+    my_seq = int(globals().get("overlay_fade_seq", 0))
     seq = {"i": 0, "val": cur}
     def stepper():
+        # Cancella se è stato lanciato un altro fade
+        if my_seq != int(globals().get("overlay_fade_seq", 0)):
+            return False
         if not overlay["active"] or not overlay["alpha"]:
             return False
         seq["val"] += step_val
@@ -1559,6 +1601,7 @@ def prepare_pipeline_for(path: str):
 
     preloaded.update({"path": path, "pipeline": p, "vb": vb, "alpha": af})
     print(f"[FASTSTART] Preparata pipeline con primo frame presentato e in PAUSED per {path}", flush=True)
+    _fsm_set("preparing")
 
 def adopt_preloaded(path: str) -> bool:
     """Se esiste una pipeline precaricata per 'path', adottala come player principale.
@@ -1587,6 +1630,7 @@ def adopt_preloaded(path: str) -> bool:
         # Sgancia sempre lo stato preloaded
         preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
     print("[FASTSTART] Adottata pipeline precaricata", flush=True)
+    _fsm_set("playing")
     return True
 
 def validate_media_file(path: Path) -> bool:
@@ -1619,17 +1663,20 @@ def start_play_with_path(path: str):
 
 def start_play(fade_in_seconds: float = 0.5):
     print(f"[PLAYER] Avvio riproduzione: {VIDEO_PATH}", flush=True)
+    _fsm_set("preparing", reason="start_play", action="play")
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
         if backend is None:
             print("[PLAYER] Nessun backend disponibile", flush=True)
+            _fsm_set("idle", reason="backend_missing", error="no_backend")
             return
         try:
             backend.play(VIDEO_PATH, player.get("loop"), fade_in_seconds)
         except Exception as exc:
             print(f"[PLAYER] Errore backend: {exc}", flush=True)
             player["state"] = "error"
+            _fsm_set("idle", reason="play_failed", error=str(exc))
             return
         # Per backend non-GST (es. cvlc): esegui fade-out overlay SOLO quando il contenuto risulta davvero in playing
         try:
@@ -1671,6 +1718,7 @@ def start_play(fade_in_seconds: float = 0.5):
         except Exception:
             pass
         persist_settings()
+        _fsm_set("playing", reason="backend_started")
         _autoplay_on_play_started(VIDEO_PATH)
         return
     media_path = Path(VIDEO_PATH)
@@ -1693,8 +1741,10 @@ def start_play(fade_in_seconds: float = 0.5):
         if playlist["items"]:
             schedule_preload()
         print("[PLAYER] Riproduzione avviata (nuova pipeline)", flush=True)
+        _fsm_set("playing", reason="gst_pipeline_started")
     else:
         print("[PLAYER] Riproduzione avviata (pipeline precaricata)", flush=True)
+        _fsm_set("playing", reason="gst_adopted_preloaded")
     # Fade-in automatico
     if fade_in_seconds and fade_in_seconds > 0:
         if player["alpha"]:
@@ -1707,6 +1757,53 @@ def start_play(fade_in_seconds: float = 0.5):
     # Una volta che si avvia la riproduzione, la readiness per il "go" può considerarsi consumata
     try:
         show_state.update({"ready": False})
+    except Exception:
+        pass
+
+    # Start end-of-media monitor to pre-fade overlay (GST only)
+    _start_end_monitor()
+
+def _start_end_monitor():
+    """Monitor remaining time and trigger overlay fade-in shortly before end (GST only)."""
+    try:
+        # Cancel previous monitor
+        mid = fsm.get("end_monitor_id")
+        if mid:
+            try:
+                GLib.source_remove(mid)
+            except Exception:
+                pass
+            fsm["end_monitor_id"] = None
+        if current_framework["name"] != "gst":
+            return
+        p = player.get("pipeline")
+        if not p:
+            return
+        lead_ns = int(max(0.2, float(OVERLAY_FADE_IN_ON_STOP_S)) * Gst.SECOND)
+
+        def _tick():
+            try:
+                if player.get("state") != "playing":
+                    return True
+                ok_dur, duration = p.query_duration(Gst.Format.TIME)  # type: ignore[attr-defined]
+                ok_pos, position = p.query_position(Gst.Format.TIME)  # type: ignore[attr-defined]
+            except Exception:
+                ok_dur, ok_pos, duration, position = False, False, 0, 0
+            if ok_dur and ok_pos and duration and duration > 0:
+                remaining = duration - position
+                if 0 <= remaining <= lead_ns:
+                    try:
+                        if OVERLAY_ENABLED:
+                            overlay_show(alpha=0.0)
+                            overlay_fade_to(1.0, max(0.05, float(OVERLAY_FADE_IN_ON_STOP_S)))
+                            gui_log("overlay_prefade_before_eos", data={"lead_ns": lead_ns})
+                    except Exception:
+                        pass
+                    # keep monitoring, but we did the fade
+                    return False
+            return True
+
+        fsm["end_monitor_id"] = GLib.timeout_add(200, _tick)
     except Exception:
         pass
 
@@ -1755,6 +1852,7 @@ def resume_play():
             pass
 
 def stop_play():
+    _fsm_set("stopping", reason="stop_play")
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
@@ -1793,6 +1891,7 @@ def stop_play():
             show_idle_black()
     except Exception:
         pass
+    _fsm_set("idle", reason="stopped")
 
 def set_loop(on: bool):
     player["loop"] = bool(on)
@@ -2193,6 +2292,7 @@ def api_faststart_prepare(
                 gui_log("faststart_prepare CVLC", data={"path": chosen})
             except Exception:
                 pass
+            _fsm_set("preparing")
             return {"ok": True, "prepared": chosen}
         except Exception as e:
             try:
@@ -2262,6 +2362,8 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                 gui_log("playing", data={"path": target, "backend": "gst", "loop": player.get("loop")})
             except Exception:
                 pass
+            _fsm_set("playing")
+            _start_end_monitor()
             return {"ok": True}
         # cvlc/vlc/mpv
         try:
@@ -2317,6 +2419,7 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                 gui_log("playing", data={"path": target, "backend": current_framework["name"], "loop": player.get("loop")})
             except Exception:
                 pass
+            _fsm_set("playing")
             return {"ok": True}
         except Exception as e:
             try:
@@ -2478,9 +2581,18 @@ def status():
         "version_current": VERSION,
         "version_available": current_update["available"],
         "player_state": player["state"],
+        "fsm_state": fsm.get("state", "unknown"),
+        "fsm": {
+            "state": fsm.get("state"),
+            "previous": fsm.get("previous"),
+            "last_change": fsm.get("last_change"),
+            "reason": fsm.get("reason"),
+            "action": fsm.get("action"),
+            "error": fsm.get("error"),
+        },
         "splash_active": splash["active"],
         "overlay_active": overlay["active"],
-    "overlay_alpha": overlay.get("current_alpha"),
+        "overlay_alpha": overlay.get("current_alpha"),
         "device_name": DEVICE_NAME,
         "name": DEVICE_NAME,
         "current_media": current_name,
@@ -2991,16 +3103,19 @@ def api_loop(on: int = Query(1)):
 
 @app.post("/stop")
 def api_stop():
+    t0 = time.time()
     # Invalida azioni pianificate e ferma tutti i timer noti
     try:
         cancel_all_schedules()
     except Exception:
         pass
+    t_cancel = time.time()
     # Ferma riproduzione backend/pipeline e sgancia preload
     try:
         stop_play()
     except Exception:
         pass
+    t_after_stop = time.time()
     try:
         if preloaded.get("pipeline"):
             try:
@@ -3020,6 +3135,7 @@ def api_stop():
     except Exception:
         pass
     # Forza overlay nero pieno (best-effort) per garantire schermo nero immediato
+    t_before_overlay = time.time()
     try:
         if OVERLAY_ENABLED:
             overlay_show(alpha=1.0)
@@ -3034,7 +3150,19 @@ def api_stop():
             pass
     # Stato
     player["state"] = "stopped"
-    return {"ok": True, "state": player.get("state", "stopped")}
+    t_end = time.time()
+    diagnostics = {}
+    try:
+        diagnostics = {
+            "total_ms": int((t_end - t0) * 1000),
+            "cancel_ms": int((t_cancel - t0) * 1000),
+            "stop_ms": int((t_after_stop - t0) * 1000),
+            "overlay_ms": int((t_end - t_before_overlay) * 1000),
+        }
+        gui_log("stop_diagnostics", data=diagnostics)
+    except Exception:
+        diagnostics = {}
+    return {"ok": True, "state": player.get("state", "stopped"), "diagnostics": diagnostics}
 
 @app.post("/fade_in")
 def api_fade_in(seconds: float = Query(1.0), in_time: float | None = Query(None)):
@@ -4097,6 +4225,7 @@ def system_reboot():
             except FileNotFoundError:
                 print(f"[REBOOT] Comando non trovato: {cmd[0]}", flush=True)
                 result["attempts"].append({"cmd": cmd, "error": "not_found"})
+
             except Exception as exc:
                 print(f"[REBOOT] Errore imprevisto con {' '.join(cmd)}: {exc}", flush=True)
                 result["attempts"].append({"cmd": cmd, "error": str(exc)})
@@ -4104,6 +4233,141 @@ def system_reboot():
 
     threading.Thread(target=worker, daemon=True).start()
     return JSONResponse(status_code=202, content={"ok": True, "message": "Reboot richiesto"})
+
+@app.get("/system/disk")
+def system_disk():
+    """Ritorna spazio disco per APP_DIR, MEDIA_DIR e /tmp."""
+    def _entry(p: Path) -> dict:
+        try:
+            usage = shutil.disk_usage(str(p))
+            total = int(usage.total)
+            used = int(usage.used)
+            free = int(usage.free)
+            percent = 0.0 if total == 0 else (used * 100.0 / total)
+            return {"path": str(p), "total": total, "used": used, "free": free, "percent": percent}
+        except Exception as exc:
+            return {"path": str(p), "error": str(exc)}
+    payload = {
+        "ok": True,
+        "paths": {
+            "app_dir": _entry(APP_DIR),
+            "media_dir": _entry(MEDIA_DIR),
+            "tmp": _entry(Path("/tmp")),
+        },
+    }
+    return payload
+
+@app.post("/system/service/restart")
+def system_service_restart(name: Optional[str] = Query(None)):
+    """Riavvia il servizio systemd dell'applicazione in background.
+
+    Usa APP_SERVICE dall'ambiente se presente, altrimenti "headless-player.service".
+    Risponde 202 immediatamente; il processo potrebbe essere terminato dal restart.
+    """
+    env_name = os.environ.get("APP_SERVICE", "headless-player.service")
+    svc = (name or env_name or "headless-player.service").strip()
+    if not svc.endswith(".service"):
+        svc = f"{svc}.service"
+    print(f"[SERVICE] Richiesta restart di {svc}", flush=True)
+
+    def worker():
+        cmds = [
+            ["sudo", "-n", "systemctl", "restart", svc],
+            ["systemctl", "restart", svc],
+            ["sudo", "-n", "service", svc.replace(".service", ""), "restart"],
+            ["service", svc.replace(".service", ""), "restart"],
+        ]
+        for cmd in cmds:
+            try:
+                print(f"[SERVICE] Eseguo: {' '.join(cmd)}", flush=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, text=True)
+                print("[SERVICE] Restart inviato con successo", flush=True)
+                return
+            except subprocess.CalledProcessError as exc:
+                msg = (exc.stderr or exc.stdout or "").strip()
+                print(f"[SERVICE] Comando fallito ({' '.join(cmd)}): {msg}", flush=True)
+            except subprocess.TimeoutExpired:
+                print(f"[SERVICE] Timeout eseguendo {' '.join(cmd)}", flush=True)
+            except FileNotFoundError:
+                print(f"[SERVICE] Comando non trovato: {cmd[0]}", flush=True)
+            except Exception as exc:
+                print(f"[SERVICE] Errore imprevisto con {' '.join(cmd)}: {exc}", flush=True)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return JSONResponse(status_code=202, content={"ok": True, "message": f"Restart richiesto per {svc}"})
+
+@app.get("/logs/cvlc")
+def logs_cvlc(lines: int = Query(200, ge=1, le=2000)):
+    """Ritorna le ultime N linee del log stderr di cvlc (se disponibile)."""
+    path = os.environ.get("CVLC_LOG", "/tmp/cvlc_stderr.log")
+    p = Path(path)
+    if not p.exists():
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"Log non trovato: {path}"})
+    try:
+        with open(p, "rb") as f:
+            try:
+                data = f.read()
+            except Exception:
+                data = b""
+        text = data.decode("utf-8", errors="ignore")
+        all_lines = text.splitlines()
+        tail = all_lines[-int(lines):]
+        truncated = len(all_lines) > len(tail)
+        return {"ok": True, "path": path, "lines": tail, "size": p.stat().st_size, "truncated": truncated}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+@app.get("/logs/cvlc/stream")
+def logs_cvlc_stream(lines: int = Query(50, ge=0, le=2000), format: str = Query("sse")):
+    """Stream live del log di CVLC.
+    - lines: numero di righe iniziali da tailare prima dello streaming
+    - format: "sse" (text/event-stream con 'data:' per riga) oppure "raw" (text/plain)
+    """
+    path = os.environ.get("CVLC_LOG", "/tmp/cvlc_stderr.log")
+    p = Path(path)
+    if not p.exists():
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"Log non trovato: {path}"})
+
+    async def _gen():
+        try:
+            with open(p, "rb", buffering=0) as f:
+                # Tail iniziale
+                if lines and lines > 0:
+                    try:
+                        data = f.read()
+                    except Exception:
+                        data = b""
+                    text = data.decode("utf-8", errors="ignore")
+                    init_lines = text.splitlines()[-int(lines):]
+                    for ln in init_lines:
+                        if format == "sse":
+                            yield ("data: " + ln + "\n\n").encode("utf-8", "ignore")
+                        else:
+                            yield (ln + "\n").encode("utf-8", "ignore")
+                # Segui gli aggiornamenti (tail -f)
+                f.seek(0, os.SEEK_END)
+                while True:
+                    chunk = f.readline()
+                    if chunk:
+                        try:
+                            ln = chunk.decode("utf-8", errors="ignore").rstrip("\n")
+                        except Exception:
+                            ln = ""
+                        if ln:
+                            if format == "sse":
+                                yield ("data: " + ln + "\n\n").encode("utf-8", "ignore")
+                            else:
+                                yield (ln + "\n").encode("utf-8", "ignore")
+                    else:
+                        await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            # Termina silenziosamente in caso di errore
+            return
+
+    media = "text/event-stream" if format == "sse" else "text/plain"
+    return StreamingResponse(_gen(), media_type=media)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=APP_PORT)

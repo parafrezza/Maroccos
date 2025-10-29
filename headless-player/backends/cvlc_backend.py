@@ -27,6 +27,8 @@ class CvlcBackend:
         self._loop = False
         self._monitor_thread: threading.Thread | None = None
         self._monitor_stop = False
+        self._prefade_started = False
+        self._endpause_done = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -69,9 +71,68 @@ class CvlcBackend:
                         pass
                     else:
                         try:
-                            st = ctrl.status().get("state")
+                            status = ctrl.status()
+                            st = status.get("state")
                         except Exception:
-                            st = None
+                            status = {}; st = None
+                        # Pre-fade overlay prima della fine clip: quando playing e il tempo residuo <= durata fade-in su stop
+                        try:
+                            if st == "playing":
+                                # Leggi tempo e durata
+                                cur = status.get("time")
+                                total = status.get("length") or status.get("duration")
+                                rem: float | None = None
+                                try:
+                                    if isinstance(cur, (int, float)) and isinstance(total, (int, float)) and float(total) > 0:
+                                        rem = max(0.0, float(total) - float(cur))
+                                except Exception:
+                                    rem = None
+                                # 1) Prefade overlay prima della fine
+                                if rem is not None and rem <= max(0.1, float(self._globals.get("OVERLAY_FADE_IN_ON_STOP_S", 1.0)) + 0.05):
+                                    if not self._prefade_started:
+                                        self._prefade_started = True
+                                        try:
+                                            overlay_fade = self._globals.get("overlay_fade_to")
+                                            if callable(overlay_fade):
+                                                dur = min(max(0.05, float(self._globals.get("OVERLAY_FADE_IN_ON_STOP_S", 1.0))), max(0.05, rem))
+                                                overlay_fade(1.0, dur)
+                                                try:
+                                                    g_log = self._globals.get("gui_log")
+                                                    if callable(g_log):
+                                                        g_log("overlay_prefade_before_end", data={"remaining": rem, "duration": dur})
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                # 2) Pausa all'ultimo frame (se non in loop)
+                                if rem is not None and rem <= 0.15 and not self._endpause_done and not bool(self._loop):
+                                    try:
+                                        ctrl.pause()
+                                        self._endpause_done = True
+                                        self._globals["player"]["state"] = "paused"
+                                        # assicura idle black e overlay nero già attivo
+                                        try:
+                                            show_idle = self._globals.get("show_idle_black")
+                                            if callable(show_idle):
+                                                show_idle()
+                                        except Exception:
+                                            pass
+                                        try:
+                                            g_log = self._globals.get("gui_log")
+                                            if callable(g_log):
+                                                g_log("paused_at_last_frame", data={"remaining": rem})
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                            else:
+                                # Reset prefade flag quando non in playing
+                                if self._prefade_started:
+                                    self._prefade_started = False
+                                if self._endpause_done:
+                                    self._endpause_done = False
+                        except Exception:
+                            pass
                         if st == "stopped":
                             try:
                                 splash = self._globals.get("splash")
@@ -151,6 +212,8 @@ class CvlcBackend:
         self._loop = final_loop
         self._globals["VIDEO_PATH"] = str(media_path)
         self._globals["player"]["state"] = "playing"
+        self._prefade_started = False
+        self._endpause_done = False
         self._hide_splash()
 
     def stop(self) -> None:
@@ -160,6 +223,8 @@ class CvlcBackend:
         except VlcError as exc:
             raise RuntimeError(str(exc)) from exc
         self._globals["player"]["state"] = "stopped"
+        self._prefade_started = False
+        self._endpause_done = False
 
     def pause(self) -> None:
         """Pausa robusta: gestisce la corsa di stato immediatamente dopo un GO.
@@ -206,6 +271,8 @@ class CvlcBackend:
         if last_exc is not None:
             raise RuntimeError(str(last_exc)) from last_exc
         self._globals["player"]["state"] = "paused"
+        self._prefade_started = False
+        self._endpause_done = False
 
     def resume(self) -> None:
         controller = self._get_controller()
@@ -214,6 +281,8 @@ class CvlcBackend:
         except VlcError as exc:
             raise RuntimeError(str(exc)) from exc
         self._globals["player"]["state"] = "playing"
+        self._prefade_started = False
+        self._endpause_done = False
 
     def set_loop(self, enabled: bool) -> None:
         controller = self._get_controller()
@@ -266,6 +335,8 @@ class CvlcBackend:
             self._controller = None
             self._monitor_stop = True
         controller.shutdown()
+        self._prefade_started = False
+        self._endpause_done = False
 
     # ---- Fast-start helpers ----
     def faststart_prepare(self, path: str) -> None:
@@ -280,6 +351,8 @@ class CvlcBackend:
         # aggiorna stato globale e nascondi splash
         self._globals["VIDEO_PATH"] = str(media_path)
         self._globals["player"]["state"] = "paused"
+        self._prefade_started = False
+        self._endpause_done = False
         self._hide_splash()
 
     def faststart_go(self) -> None:
@@ -295,3 +368,5 @@ class CvlcBackend:
                 controller.play(str(last), loop=self._loop, fade_in=0.0)
         except VlcError as exc:
             raise RuntimeError(str(exc)) from exc
+        self._prefade_started = False
+        self._endpause_done = False

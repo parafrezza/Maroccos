@@ -48,7 +48,11 @@ class ApplicationController(QObject):
     autoplayStatusReceived = Signal(str, dict)
     frameworkStatusReceived = Signal(str, dict)
     statusReceived = Signal(str, dict)
+    deviceMediaReceived = Signal(str, dict)
     playlistPhaseChanged = Signal(str)
+    # Live log streaming (CVLC)
+    logLiveLine = Signal(str)
+    logLiveStatusChanged = Signal(bool)
 
     def __init__(self, settings_path: Path) -> None:
         super().__init__()
@@ -61,6 +65,9 @@ class ApplicationController(QObject):
         self._active_bundle: Path | None = None
         self._active_bundle_version: str | None = None
         self._bundle_building = False
+        # Live log worker
+        self._log_worker_stop = False
+        self._log_worker_future: concurrent.futures.Future | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -300,6 +307,67 @@ class ApplicationController(QObject):
         """Fetch general /status from a player."""
         self._executor.submit(self._invoke_status, player)
 
+    def refresh_device_media(self, player: PlayerRecord) -> None:
+        """Fetch /media listing from a player."""
+        self._executor.submit(self._invoke_device_media, player)
+
+    # ------------------------------------------------------------------
+    # Live log streaming (CVLC)
+    # ------------------------------------------------------------------
+    def start_log_live(self, player: PlayerRecord, *, lines: int = 50) -> None:
+        # Stop any previous
+        self.stop_log_live()
+        self._log_worker_stop = False
+        self._log_worker_future = self._executor.submit(self._log_live_worker, player, int(lines))
+
+    def stop_log_live(self) -> None:
+        self._log_worker_stop = True
+        fut = self._log_worker_future
+        self._log_worker_future = None
+        # best-effort cancel
+        try:
+            if fut and not fut.done():
+                fut.cancel()
+        except Exception:
+            pass
+        self.logLiveStatusChanged.emit(False)
+
+    def _log_live_worker(self, player: PlayerRecord, lines: int) -> None:
+        client = self._client_for(player)
+        base = client.base_url.rstrip("/")
+        url = f"{base}/logs/cvlc/stream"
+        try:
+            params = {"lines": max(0, min(lines, 2000)), "format": "sse"}
+            # Use requests with stream=True to read line-by-line
+            resp = requests.get(url, params=params, stream=True, timeout=10)
+            resp.raise_for_status()
+        except Exception as exc:
+            self.logMessage.emit(f"Log live non disponibile su {player.ip}: {exc}")
+            self.logLiveStatusChanged.emit(False)
+            return
+        self.logLiveStatusChanged.emit(True)
+        try:
+            for raw in resp.iter_lines(decode_unicode=True):
+                if self._log_worker_stop:
+                    break
+                if raw is None:
+                    continue
+                line = raw.strip()
+                if not line:
+                    continue
+                # SSE format: 'data: ...'
+                if line.startswith("data:"):
+                    line = line[5:].lstrip()
+                self.logLiveLine.emit(line)
+        except Exception:
+            pass
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            self.logLiveStatusChanged.emit(False)
+
     def upload_media(self, media_path: Path, targets: Iterable[PlayerRecord]) -> None:
         target_list = list(targets)
         if not target_list:
@@ -329,6 +397,32 @@ class ApplicationController(QObject):
         target_name = (rel_path_str or media_path.name)
         for player in target_list:
             self._executor.submit(self._invoke_upload, player, media_url, target_name, media_path)
+
+    def apply_overlay_settings(self, fade_out_on_play_s: float, fade_in_on_stop_s: float, targets: Iterable[PlayerRecord]) -> None:
+        """Apply overlay fade durations to selected players via /settings/reload."""
+        selected = list(targets)
+        if not selected:
+            self.logMessage.emit("Nessun player selezionato per impostare le durate overlay")
+            return
+        try:
+            payload = {
+                "overlay_fade_out_on_play_s": float(fade_out_on_play_s),
+                "overlay_fade_in_on_stop_s": float(fade_in_on_stop_s),
+            }
+        except Exception:
+            self.logMessage.emit("Valori non validi per le durate overlay")
+            return
+        for player in selected:
+            self._executor.submit(self._invoke_apply_overlay_settings, player, payload)
+
+    def _invoke_apply_overlay_settings(self, player: PlayerRecord, payload: dict[str, Any]) -> None:
+        client = self._client_for(player)
+        try:
+            response = client.request("post", "/settings/reload", json=payload, timeout=10)
+        except Exception as exc:
+            self.logMessage.emit(f"Impostazioni overlay su {player.ip} fallite: {exc}")
+            return
+        self.commandCompleted.emit(player.ip, response)
 
     # ------------------------------------------------------------------
     # Playlist orchestration
@@ -496,6 +590,16 @@ class ApplicationController(QObject):
             payload = response if isinstance(response, dict) else {"ok": False, "error": "Risposta non valida"}
         self.statusReceived.emit(player.ip, payload)
 
+    def _invoke_device_media(self, player: PlayerRecord) -> None:
+        client = self._client_for(player)
+        try:
+            response = client.request("get", "/media", timeout=10)
+        except Exception as exc:
+            payload: dict[str, Any] = {"ok": False, "error": str(exc)}
+        else:
+            payload = response if isinstance(response, dict) else {"ok": False, "error": "Risposta non valida"}
+        self.deviceMediaReceived.emit(player.ip, payload)
+
     def _execute_command(self, client: ApiClient, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         cmd = command.lower()
         if cmd == "play":
@@ -597,6 +701,12 @@ class ApplicationController(QObject):
                 return client.request("post", "/system/reboot", timeout=2)
             except requests.RequestException:
                 return {"ok": True, "message": "Reboot command dispatched"}
+        if cmd == "service_restart":
+            try:
+                # 202 Accepted expected
+                return client.request("post", "/system/service/restart", timeout=2)
+            except requests.RequestException:
+                return {"ok": True, "message": "Service restart dispatched"}
         if cmd == "run_setup":
             force = bool(payload.get("force", False))
             return client.request("post", "/maintenance/run_setup", json={"force": force}, timeout=120)
@@ -622,6 +732,14 @@ class ApplicationController(QObject):
             if filename:
                 body["filename"] = filename
             return client.request("post", "/download_asset", json=body, timeout=120)
+        if cmd == "fix_permissions":
+            return client.request("post", "/maintenance/fix_permissions", timeout=30)
+        if cmd == "disk_status":
+            return client.request("get", "/system/disk", timeout=5)
+        if cmd == "logs_cvlc":
+            lines = int(payload.get("lines", 200)) if isinstance(payload, dict) else 200
+            params: dict[str, Any] = {"lines": max(1, min(lines, 2000))}
+            return client.request("get", "/logs/cvlc", params=params, timeout=5)
         # Overlay controls
         if cmd == "overlay_show":
             return client.request("post", "/overlay/show")

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -117,10 +118,13 @@ class CommandsTab(QWidget):
     miscCommandTriggered = Signal(str, dict)
     uploadRequested = Signal(str)
     mediaDirectoryRequested = Signal()
+    deviceMediaRefreshRequested = Signal()
     # Playlist signals
     playlistChanged = Signal(list)
     playlistPushRequested = Signal(list, bool)
     startShowRequested = Signal(object)
+    # Live CVLC log
+    logLiveToggleRequested = Signal(bool, int)
 
     _RELATIVE_ROLE = Qt.UserRole + 1
 
@@ -184,6 +188,18 @@ class CommandsTab(QWidget):
         controls.addWidget(self._schedule_dt)
         controls.addStretch(1)
         playback_layout.addLayout(controls, controls_row, 0, 1, 3)
+        # Action badge row (shows short-lived action like NEXT/PREV/PLAY)
+        action_row = QHBoxLayout()
+        action_row.addWidget(QLabel("Azione:"))
+        self._action_badge = QLabel("—")
+        self._action_badge.setVisible(False)
+        # pill style
+        self._action_badge.setStyleSheet(
+            "padding: 2px 8px; border-radius: 9px; background-color: #34495e; color: white; font-weight: 600;"
+        )
+        action_row.addWidget(self._action_badge)
+        action_row.addStretch(1)
+        playback_layout.addLayout(action_row, controls_row + 1, 0, 1, 3)
         layout.addWidget(playback_box, 0, 0)
 
         misc_box = QGroupBox("Altri Comandi")
@@ -246,6 +262,11 @@ class CommandsTab(QWidget):
         self._fs_go.clicked.connect(lambda _=False: self._emit_faststart_go())
         fs_row.addWidget(self._fs_prepare)
         fs_row.addWidget(self._fs_go)
+        # Indicazione sorgente usata per il Prepare
+        fs_row.addSpacing(8)
+        fs_row.addWidget(QLabel("Sorgente:"))
+        self._fs_source = QLabel("—")
+        fs_row.addWidget(self._fs_source)
         fs_row.addStretch(1)
         aux_layout.addLayout(fs_row)
 
@@ -272,6 +293,31 @@ class CommandsTab(QWidget):
 
         layout.addWidget(aux_box, 2, 0)
 
+        # Live CVLC log box
+        logs_box = QGroupBox("Log CVLC (live)")
+        logs_layout = QVBoxLayout(logs_box)
+        logs_controls = QHBoxLayout()
+        self._log_live_button = QPushButton("Start Live")
+        self._log_live_button.setCheckable(True)
+        self._log_live_button.toggled.connect(self._emit_log_live_toggle)
+        self._log_live_lines = QSpinBox()
+        self._log_live_lines.setRange(0, 2000)
+        self._log_live_lines.setValue(100)
+        logs_controls.addWidget(self._log_live_button)
+        logs_controls.addSpacing(8)
+        logs_controls.addWidget(QLabel("Righe iniziali:"))
+        logs_controls.addWidget(self._log_live_lines)
+        logs_controls.addStretch(1)
+        self._log_live_clear = QPushButton("Pulisci")
+        self._log_live_clear.clicked.connect(lambda _=False: self._cvlc_log_view.clear())
+        logs_controls.addWidget(self._log_live_clear)
+        logs_layout.addLayout(logs_controls)
+        self._cvlc_log_view = QTextEdit()
+        self._cvlc_log_view.setReadOnly(True)
+        self._cvlc_log_view.setMinimumHeight(120)
+        logs_layout.addWidget(self._cvlc_log_view)
+        layout.addWidget(logs_box, 3, 0)
+
         media_box = QGroupBox("Media disponibili")
         media_layout = QVBoxLayout(media_box)
         choose_row = QHBoxLayout()
@@ -288,7 +334,30 @@ class CommandsTab(QWidget):
         self._upload_button.setEnabled(False)
         self._upload_button.clicked.connect(self._emit_upload)
         media_layout.addWidget(self._upload_button)
-        layout.addWidget(media_box, 0, 1, 2, 1)
+        layout.addWidget(media_box, 0, 1)
+
+        # Media presenti sul device
+        device_box = QGroupBox("Media sul device")
+        device_layout = QVBoxLayout(device_box)
+        dev_controls = QHBoxLayout()
+        self._device_refresh = QPushButton("Aggiorna")
+        self._device_refresh.clicked.connect(self.deviceMediaRefreshRequested.emit)
+        self._device_clear = QPushButton("Svuota media")
+        self._device_clear.clicked.connect(lambda _=False: self.miscCommandTriggered.emit("media_clear", {}))
+        self._device_auto = QCheckBox("Auto-refresh")
+        self._device_auto.setChecked(True)
+        dev_controls.addWidget(self._device_refresh)
+        dev_controls.addWidget(self._device_clear)
+        dev_controls.addSpacing(8)
+        dev_controls.addWidget(self._device_auto)
+        dev_controls.addStretch(1)
+        device_layout.addLayout(dev_controls)
+        self._device_media_list = QListWidget()
+        # Permetti la selezione singola per scegliere il media per fast-start
+        self._device_media_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._device_media_list.itemSelectionChanged.connect(self._update_faststart_enabled)
+        device_layout.addWidget(self._device_media_list)
+        layout.addWidget(device_box, 1, 1)
 
         layout.setColumnStretch(1, 1)
         # Blink timer for timing LED (off by default)
@@ -297,6 +366,10 @@ class CommandsTab(QWidget):
         self._blink_timer.timeout.connect(self._toggle_led_blink)
         self._blinking = False
         self._blink_state = False
+        # Auto-hide timer for action badge
+        self._action_timer = QTimer(self)
+        self._action_timer.setSingleShot(True)
+        self._action_timer.timeout.connect(lambda: self._action_badge.setVisible(False))
 
         # Playlist box
         playlist_box = QGroupBox("Playlist")
@@ -374,6 +447,71 @@ class CommandsTab(QWidget):
         # durations map for computing total TC
         self._media_durations: dict[str, float] = {}
 
+        # Stato iniziale dei controlli Fast-Start
+        self._update_faststart_enabled()
+
+    # -----------------------------
+    # Live CVLC log UI helpers
+    # -----------------------------
+    def _emit_log_live_toggle(self, checked: bool) -> None:
+        # Emit request with current lines value
+        try:
+            lines = int(self._log_live_lines.value())
+        except Exception:
+            lines = 50
+        self.logLiveToggleRequested.emit(bool(checked), int(lines))
+
+    def set_log_live_active(self, active: bool) -> None:
+        # Reflect actual connection state
+        self._log_live_button.blockSignals(True)
+        try:
+            self._log_live_button.setChecked(bool(active))
+            self._log_live_button.setText("Stop Live" if active else "Start Live")
+        finally:
+            self._log_live_button.blockSignals(False)
+
+    def append_log_live_line(self, text: str) -> None:
+        try:
+            self._cvlc_log_view.append(text)
+        except Exception:
+            pass
+
+    def is_log_live_active(self) -> bool:
+        try:
+            return bool(self._log_live_button.isChecked())
+        except Exception:
+            return False
+
+    # -----------------------------
+    # Device media API
+    # -----------------------------
+    def set_device_media_items(self, items: list[dict]) -> None:
+        """Aggiorna la lista dei media presenti sul device selezionato.
+        items attesi come lista di dict: {name, size, modified, type}
+        """
+        self._device_media_list.clear()
+        for it in (items or []):
+            try:
+                name = str(it.get("name") or it.get("path") or "?")
+                size = float(it.get("size", 0.0))
+                mb = size / (1024 * 1024)
+                label = f"{name}  ({mb:.1f} MB)"
+            except Exception:
+                label = str(it)
+            item = QListWidgetItem(label)
+            # Conserva il nome file come payload per fast-start
+            try:
+                item.setData(Qt.UserRole, name)
+            except Exception:
+                pass
+            self._device_media_list.addItem(item)
+
+    def wants_device_auto_refresh(self) -> bool:
+        try:
+            return bool(self._device_auto.isChecked())
+        except Exception:
+            return True
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -432,6 +570,11 @@ class CommandsTab(QWidget):
             {"label": "Sistema: Mostra splash", "command": "show_splash"},
             {"label": "Sistema: Nascondi splash", "command": "hide_splash"},
             {
+                "label": "Sistema: Riavvia servizio player",
+                "command": "service_restart",
+                "confirm": "Riavviare il servizio headless-player sui device selezionati?",
+            },
+            {
                 "label": "Sistema: Shutdown",
                 "command": "shutdown",
                 "confirm": "Spegnere i player selezionati?",
@@ -442,13 +585,26 @@ class CommandsTab(QWidget):
                 "confirm": "Riavviare i player selezionati?",
             },
             {
+                "label": "Sistema: Check spazio disco",
+                "command": "disk_status",
+            },
+            {
                 "label": "Manutenzione: Esegui setup.sh",
                 "command": "run_setup",
+            },
+            {
+                "label": "Manutenzione: Fix permissions",
+                "command": "fix_permissions",
             },
             {
                 "label": "Media: Cancella cartella media",
                 "command": "media_clear",
                 "confirm": "Cancellare tutti i file nella cartella media del player?",
+            },
+            {
+                "label": "Logs: Mostra CVLC (ultime 200 righe)",
+                "command": "logs_cvlc",
+                "defaults": {"lines": 200},
             },
             {
                 "label": "Media: Crea playlist automatica",
@@ -550,15 +706,25 @@ class CommandsTab(QWidget):
         if not self._targets_enabled:
             return
         payload: dict[str, Any] = {}
-        # Se possibile, includi media selezionato
-        item = self._media_list.currentItem()
-        if item:
-            relative = item.data(self._RELATIVE_ROLE)
-            absolute = item.data(Qt.UserRole)
-            if relative:
-                payload["filename"] = relative
-            elif absolute:
-                payload["path"] = absolute
+        # Preferisci il media selezionato sul device
+        dev_item = self._device_media_list.currentItem()
+        if dev_item:
+            try:
+                dev_name = dev_item.data(Qt.UserRole)
+                if isinstance(dev_name, str) and dev_name:
+                    payload["filename"] = dev_name
+            except Exception:
+                pass
+        # Fallback: media locale
+        if not payload:
+            item = self._media_list.currentItem()
+            if item:
+                relative = item.data(self._RELATIVE_ROLE)
+                absolute = item.data(Qt.UserRole)
+                if relative:
+                    payload["filename"] = relative
+                elif absolute:
+                    payload["path"] = absolute
         self.miscCommandTriggered.emit("faststart_prepare", payload)
 
     def _emit_faststart_go(self) -> None:
@@ -637,6 +803,27 @@ class CommandsTab(QWidget):
         else:
             self._fs_prepare.setStyleSheet("")
 
+    def set_action_badge(self, action: str | None) -> None:
+        """Show a short-lived badge for the given action (next/prev/play/faststart_go)."""
+        if not action:
+            self._action_badge.setVisible(False)
+            self._action_timer.stop()
+            return
+        label_map = {
+            "next": "NEXT",
+            "prev": "PREV",
+            "play": "PLAY",
+            "faststart_go": "FAST",
+        }
+        text = label_map.get(str(action).lower(), str(action).upper())
+        try:
+            self._action_badge.setText(text)
+            self._action_badge.setVisible(True)
+            # Refresh timer (1.6s)
+            self._action_timer.start(1600)
+        except Exception:
+            pass
+
     def _toggle_led_blink(self) -> None:
         # Alternate between strong and dim color while blinking
         if not self._blinking:
@@ -658,6 +845,7 @@ class CommandsTab(QWidget):
 
     def _on_media_selection_changed(self) -> None:
         self._update_upload_button(self._targets_enabled)
+        self._update_faststart_enabled()
 
     def _update_misc_button(self, enabled: bool) -> None:
         can_run = enabled and self._command_selector.currentIndex() > 0
@@ -668,6 +856,29 @@ class CommandsTab(QWidget):
         self._upload_button.setEnabled(targets_enabled and has_item)
         # Push abilitato in base alla presenza elementi e target
         self._push_playlist.setEnabled(self._targets_enabled and self._playlist.count() > 0)
+
+    def _update_faststart_enabled(self) -> None:
+        """Abilita/Disabilita il pulsante Prepare in base alle selezioni correnti.
+        Aggiorna anche l'etichetta sorgente (Device / Locale / —).
+        """
+        has_dev = self._device_media_list.currentItem() is not None
+        has_local = self._media_list.currentItem() is not None
+        enabled = self._targets_enabled and (has_dev or has_local)
+        try:
+            self._fs_prepare.setEnabled(enabled)
+            if has_dev:
+                src = "Device"
+            elif has_local:
+                src = "Locale"
+            else:
+                src = "—"
+            self._fs_source.setText(src)
+            if not enabled:
+                self._fs_prepare.setToolTip("Seleziona un media dal device o dalla lista locale per abilitare il Prepare")
+            else:
+                self._fs_prepare.setToolTip("")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Playlist helpers

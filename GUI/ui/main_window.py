@@ -72,6 +72,10 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._poll_status_tick)
         self._status_primary = None
+        # Device media polling timer
+        self._device_media_timer = QTimer(self)
+        self._device_media_timer.setInterval(3000)
+        self._device_media_timer.timeout.connect(self._device_media_tick)
         # Playlist push tracking
         self._playlist_pending: set[str] = set()
         self._playlist_active: bool = False
@@ -109,6 +113,11 @@ class MainWindow(QMainWindow):
         ctrl.updateCompleted.connect(self._handle_update_completed)
         ctrl.frameworkStatusReceived.connect(self._handle_framework_status)
         ctrl.statusReceived.connect(self._handle_status)
+        ctrl.deviceMediaReceived.connect(self._handle_device_media)
+        # Live CVLC logs wiring
+        ctrl.logLiveLine.connect(self._commands_tab.append_log_live_line)
+        ctrl.logLiveStatusChanged.connect(self._commands_tab.set_log_live_active)
+        self._commands_tab.logLiveToggleRequested.connect(self._handle_log_live_toggle)
 
         self._player_panel.refreshRequested.connect(ctrl.trigger_discovery)
         self._player_panel.selectionChanged.connect(self._handle_selection_changed)
@@ -118,6 +127,7 @@ class MainWindow(QMainWindow):
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
         self._commands_tab.uploadRequested.connect(self._handle_upload)
         self._commands_tab.mediaDirectoryRequested.connect(self._choose_media_directory)
+        self._commands_tab.deviceMediaRefreshRequested.connect(self._handle_device_media_refresh)
         # Playlist wiring
         self._commands_tab.playlistChanged.connect(self._handle_playlist_changed)
         self._commands_tab.playlistPushRequested.connect(self._handle_push_playlist)
@@ -131,6 +141,7 @@ class MainWindow(QMainWindow):
         self._update_tab.autoplayToggled.connect(self._handle_autoplay_toggle)
         self._update_tab.deviceNameRequested.connect(self._handle_device_name_request)
         self._update_tab.pollIntervalChanged.connect(self._handle_poll_interval_changed)
+        self._update_tab.overlayDurationsApplied.connect(self._handle_overlay_durations_applied)
         ctrl.autoplayStatusReceived.connect(self._handle_autoplay_status)
         ctrl.bundleBuildStateChanged.connect(self._handle_bundle_state)
 
@@ -182,11 +193,27 @@ class MainWindow(QMainWindow):
             self._status_primary = self._selected_players[0].ip
             self._status_timer.start()
             self._controller.refresh_status(self._selected_players[0])
+            # Start device media polling for primary
+            self._device_media_timer.start()
+            self._controller.refresh_device_media(self._selected_players[0])
+            # If live CVLC log is active, restart it for the new primary
+            try:
+                if self._commands_tab.is_log_live_active():
+                    self._controller.start_log_live(self._selected_players[0], lines=100)
+            except Exception:
+                pass
         else:
             self._update_tab.set_autoplay(False)
             self._update_tab.set_framework_state(current=None, available=[])
             self._status_primary = None
             self._status_timer.stop()
+            self._device_media_timer.stop()
+            # Stop live logs when no selection
+            try:
+                self._controller.stop_log_live()
+                self._commands_tab.set_log_live_active(False)
+            except Exception:
+                pass
 
     def _handle_playback(self, command: str, payload: dict | None) -> None:
         if not self._selected_players:
@@ -376,6 +403,38 @@ class MainWindow(QMainWindow):
     def _handle_command_completed(self, ip: str, response: dict) -> None:
         self._append_log(f"[{ip}] {response}")
 
+    def _handle_device_media_refresh(self) -> None:
+        if not self._selected_players:
+            return
+        self._controller.refresh_device_media(self._selected_players[0])
+
+    def _device_media_tick(self) -> None:
+        if not self._selected_players or not self._status_primary:
+            return
+        # Rispetta il toggle Auto-refresh nel tab
+        try:
+            if not self._commands_tab.wants_device_auto_refresh():
+                return
+        except Exception:
+            pass
+        self._controller.refresh_device_media(self._selected_players[0])
+
+    def _handle_device_media(self, ip: str, payload: dict) -> None:
+        # Mostra la lista media del device primario selezionato
+        if not self._selected_players or ip != self._selected_players[0].ip:
+            return
+        if not isinstance(payload, dict):
+            return
+        if not payload.get("ok"):
+            err = payload.get("error") or "Errore lettura /media"
+            self._append_log(f"[{ip}] {err}")
+            return
+        files = payload.get("files") or []
+        try:
+            self._commands_tab.set_device_media_items(files)
+        except Exception:
+            pass
+
     def _handle_update_completed(self, payload: dict) -> None:
         if error := payload.get("error"):
             self._append_log(f"Update error: {error}")
@@ -449,12 +508,40 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(ms_val)
         self._controller.set_status_poll_ms(ms_val)
 
+    def _handle_log_live_toggle(self, active: bool, lines: int) -> None:
+        # Start/stop live CVLC logs for the primary selected player
+        if not self._selected_players:
+            # Reflect off state if no targets
+            try:
+                self._commands_tab.set_log_live_active(False)
+            except Exception:
+                pass
+            return
+        if active:
+            try:
+                self._controller.start_log_live(self._selected_players[0], lines=int(lines))
+            except Exception:
+                self._controller.stop_log_live()
+                self._commands_tab.set_log_live_active(False)
+        else:
+            self._controller.stop_log_live()
+
     def _handle_inline_name_edit(self, ip: str, new_name: str) -> None:
         # Invia il set name solo al device editato
         targets = self._controller.get_selected_players([ip])
         if not targets:
             return
         self._controller.send_misc_command("device_name_set", {"name": new_name}, targets)
+
+    def _handle_overlay_durations_applied(self, fade_out_s: float, fade_in_s: float) -> None:
+        if not self._selected_players:
+            return
+        try:
+            out_s = float(fade_out_s)
+            in_s = float(fade_in_s)
+        except Exception:
+            return
+        self._controller.apply_overlay_settings(out_s, in_s, self._selected_players)
 
     # -----------------------------
     # Playlist handlers
