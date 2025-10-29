@@ -31,7 +31,8 @@ REM Aggiorna pip
 python -m pip install --upgrade pip
 
 REM Installa le dipendenze principali del player headless
-pip install --upgrade fastapi uvicorn[standard] pillow netifaces requests
+REM Su Windows usiamo 'psutil' invece di 'netifaces' per evitare la compilazione di estensioni C
+pip install --upgrade fastapi uvicorn[standard] pillow psutil requests
 
 REM Installa i backend video consigliati
 REM python-vlc fornisce i binding a libvlc (VLC) e consente la riproduzione video headless
@@ -42,6 +43,22 @@ pip install --upgrade PyQt5
 
 REM Facoltativo: installare anche MPV (libmpv) tramite il wrapper python 'pympv' per un backend alternativo
 pip install --upgrade pympv || echo "Installazione di pympv non riuscita: potrebbe non essere disponibile per la tua piattaforma"
+
+REM Opzionale: GStreamer (PyGObject/gi)
+REM GStreamer su Windows richiede l'installazione del runtime GStreamer (MSI). Questo script
+REM non installa automaticamente il runtime: se vuoi usare il backend GStreamer, scegli 'y'
+REM quando richiesto e segui le istruzioni. Se scegli 'n' lo skip sarà automatico.
+set /p INSTALL_GST="Vuoi installare le dipendenze Python per GStreamer (opzionale)? [y/N] "
+if /I "%INSTALL_GST%"=="y" (
+    echo Attenzione: installazione del runtime GStreamer non automatica.
+    echo Vai a https://gstreamer.freedesktop.org/download/ e installa la versione "MSVC" run-time (Runtime installer).
+    echo Dopo aver installato il runtime, premi invio per continuare con l'installazione dei binding Python (PyGObject).
+    pause >nul
+    REM Tentativo di installare PyGObject (gi) tramite pip. Su Windows potrebbe essere necessario usare pacchetti binari o MSYS/GTK dev.
+    pip install --upgrade pygobject==3.42.0 || pip install --upgrade gi || echo "Installazione PyGObject fallita: assicurati di aver installato il runtime GStreamer e i pacchetti di sviluppo necessari."
+) else (
+    echo Skipping GStreamer/PyGObject installation.
+)
 
 REM Messaggi finali
 echo.

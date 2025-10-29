@@ -14,10 +14,90 @@ import netifaces
 import json
 import re
 
-import gi
-gi.require_version("Gst", "1.0")
-gi.require_version("GObject", "2.0")
-from gi.repository import Gst, GObject, GLib
+HAS_GST = False
+try:
+    import gi
+    gi.require_version("Gst", "1.0")
+    gi.require_version("GObject", "2.0")
+    from gi.repository import Gst, GObject, GLib  # type: ignore
+    HAS_GST = True
+except Exception:
+    # Provide lightweight shims so the module can import and the app can run
+    # in environments without GStreamer/PyGObject. The shims implement only
+    # the API surface used outside of GStreamer-specific flows (scheduling,
+    # basic constants). Full GStreamer functionality will remain unavailable
+    # unless real gi/Gst are installed.
+    import threading
+    class _DummyGLib:
+        class MainLoop:
+            def __init__(self):
+                self._running = False
+            def run(self):
+                self._running = True
+                while self._running:
+                    time.sleep(0.5)
+            def quit(self):
+                self._running = False
+
+        @staticmethod
+        def idle_add(func, *args, **kwargs):
+            try:
+                threading.Thread(target=lambda: func(*args, **kwargs), daemon=True).start()
+            except Exception:
+                pass
+            return None
+
+        @staticmethod
+        def timeout_add(ms, func, *args, **kwargs):
+            try:
+                t = threading.Timer(ms / 1000.0, lambda: func(*args, **kwargs))
+                t.daemon = True
+                t.start()
+                return None
+            except Exception:
+                return None
+
+        @staticmethod
+        def source_remove(id_):
+            # No-op for the dummy implementation
+            return True
+
+    class _DummyGst:
+        SECOND = 1000000000
+        class State:
+            NULL = 0
+            PLAYING = 1
+            PAUSED = 2
+
+        class MessageType:
+            ERROR = 0
+            EOS = 1
+            WARNING = 2
+            INFO = 3
+
+        class SeekFlags:
+            FLUSH = 1
+            KEY_UNIT = 2
+
+        class Format:
+            TIME = 0
+
+        @staticmethod
+        def init(argv=None):
+            return None
+
+        @staticmethod
+        def parse_launch(desc):
+            raise RuntimeError("GStreamer not available in this environment")
+
+        class Buffer:
+            @staticmethod
+            def new_allocate(_, size, _2):
+                return bytearray(size)
+
+    Gst = _DummyGst
+    GLib = _DummyGLib
+    GObject = None
 
 # ---------- Config ----------
 APP_DIR = Path(__file__).resolve().parent

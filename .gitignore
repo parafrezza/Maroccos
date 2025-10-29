@@ -1,0 +1,18 @@
+
+# Virtual environments
+headless_venv/
+headless-player/headless_venv/
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Local env files
+.env
+.venv/
+
