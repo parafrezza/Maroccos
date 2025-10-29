@@ -76,12 +76,32 @@ class CvlcBackend:
                             try:
                                 splash = self._globals.get("splash")
                                 if splash and not splash.get("active"):
+                                    # Prima riporta overlay a nero con un fade morbido; poi assicurati del nero idle
+                                    try:
+                                        overlay_fade = self._globals.get("overlay_fade_to")
+                                        if callable(overlay_fade):
+                                            dur = float(self._globals.get("OVERLAY_FADE_IN_ON_STOP_S", 1.0))
+                                            overlay_fade(1.0, max(0.05, dur))
+                                            try:
+                                                g_log = self._globals.get("gui_log")
+                                                if callable(g_log):
+                                                    g_log("overlay_fade_in_on_stop", data={"duration": dur})
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
                                     show_idle = self._globals.get("show_idle_black")
                                     if callable(show_idle):
                                         show_idle()
                                         # Aggiorna stato globale
                                         try:
-                                            self._globals["player"]["state"] = "paused"
+                                            self._globals["player"]["state"] = "stopped"
+                                        except Exception:
+                                            pass
+                                        try:
+                                            g_log = self._globals.get("gui_log")
+                                            if callable(g_log):
+                                                g_log("idle_black_show")
                                         except Exception:
                                             pass
                             except Exception:
