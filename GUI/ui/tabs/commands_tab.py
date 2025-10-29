@@ -42,6 +42,7 @@ class MediaListWidget(QListWidget):
         self.setDragEnabled(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setDragDropMode(QAbstractItemView.DragOnly)
+        self.setToolTip("Trascina uno o più media nella playlist a destra")
 
     def mimeTypes(self) -> list[str]:  # type: ignore[override]
         return [_MEDIA_MIME]
@@ -75,6 +76,7 @@ class PlaylistWidget(QListWidget):
 
     def dragEnterEvent(self, event) -> None:  # type: ignore[override]
         if event.mimeData().hasFormat(_MEDIA_MIME):
+            self.setStyleSheet("background-color: #d0f0ff; border: 2px dashed #2980b9;")
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
@@ -86,6 +88,7 @@ class PlaylistWidget(QListWidget):
             super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:  # type: ignore[override]
+        self.setStyleSheet("")
         if event.mimeData().hasFormat(_MEDIA_MIME):
             try:
                 data = bytes(event.mimeData().data(_MEDIA_MIME))
@@ -109,6 +112,10 @@ class PlaylistWidget(QListWidget):
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:
+        self.setStyleSheet("")
+        super().dragLeaveEvent(event)
 
 
 class CommandsTab(QWidget):
@@ -352,10 +359,12 @@ class CommandsTab(QWidget):
         dev_controls.addWidget(self._device_auto)
         dev_controls.addStretch(1)
         device_layout.addLayout(dev_controls)
-        self._device_media_list = QListWidget()
+
+        self._device_media_list = MediaListWidget()
         # Permetti la selezione singola per scegliere il media per fast-start
         self._device_media_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self._device_media_list.itemSelectionChanged.connect(self._update_faststart_enabled)
+        self._device_media_list.setToolTip("Trascina i media nella playlist per aggiungerli")
         device_layout.addWidget(self._device_media_list)
         layout.addWidget(device_box, 1, 1)
 
@@ -658,6 +667,14 @@ class CommandsTab(QWidget):
             in_time = self._compute_in_time_epoch_seconds()
             if in_time is not None:
                 payload["in_time"] = in_time
+
+        # Feedback se next a fine playlist
+        if command == "next":
+            # Se la playlist è vuota o siamo già all'ultimo elemento
+            if self._playlist.count() == 0 or self._playlist.currentRow() >= self._playlist.count() - 1:
+                self.set_banner("Fine playlist: nessun elemento successivo", level="info")
+                return
+
         self.playbackTriggered.emit(command, payload)
 
     def _emit_misc_command(self) -> None:
@@ -743,7 +760,13 @@ class CommandsTab(QWidget):
         at_value = self._open_schedule_dialog(title="Play at…")
         if at_value is None:
             return
-        payload: dict[str, Any] = {"at": at_value}
+        import time as _time
+        # Se il valore è > 1000000000 assumiamo sia epoch, altrimenti secondi relativi
+        if at_value > 1000000000:
+            in_time = at_value
+        else:
+            in_time = _time.time() + at_value
+        payload: dict[str, Any] = {"in_time": in_time}
         # Include selected media if any
         item = self._media_list.currentItem()
         if item:
@@ -836,12 +859,13 @@ class CommandsTab(QWidget):
         self._timing_led.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
 
     def _emit_upload(self) -> None:
-        item = self._media_list.currentItem()
-        if not item:
+        items = self._media_list.selectedItems()
+        if not items:
             return
-        path = item.data(Qt.UserRole)
-        if path:
-            self.uploadRequested.emit(path)
+        for item in items:
+            path = item.data(Qt.UserRole)
+            if path:
+                self.uploadRequested.emit(path)
 
     def _on_media_selection_changed(self) -> None:
         self._update_upload_button(self._targets_enabled)
@@ -884,16 +908,17 @@ class CommandsTab(QWidget):
     # Playlist helpers
     # ------------------------------------------------------------------
     def _add_selected_to_playlist(self) -> None:
-        item = self._media_list.currentItem()
-        if not item:
+        items = self._media_list.selectedItems()
+        if not items:
             return
-        label = item.text()
-        rel = item.data(self._RELATIVE_ROLE) or item.data(Qt.UserRole)
-        if not rel:
-            return
-        entry = QListWidgetItem(label)
-        entry.setData(Qt.UserRole, rel)
-        self._playlist.addItem(entry)
+        for item in items:
+            label = item.text()
+            rel = item.data(self._RELATIVE_ROLE) or item.data(Qt.UserRole)
+            if not rel:
+                continue
+            entry = QListWidgetItem(label)
+            entry.setData(Qt.UserRole, rel)
+            self._playlist.addItem(entry)
         self._emit_playlist_changed()
 
     def _remove_selected_from_playlist(self) -> None:
