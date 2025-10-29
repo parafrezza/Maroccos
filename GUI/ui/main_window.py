@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
         self._countdown_timer.setInterval(200)
         self._countdown_timer.timeout.connect(self._update_countdown)
         self._show_start_epoch: float | None = None
+        # Track last seen action badge to avoid repeats
+        self._last_action_badge: str | None = None
         # UDP listener for "start N" commands
         self._udp_socket = QUdpSocket(self)
         try:
@@ -186,6 +188,12 @@ class MainWindow(QMainWindow):
         has_targets = bool(self._selected_players)
         self._commands_tab.set_targets_selected(has_targets)
         self._update_tab.enable_actions(has_targets)
+        # Reset last action badge on selection change
+        try:
+            self._last_action_badge = None
+            self._commands_tab.set_action_badge(None)
+        except Exception:
+            pass
         if has_targets:
             self._controller.refresh_autoplay_status(self._selected_players[0])
             self._controller.refresh_framework_status(self._selected_players[0])
@@ -368,6 +376,21 @@ class MainWindow(QMainWindow):
             fs_ready = bool(fs.get("ready") or fs.get("prepared"))
         fs_ready = fs_ready or bool(payload.get("faststart_ready") or payload.get("faststart_prepared"))
         self._commands_tab.set_faststart_ready(bool(fs_ready))
+
+        # Action badge from backend status (fsm_action at top level or nested)
+        try:
+            action = payload.get("fsm_action")
+            if action is None and isinstance(payload.get("fsm"), dict):
+                action = payload.get("fsm", {}).get("action")
+            if isinstance(action, str) and action:
+                if action != self._last_action_badge:
+                    self._commands_tab.set_action_badge(action)
+                    self._last_action_badge = action
+            else:
+                # No action -> do nothing (badge auto-hides)
+                pass
+        except Exception:
+            pass
 
         # Playlist ready aggregation: when pushing, mark device ready on show_ready
         try:

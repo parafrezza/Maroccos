@@ -578,6 +578,19 @@ def _fsm_set(state: str, *, reason: str | None = None, action: str | None = None
         })
     except Exception:
         pass
+
+# Helper wrappers per transizioni uniformi della FSM
+def fsm_preparing(reason: str, action: str | None = None) -> None:
+    _fsm_set("preparing", reason=reason, action=action)
+
+def fsm_playing(reason: str | None = None, action: str | None = None) -> None:
+    _fsm_set("playing", reason=reason, action=action)
+
+def fsm_stopping(reason: str | None = None) -> None:
+    _fsm_set("stopping", reason=reason)
+
+def fsm_idle(reason: str | None = None, error: str | None = None) -> None:
+    _fsm_set("idle", reason=reason, error=error)
 playlist = {"items": [], "index": -1, "loop": True}
 splash = {"pipeline": None, "active": False}  # Tracking splash (se attivo copre lo schermo)
 preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipeline pre-caricata per prossimo elemento playlist
@@ -1045,7 +1058,7 @@ def show_splash_until_play():
     pipeline.set_state(Gst.State.PLAYING)
     GLib.idle_add(push_splash_frame, src)
     print("[SPLASH] Splash avviato (attivo fino al primo play)", flush=True)
-    _fsm_set("idle")
+    fsm_idle("splash_shown")
 
 def hide_splash():
     if splash["active"] and splash["pipeline"]:
@@ -1108,7 +1121,7 @@ def overlay_show(alpha: float = 1.0):
             except Exception:
                 pass
         overlay["current_alpha"] = target_alpha
-    return
+        return
     # Se non abbiamo ancora un plane_id valido su KMS, prova autodetect prima di creare la pipeline
     if OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
         try:
@@ -1117,8 +1130,24 @@ def overlay_show(alpha: float = 1.0):
                 print(f"[OVERLAY] Plane rilevato automaticamente: id={res.get('plane_id')}", flush=True)
         except Exception as probe_exc:
             print(f"[OVERLAY] Probe plane fallita (proseguo comunque): {probe_exc}", flush=True)
+    # Crea pipeline overlay; fallback automatico ad autovideosink se kmssink non disponibile
     try:
         p, a = build_overlay_pipeline()
+    except Exception as e:
+        print(f"[OVERLAY] Creazione con KMS fallita: {e} -> fallback ad autovideosink", flush=True)
+        try:
+            old_kms = OVERLAY_USE_KMS
+        except Exception:
+            old_kms = True
+        try:
+            globals()["OVERLAY_USE_KMS"] = False
+            p, a = build_overlay_pipeline()
+        finally:
+            try:
+                globals()["OVERLAY_USE_KMS"] = old_kms
+            except Exception:
+                pass
+    try:
         overlay["pipeline"] = p
         overlay["alpha"] = a
         overlay["active"] = True
@@ -1601,7 +1630,7 @@ def prepare_pipeline_for(path: str):
 
     preloaded.update({"path": path, "pipeline": p, "vb": vb, "alpha": af})
     print(f"[FASTSTART] Preparata pipeline con primo frame presentato e in PAUSED per {path}", flush=True)
-    _fsm_set("preparing")
+    fsm_preparing("prepare_pipeline", action="faststart_prepare")
 
 def adopt_preloaded(path: str) -> bool:
     """Se esiste una pipeline precaricata per 'path', adottala come player principale.
@@ -1630,7 +1659,7 @@ def adopt_preloaded(path: str) -> bool:
         # Sgancia sempre lo stato preloaded
         preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
     print("[FASTSTART] Adottata pipeline precaricata", flush=True)
-    _fsm_set("playing")
+    fsm_playing("gst_adopted_preloaded")
     return True
 
 def validate_media_file(path: Path) -> bool:
@@ -1656,27 +1685,33 @@ def validate_media_file(path: Path) -> bool:
         print(f"[PLAYER] ERRORE lettura header {path}: {e}", flush=True)
         return False
 
-def start_play_with_path(path: str):
+def start_play_with_path(path: str, *, action: str | None = None):
     global VIDEO_PATH
     VIDEO_PATH = path
-    start_play()
+    start_play(action=action)
 
-def start_play(fade_in_seconds: float = 0.5):
+def start_play(fade_in_seconds: float = 0.5, *, action: str | None = None):
     print(f"[PLAYER] Avvio riproduzione: {VIDEO_PATH}", flush=True)
-    _fsm_set("preparing", reason="start_play", action="play")
+    fsm_preparing("start_play", action=(action or "play"))
+    # Badge/telemetria azione per la GUI
+    try:
+        if action in {"next", "prev", "play", "faststart_go"}:
+            gui_log("action_badge", data={"action": action})
+    except Exception:
+        pass
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
         if backend is None:
             print("[PLAYER] Nessun backend disponibile", flush=True)
-            _fsm_set("idle", reason="backend_missing", error="no_backend")
+            fsm_idle("backend_missing", error="no_backend")
             return
         try:
             backend.play(VIDEO_PATH, player.get("loop"), fade_in_seconds)
         except Exception as exc:
             print(f"[PLAYER] Errore backend: {exc}", flush=True)
             player["state"] = "error"
-            _fsm_set("idle", reason="play_failed", error=str(exc))
+            fsm_idle("play_failed", error=str(exc))
             return
         # Per backend non-GST (es. cvlc): esegui fade-out overlay SOLO quando il contenuto risulta davvero in playing
         try:
@@ -1718,7 +1753,7 @@ def start_play(fade_in_seconds: float = 0.5):
         except Exception:
             pass
         persist_settings()
-        _fsm_set("playing", reason="backend_started")
+        fsm_playing("backend_started", action=(action or "play"))
         _autoplay_on_play_started(VIDEO_PATH)
         return
     media_path = Path(VIDEO_PATH)
@@ -1741,10 +1776,10 @@ def start_play(fade_in_seconds: float = 0.5):
         if playlist["items"]:
             schedule_preload()
         print("[PLAYER] Riproduzione avviata (nuova pipeline)", flush=True)
-        _fsm_set("playing", reason="gst_pipeline_started")
+        fsm_playing("gst_pipeline_started", action=(action or "play"))
     else:
         print("[PLAYER] Riproduzione avviata (pipeline precaricata)", flush=True)
-        _fsm_set("playing", reason="gst_adopted_preloaded")
+        fsm_playing("gst_adopted_preloaded", action=(action or "play"))
     # Fade-in automatico
     if fade_in_seconds and fade_in_seconds > 0:
         if player["alpha"]:
@@ -1852,7 +1887,7 @@ def resume_play():
             pass
 
 def stop_play():
-    _fsm_set("stopping", reason="stop_play")
+    fsm_stopping("stop_play")
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
@@ -1891,7 +1926,7 @@ def stop_play():
             show_idle_black()
     except Exception:
         pass
-    _fsm_set("idle", reason="stopped")
+    fsm_idle("stopped")
 
 def set_loop(on: bool):
     player["loop"] = bool(on)
@@ -2362,7 +2397,7 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                 gui_log("playing", data={"path": target, "backend": "gst", "loop": player.get("loop")})
             except Exception:
                 pass
-            _fsm_set("playing")
+            fsm_playing("faststart_go", action="faststart_go")
             _start_end_monitor()
             return {"ok": True}
         # cvlc/vlc/mpv
@@ -2419,7 +2454,7 @@ def api_faststart_go(seconds: float = Query(1.0), in_time: float | None = Query(
                 gui_log("playing", data={"path": target, "backend": current_framework["name"], "loop": player.get("loop")})
             except Exception:
                 pass
-            _fsm_set("playing")
+            fsm_playing("faststart_go", action="faststart_go")
             return {"ok": True}
         except Exception as e:
             try:
@@ -2550,16 +2585,16 @@ def on_start():
     # Overlay: auto-probe plane al boot (best-effort) se abilitato e non configurato
     def _overlay_boot_probe():
         try:
-            if OVERLAY_ENABLED and OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
-                print("[STARTUP] Overlay abilitato ma plane non impostato: eseguo auto-probe…", flush=True)
-                res = overlay_probe(auto_persist=True)
-                print(f"[STARTUP] Overlay probe: {res}", flush=True)
-                # Se trovato, mostra subito overlay nero stabile per idle
-                if res.get("detected"):
-                    try:
-                        overlay_show(alpha=1.0)
-                    except Exception:
-                        pass
+            if OVERLAY_ENABLED:
+                # Prova auto-probe (best-effort) e attiva comunque overlay nero stabile
+                if OVERLAY_USE_KMS and int(OVERLAY_KMS_PLANE_ID) <= 0:
+                    print("[STARTUP] Overlay abilitato ma plane non impostato: eseguo auto-probe…", flush=True)
+                    res = overlay_probe(auto_persist=True)
+                    print(f"[STARTUP] Overlay probe: {res}", flush=True)
+                try:
+                    overlay_show(alpha=1.0)
+                except Exception as e:
+                    print(f"[STARTUP] Overlay show fallito: {e}", flush=True)
         except Exception as e:
             print(f"[STARTUP] Overlay probe errore: {e}", flush=True)
     threading.Thread(target=_overlay_boot_probe, daemon=True).start()
@@ -2582,6 +2617,7 @@ def status():
         "version_available": current_update["available"],
         "player_state": player["state"],
         "fsm_state": fsm.get("state", "unknown"),
+        "fsm_action": fsm.get("action"),
         "fsm": {
             "state": fsm.get("state"),
             "previous": fsm.get("previous"),
@@ -4048,7 +4084,7 @@ def api_playlist_next():
     playlist["index"] = next_i
     next_path = playlist["items"][next_i]
     print(f"[PLAYLIST] NEXT -> index={next_i} file={next_path}", flush=True)
-    start_play_with_path(next_path)
+    start_play_with_path(next_path, action="next")
     return {"ok": True, "current": next_path, "index": next_i}
 
 @app.post("/playlist/prev")
@@ -4066,7 +4102,7 @@ def api_playlist_prev():
     playlist["index"] = prev_i
     prev_path = playlist["items"][prev_i]
     print(f"[PLAYLIST] PREV -> index={prev_i} file={prev_path}", flush=True)
-    start_play_with_path(prev_path)
+    start_play_with_path(prev_path, action="prev")
     return {"ok": True, "current": prev_path, "index": prev_i}
 
 # Rimosso endpoint /playlist/take: NEXT/PREV avviano direttamente la riproduzione

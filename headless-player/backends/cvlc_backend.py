@@ -28,7 +28,10 @@ class CvlcBackend:
         self._monitor_thread: threading.Thread | None = None
         self._monitor_stop = False
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -87,7 +90,10 @@ class CvlcBackend:
                                         rem = max(0.0, float(total) - float(cur))
                                 except Exception:
                                     rem = None
+<<<<<<< HEAD
                                 # 1) Prefade overlay prima della fine
+=======
+>>>>>>> 302b654 ()
                                 if rem is not None and rem <= max(0.1, float(self._globals.get("OVERLAY_FADE_IN_ON_STOP_S", 1.0)) + 0.05):
                                     if not self._prefade_started:
                                         self._prefade_started = True
@@ -104,6 +110,7 @@ class CvlcBackend:
                                                     pass
                                         except Exception:
                                             pass
+<<<<<<< HEAD
                                 # 2) Pausa all'ultimo frame (se non in loop)
                                 if rem is not None and rem <= 0.15 and not self._endpause_done and not bool(self._loop):
                                     try:
@@ -125,12 +132,17 @@ class CvlcBackend:
                                             pass
                                     except Exception:
                                         pass
+=======
+>>>>>>> 302b654 ()
                             else:
                                 # Reset prefade flag quando non in playing
                                 if self._prefade_started:
                                     self._prefade_started = False
+<<<<<<< HEAD
                                 if self._endpause_done:
                                     self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
                         except Exception:
                             pass
                         if st == "stopped":
@@ -213,7 +225,10 @@ class CvlcBackend:
         self._globals["VIDEO_PATH"] = str(media_path)
         self._globals["player"]["state"] = "playing"
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
         self._hide_splash()
 
     def stop(self) -> None:
@@ -224,7 +239,10 @@ class CvlcBackend:
             raise RuntimeError(str(exc)) from exc
         self._globals["player"]["state"] = "stopped"
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
 
     def pause(self) -> None:
         """Pausa robusta: gestisce la corsa di stato immediatamente dopo un GO.
@@ -272,7 +290,10 @@ class CvlcBackend:
             raise RuntimeError(str(last_exc)) from last_exc
         self._globals["player"]["state"] = "paused"
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
 
     def resume(self) -> None:
         controller = self._get_controller()
@@ -282,7 +303,10 @@ class CvlcBackend:
             raise RuntimeError(str(exc)) from exc
         self._globals["player"]["state"] = "playing"
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
 
     def set_loop(self, enabled: bool) -> None:
         controller = self._get_controller()
@@ -336,7 +360,10 @@ class CvlcBackend:
             self._monitor_stop = True
         controller.shutdown()
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
 
     # ---- Fast-start helpers ----
     def faststart_prepare(self, path: str) -> None:
@@ -352,7 +379,10 @@ class CvlcBackend:
         self._globals["VIDEO_PATH"] = str(media_path)
         self._globals["player"]["state"] = "paused"
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()
         self._hide_splash()
 
     def faststart_go(self) -> None:
@@ -369,4 +399,7 @@ class CvlcBackend:
         except VlcError as exc:
             raise RuntimeError(str(exc)) from exc
         self._prefade_started = False
+<<<<<<< HEAD
         self._endpause_done = False
+=======
+>>>>>>> 302b654 ()

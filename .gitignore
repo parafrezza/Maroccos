@@ -6,6 +6,19 @@ headless-player/headless_venv/
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+*.exe
+*.bin
+*.o
+*.a
+*.lib
+*.zip
 
 # Distribution / packaging
 *.egg-info/
