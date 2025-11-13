@@ -1,0 +1,31 @@
+[Unit]
+Description=OFF Player Headless Service
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=__INSTALL_DIR__/headless-player/.venv/bin/python
+
+[Service]
+Type=simple
+# The installer will replace __INSTALL_DIR__ with the chosen prefix (default: /opt/offplayer)
+WorkingDirectory=__INSTALL_DIR__/headless-player
+ExecStart=__INSTALL_DIR__/headless-player/.venv/bin/python app.py
+Environment=OFF_BINARY=__INSTALL_DIR__/bin/OFF-player
+Environment=OFF_PLAYER_EXE=__INSTALL_DIR__/bin/OFF-player
+Environment=MEDIA_DIR=__INSTALL_DIR__/media
+# Optional: request EGL/KMS mode for OFF-player (requires vc4-kms-v3d and /dev/dri)
+#Environment=OFF_USE_EGL=1
+# If EGL fails to init, automatically fallback to xvfb-run (recommended)
+Environment=OFF_EGL_FALLBACK=1
+# Optional logging overrides (uncomment if desired)
+#Environment=LOG_LEVEL=INFO
+#Environment=LOG_FILE=/var/tmp/headless-player/headless-player.log
+Restart=always
+RestartSec=2
+UMask=000
+
+# Service runs as root by default for simplicity; you can change it to a dedicated user
+# but ensure permissions of install dir, media, and tmp paths accordingly.
+User=root
+
+[Install]
+WantedBy=multi-user.target

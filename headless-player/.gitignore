@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+release_tmp/
+update_pkg.bin
+media/*
+!media/.gitkeep

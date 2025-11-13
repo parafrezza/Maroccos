@@ -1,0 +1,93 @@
+{
+  "started_at": 1761573000.0957782,
+  "targets": [
+    {
+      "host_called": "192.168.1.167",
+      "device_ip": "192.168.10.220",
+      "device_name": "quattro",
+      "steps": {
+        "stop": {
+          "ok": true,
+          "at": 1761573003.5011158,
+          "state": "stopped"
+        },
+        "upload": {
+          "at": 1761573003.6249278,
+          "files": [
+            {
+              "name": "testbars_10_TC.mp4",
+              "ok": false
+            }
+          ]
+        },
+        "apply": {
+          "ok": true,
+          "at": 1761573003.865154,
+          "prepared": "testbars_10_TC.mp4"
+        },
+        "ready": {
+          "ok": true,
+          "at": 1761573004.1572125,
+          "for": "testbars_10_TC.mp4"
+        },
+        "go": {
+          "ok": true,
+          "at": 1761573004.2816868,
+          "in_time": 1761573007.2001438
+        },
+        "verify_playing": {
+          "ok": false,
+          "at": 1761573013.279914,
+          "state": "paused"
+        }
+      }
+    },
+    {
+      "host_called": "192.168.1.204",
+      "device_ip": "192.168.10.220",
+      "device_name": "3B",
+      "steps": {
+        "stop": {
+          "ok": true,
+          "at": 1761573003.5320053,
+          "state": "stopped"
+        },
+        "upload": {
+          "at": 1761573003.6597583,
+          "files": [
+            {
+              "name": "testbars_10_TC.mp4",
+              "ok": false
+            }
+          ]
+        },
+        "apply": {
+          "ok": true,
+          "at": 1761573004.0967844,
+          "prepared": "testbars_10_TC.mp4"
+        },
+        "ready": {
+          "ok": true,
+          "at": 1761573004.2001252,
+          "for": "testbars_10_TC.mp4"
+        },
+        "go": {
+          "ok": true,
+          "at": 1761573004.3472192,
+          "in_time": 1761573007.2001438
+        },
+        "verify_playing": {
+          "ok": false,
+          "at": 1761573013.6862433,
+          "state": "paused"
+        }
+      }
+    }
+  ],
+  "media": [
+    "testbars_10_TC.mp4"
+  ],
+  "delay": 3.0,
+  "udp_logs_count": 8,
+  "finished_at": 1761573014.7157736
+}

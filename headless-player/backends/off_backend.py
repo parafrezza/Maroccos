@@ -1,0 +1,353 @@
+"""Backend OFF-player: controlla un'istanza OFF-player via API HTTP locali.
+
+Requisiti lato OFF-player:
+- HTTP server attivo (config.json -> httpPort), esponendo endpoint:
+  POST /play, /stop, /next, /prev, /set?index=N, /dir?path=..., /reload, /loop?on=1|0
+  GET  /status -> { playing: bool, index: int, loop: bool, count: int, file: str }
+
+Limitazioni note:
+- Non esistono endpoint nativi per pausa/ripresa: implementati best-effort (pause -> stop, resume -> play).
+- Non esistono API per faststart/overlay/fade: metodi esposti ma no-op.
+- play(path=...) non forza un file arbitrario: si assume che la directory sia già impostata
+  su OFF-player; in caso contrario, si può usare set_directory(dir) oppure /dir esterno.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+from urllib.parse import quote
+
+import requests
+import os
+from pathlib import Path
+
+from . import register
+
+
+@register("off")
+class OffBackend:
+    supports_playlist = True
+
+    def __init__(self, controller: dict) -> None:
+        self._g = controller
+        # Config base: OFF-player locale sulla stessa macchina
+        self.host = self._g.get("OFF_HOST", "127.0.0.1")
+        try:
+            self.port = int(self._g.get("OFF_PORT", 8082))
+        except Exception:
+            self.port = 8082
+        try:
+            self.udp_port = int(self._g.get("OFF_UDP_PORT", 47877))
+        except Exception:
+            self.udp_port = 47877
+        self._session = requests.Session()
+
+    # -------------------------- Helpers --------------------------
+    def _url(self, path: str) -> str:
+        # Legge la porta corrente dal controller per seguire eventuali cambi su _off_start
+        try:
+            current_port = int(self._g.get("OFF_PORT", self.port))
+            # Aggiorna cache locale se differisce
+            if current_port != self.port:
+                self.port = current_port
+        except Exception:
+            current_port = self.port
+        base = f"http://{self.host}:{current_port}"
+        return base + (path if path.startswith("/") else "/" + path)
+
+    def _post(self, path: str, params: dict[str, Any] | None = None, timeout: float = 1.5) -> Any:
+        try:
+            r = self._session.post(self._url(path), params=params or {}, timeout=timeout)
+            r.raise_for_status()
+            if r.headers.get("content-type", "").startswith("application/json"):
+                return r.json()
+            return r.text
+        except Exception as e:
+            raise RuntimeError(f"OFF-player POST {path} fallita: {e}") from e
+
+    def _get(self, path: str, params: dict[str, Any] | None = None, timeout: float = 1.5) -> Any:
+        try:
+            r = self._session.get(self._url(path), params=params or {}, timeout=timeout)
+            r.raise_for_status()
+            if r.headers.get("content-type", "").startswith("application/json"):
+                return r.json()
+            # /status ritorna JSON anche se come stringa
+            try:
+                return json.loads(r.text)
+            except Exception:
+                return r.text
+        except Exception as e:
+            raise RuntimeError(f"OFF-player GET {path} fallita: {e}") from e
+
+    # -------------------------- Backend API ----------------------
+    @property
+    def name(self) -> str:
+        return "off"
+
+    def play(self, path: str | None = None, loop: bool | None = None, fade_in: float = 0.0) -> None:
+        # Strategy:
+        # - Se loop specificato: setta subito.
+        # - Se path assoluto dentro MEDIA_DIR: sincronizza la dir OFF alla MEDIA_DIR, individua l'indice
+        #   corrispondente (usando /playlist se disponibile) e usa /set + /play (mantiene playlist coerente).
+        # - In fallback: usa /play_file (riproduzione diretta) o /play (playlist corrente).
+        if loop is not None:
+            self.set_loop(loop)
+        played = False
+        media_dir = None
+        try:
+            media_dir = str(Path(self._g.get("MEDIA_DIR")).resolve())
+        except Exception:
+            media_dir = None
+
+        if path and os.path.isabs(path) and os.path.exists(path):
+            try:
+                abs_path = str(Path(path).resolve())
+                if media_dir and abs_path.startswith(media_dir):
+                    # 1) Allinea dir OFF
+                    self.set_directory(media_dir)
+                    # 2) Prova a leggere la playlist da OFF per trovare l'indice esatto
+                    try:
+                        pl = self._get("/playlist")
+                        # expected: { dir, count, index, items: [{name,base,path}] }
+                        if isinstance(pl, dict) and isinstance(pl.get("items"), list):
+                            items = pl["items"]
+                            # cerca match per path assoluto
+                            target_idx = None
+                            for i, it in enumerate(items):
+                                p = it.get("path") if isinstance(it, dict) else None
+                                if isinstance(p, str) and str(Path(p).resolve()) == abs_path:
+                                    target_idx = i
+                                    break
+                            if target_idx is None:
+                                # fallback: match per name
+                                base_name = Path(abs_path).name
+                                for i, it in enumerate(items):
+                                    n = it.get("name") if isinstance(it, dict) else None
+                                    if n == base_name:
+                                        target_idx = i
+                                        break
+                            if target_idx is not None:
+                                self.set_index(int(target_idx))
+                                self._post("/play")
+                                played = True
+                    except Exception:
+                        played = False
+                if not played:
+                    # Fallback: riproduzione diretta del file
+                    self._post("/play_file", params={"path": abs_path})
+                    played = True
+            except Exception:
+                played = False
+
+        if not played:
+            # Ultimo fallback: play sulla playlist corrente di OFF
+            self._post("/play")
+        self._g["player"]["state"] = "playing"
+        self._g["VIDEO_PATH"] = path or self._g.get("VIDEO_PATH", "")
+        # Nascondi eventuale splash nel controller
+        try:
+            if self._g.get("splash", {}).get("active"):
+                self._g["hide_splash"]()
+        except Exception:
+            pass
+        # Nascondi anche lo splash di OFF, se attivo
+        try:
+            self.splash_hide()
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        self._post("/stop")
+        self._g["player"]["state"] = "stopped"
+
+    def pause(self) -> None:
+        # Best-effort: OFF-player non ha pausa; usiamo stop()
+        self.stop()
+        self._g["player"]["state"] = "paused"
+
+    def resume(self) -> None:
+        # Best-effort: riprende con play()
+        self.play()
+        self._g["player"]["state"] = "playing"
+
+    def set_loop(self, enabled: bool) -> None:
+        self._post("/loop", params={"on": "1" if enabled else "0"})
+
+    def is_playing(self) -> bool:
+        try:
+            st = self._get("/status")
+            if isinstance(st, dict):
+                return bool(st.get("playing"))
+            if isinstance(st, str):
+                return '"playing":true' in st.replace(" ", "")
+        except Exception:
+            pass
+        return False
+
+    # ---- Playlist helpers (opzionali) ----
+    def next(self) -> None:
+        self._post("/next")
+
+    def prev(self) -> None:
+        self._post("/prev")
+
+    def set_index(self, index: int) -> None:
+        self._post("/set", params={"index": int(index)})
+
+    def set_directory(self, directory: str) -> None:
+        # Permette di allineare la dir media di OFF-player con quella attesa dal controller
+        self._post("/dir", params={"path": directory})
+        # reload implicito lato OFF-player
+
+    # ---- Splash controls ----
+    def splash_show(self, text: str | None = None) -> None:
+        params = {"text": text or ""}
+        self._post("/splash/show", params=params)
+
+    def splash_hide(self) -> None:
+        self._post("/splash/hide")
+
+    def splash_text(self, text: str) -> None:
+        self._post("/splash/text", params={"text": text or ""})
+
+    # ---- No-op per funzionalità non supportate ----
+    def fade_out(self, seconds: float) -> None:
+        try:
+            self._post("/visual/ftb", params={"seconds": float(seconds)})
+        except Exception:
+            pass
+
+    def fade_in(self, seconds: float) -> None:
+        try:
+            self._post("/visual/fade_in", params={"seconds": float(seconds)})
+        except Exception:
+            pass
+
+    def visual_fade_out(self, seconds: float) -> None:
+        self.fade_out(seconds)
+
+    def visual_fade_in(self, seconds: float) -> None:
+        self.fade_in(seconds)
+
+    # ---- Visual brightness absolute (if OFF-player supports it) ----
+    def visual_fade_to(self, value: float, seconds: float) -> None:
+        """Set absolute visual brightness on OFF-player if endpoint exists.
+        Accepts 0..1 or 0..100 (server normalizes)."""
+        try:
+            self._post("/visual/brightness", params={"value": float(value), "seconds": float(seconds)})
+            return
+        except Exception as e:
+            # Fallback via UDP JSON
+            payload = {"cmd": "brightness", "value": float(value), "seconds": float(seconds)}
+            try:
+                resp = self._udp_request(payload, timeout=0.4)
+                if isinstance(resp, dict) and resp.get("ok"):
+                    return
+            except Exception:
+                pass
+            raise RuntimeError(f"OFF-player visual brightness non disponibile: {e}") from e
+
+    def _udp_request(self, payload: dict, timeout: float = 0.3) -> dict:
+        import json as _json, socket as _socket
+        data = _json.dumps(payload).encode("utf-8")
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(float(timeout))
+            sock.sendto(data, (str(self.host or "127.0.0.1"), int(self.udp_port)))
+            buf, _addr = sock.recvfrom(8192)
+            try:
+                return _json.loads(buf.decode("utf-8", errors="ignore"))
+            except Exception:
+                return {}
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def test_on(
+        self,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        offset_x: int | None = None,
+        offset_y: int | None = None,
+        speed: float | None = None,
+    ) -> None:
+        params: dict[str, Any] = {}
+        if width is not None:
+            try:
+                params["width"] = int(width)
+            except Exception:
+                pass
+        if height is not None:
+            try:
+                params["height"] = int(height)
+            except Exception:
+                pass
+        if offset_x is not None:
+            try:
+                params["offsetX"] = int(offset_x)
+            except Exception:
+                pass
+        if offset_y is not None:
+            try:
+                params["offsetY"] = int(offset_y)
+            except Exception:
+                pass
+        if speed is not None:
+            try:
+                params["speed"] = float(speed)
+            except Exception:
+                pass
+        self._post("/test/on", params=(params or None))
+
+    def test_off(self) -> None:
+        self._post("/test/off")
+
+    def faststart_prepare(self, path: str) -> None:
+        return None
+
+    def faststart_go(self) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        # Nessuna azione speciale oltre la fine del processo OFF-player
+        try:
+            self._session.close()
+        except Exception:
+            pass
+
+
+    def _udp_request(self, payload: dict, timeout: float = 0.3) -> dict:
+        import json as _json, socket as _socket
+        data = _json.dumps(payload).encode("utf-8")
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(float(timeout))
+            sock.sendto(data, (str(self.host or "127.0.0.1"), int(self.udp_port)))
+            buf, _addr = sock.recvfrom(8192)
+            try:
+                return _json.loads(buf.decode("utf-8", errors="ignore"))
+            except Exception:
+                return {}
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def go_to_start(self) -> None:
+        try:
+            self._post("/go_to_start")
+            return
+        except Exception as e:
+            try:
+                resp = self._udp_request({"cmd": "go_to_start"}, timeout=0.4)
+                if isinstance(resp, dict) and resp.get("ok"):
+                    return
+            except Exception:
+                pass
+            raise RuntimeError(f"OFF-player go_to_start non disponibile: {e}") from e

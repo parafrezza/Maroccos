@@ -1,0 +1,47 @@
+Warning: impossibile avviare il playback iniziale
+Attendo la disponibilità di /status...
+Server pronto, stato iniziale: player_state=idle index=0
+Avvio playback di test su a.mp4...
+== Plain text commands ==
+[PASS] plain:STATUS -> {"response": "OK playing=0 current=a.mp4 port=7777"}
+[FAIL] plain:PAUSE -> {"state": "idle", "off_playing": false}
+[FAIL] plain:RESUME -> {"state": "idle", "off_playing": false}
+[FAIL] plain:STOP -> {"state": "idle", "off_playing": false}
+[FAIL] plain:PLAY -> {"state": "idle", "off_playing": false}
+[FAIL] plain:STOP seconds -> {"state": "idle", "note": "1s fade"}
+[PASS] plain:NEXT/PREV -> {"index_before": 0, "index_after_next": 1, "index_after_prev": 0}
+[PASS] plain:SET -> {"after_set": 1, "after_reset": 0}
+[PASS] plain:LOOP -> {"loop_off": false, "loop_on": true}
+[FAIL] plain:OVERLAY -> {"alpha_up": null, "alpha_down": null, "alpha_show": null, "alpha_custom": null, "overlay_active_after_hide": false}
+[FAIL] plain:SPLASH -> {"after_show": false, "after_hide": false}
+
+== JSON commands ==
+[PASS] json:time -> {"response": {"ok": true, "t0": 123456789, "t1": 1762797962678088000, "t2": 1762797962678088200}}
+[PASS] json:ping -> {"overlay_before": [false, null], "overlay_after": [false, null], "note": "effetto visivo non osservabile via /status su this env"}
+[FAIL] json:pause/resume/stop/play -> {"pause_state": "idle", "resume_state": "idle", "stop_state": "idle", "play_state": "idle", "play_loop": true}
+[FAIL] json:stop seconds -> {"state": "idle", "note": "fade stop 1.2s"}
+[PASS] json:playlist nav -> {"start": 0, "after_next": 1, "after_prev": 0, "after_jump": 1, "after_reset": 0}
+[PASS] json:loop -> {"loop_off": false, "loop_on": true}
+[FAIL] json:overlay -> {"alpha_show": null, "alpha_after_fade": null, "overlay_active_after_hide": false}
+[FAIL] json:splash -> {"after_show": false, "after_hide": false}
+[FAIL] json:shutdown -> {"reachable_after_shutdown": true}
+
+== Summary ==
+{
+  "total": 20,
+  "passed": 8,
+  "failed": [
+    "plain:PAUSE",
+    "plain:RESUME",
+    "plain:STOP",
+    "plain:PLAY",
+    "plain:STOP seconds",
+    "plain:OVERLAY",
+    "plain:SPLASH",
+    "json:pause/resume/stop/play",
+    "json:stop seconds",
+    "json:overlay",
+    "json:splash",
+    "json:shutdown"
+  ]
+}

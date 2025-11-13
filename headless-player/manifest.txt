@@ -1,0 +1,6 @@
+version=v0.1.91
+built_at=2025-11-13T19:09:16
+app=headless-player
+entry=app.py
+python_min=3.9
+sha256=fedac14ffc4d07d6746e156a589c87730e2d90586d05bbea97ac2e743169dada

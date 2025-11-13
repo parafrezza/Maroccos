@@ -1,0 +1,20 @@
+[Unit]
+Description=Headless Video Player (FastAPI + GStreamer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=video
+Group=video
+WorkingDirectory=/opt/headless-player
+Environment=PYTHONUNBUFFERED=1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Rendi i nuovi file creati dal servizio group-writable per cooperare con ACL
+UMask=0002
+# Altre Environment (USE_KMS, TARGET_WIDTH/HEIGHT/FPS) vengono iniettate da setup.sh
+ExecStart=/opt/headless-player/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

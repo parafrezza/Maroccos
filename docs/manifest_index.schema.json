@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parafrezza.github.io/Maroccos/schema/manifest_index.schema.json",
+  "title": "Maroccos Update Manifest",
+  "type": "object",
+  "required": ["manifest_version", "generated_at", "components"],
+  "properties": {
+    "manifest_version": { "type": "string", "description": "Schema/contract version for this manifest" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "description": "Generator identifier or host URL" },
+    "notes": { "type": "string" },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "builds"],
+        "properties": {
+          "id": { "type": "string", "description": "Logical component id (headless_player, off_player, provision_script, etc.)" },
+          "version": { "type": "string", "description": "Component semantic version" },
+          "changelog": { "type": "string" },
+          "builds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["os", "arch", "assets"],
+              "properties": {
+                "os": { "type": "string", "enum": ["windows", "linux", "raspberrypi", "darwin"] },
+                "arch": { "type": "string", "description": "cpu arch label (amd64,x86_64,armv7,arm64,universal)" },
+                "min_os": { "type": "string", "description": "optional minimal OS release constraint" },
+                "assets": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "type", "url", "sha256"],
+                    "properties": {
+                      "id": { "type": "string" },
+                      "type": { "type": "string", "enum": ["zip", "tar.gz", "exe", "msi", "ps1", "bin", "txt"] },
+                      "url": { "type": "string", "format": "uri" },
+                      "size": { "type": "integer", "minimum": 0 },
+                      "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+                      "requires": { "type": "array", "items": {"type": "string"} },
+                      "notes": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "description": "Optional recommended version set per OS/arch",
+      "items": {
+        "type": "object",
+        "required": ["os", "arch", "components"],
+        "properties": {
+          "os": { "type": "string" },
+          "arch": { "type": "string" },
+          "components": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

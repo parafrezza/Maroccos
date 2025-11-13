@@ -1,0 +1,14 @@
+2025-11-12 21:34:27 [STEP] Verifica privilegi amministrativi
+2025-11-12 21:34:27 [OK] Privilegi amministrativi ok
+2025-11-12 21:34:27 [STEP] Verifica/creazione account locale "extra" (amministratore)
+2025-11-12 21:34:27 [INFO] Utente "extra" già presente
+2025-11-12 21:34:27 [OK] Account "extra" amministratore pronto
+2025-11-12 21:34:27 [STEP] Disabilitazione Windows Update (servizio e criteri)
+2025-11-12 21:34:27 [OK] Windows Update disabilitato
+2025-11-12 21:34:27 [STEP] Riduzione componenti consumer/telemetria
+2025-11-12 21:34:27 [OK] Componenti consumer/telemetria ridotti
+2025-11-12 21:34:27 [STEP] Disattivazione servizi non essenziali (best-effort)
+2025-11-12 21:34:27 [OK] Servizi disabilitati (dove possibile)
+2025-11-12 21:34:27 [STEP] Ottimizzazione aspetti grafici (no animazioni, no trasparenze)
+2025-11-12 21:34:27 [OK] Animazioni/trasparenze disabilitate
+2025-11-12 21:34:27 [STEP] Pulizia desktop (rimozione icone pubbliche e utente)

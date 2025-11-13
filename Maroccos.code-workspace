@@ -1,0 +1,74 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.pyp": "python",
+			"*.bak": "cpp",
+			"array": "cpp",
+			"deque": "cpp",
+			"list": "cpp",
+			"string": "cpp",
+			"unordered_map": "cpp",
+			"vector": "cpp",
+			"string_view": "cpp",
+			"format": "cpp",
+			"initializer_list": "cpp",
+			"span": "cpp",
+			"text_encoding": "cpp",
+			"regex": "cpp",
+			"ostream": "cpp",
+			"*.test": "cpp"
+		}
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "build GUI exe",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/build_gui_exe.ps1"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Compila il gestore GUI con PyInstaller"
+			},
+			{
+				"label": "build inno installer",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/build_installer.ps1"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Genera l'installer Windows con Inno Setup"
+			}
+		]
+	}
+}

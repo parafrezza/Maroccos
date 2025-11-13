@@ -1,0 +1,7 @@
+{
+  "request": {
+    "width": 1280,
+    "height": 720
+  },
+  "note": "Optional: set refresh_hz (e.g. 60)."
+}

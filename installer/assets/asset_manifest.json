@@ -1,0 +1,42 @@
+﻿{
+    "generatedAtUtc":  "2025-11-13 19:18:37Z",
+    "totalFiles":  6,
+    "files":  [
+                  {
+                      "path":  ".gitkeep",
+                      "size":  0,
+                      "lastWriteTime":  "2025-10-31 16:19:45Z",
+                      "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+                  },
+                  {
+                      "path":  "K-Lite_Codec_Pack_Basic.exe",
+                      "size":  22610729,
+                      "lastWriteTime":  "2025-10-31 16:19:46Z",
+                      "sha256":  "02831D0606496D3A4484F3D6522F75F5396FC788F2756977CF90DD1C286E3C1B"
+                  },
+                  {
+                      "path":  "tigervnc64-winvnc-1.15.0.exe",
+                      "size":  6971008,
+                      "lastWriteTime":  "2025-11-07 14:34:58Z",
+                      "sha256":  "96344DD7ACA9FEDE9E152D8FFCB6EF2CF3AA08EDB7886E350A8A30CB5FCB5E76"
+                  },
+                  {
+                      "path":  "vncviewer64-1.15.0.exe",
+                      "size":  23898696,
+                      "lastWriteTime":  "2025-11-07 14:33:33Z",
+                      "sha256":  "FE55C1A0FF15C6EE8AA3F77AC98318504B6AB50257182F7DF6A12F9B2D90E1F3"
+                  },
+                  {
+                      "path":  "SetResolution\\SetResolution.exe",
+                      "size":  67536456,
+                      "lastWriteTime":  "2025-11-13 19:18:36Z",
+                      "sha256":  "9086A4214CDA59676D90E1C8A7A7E9F1C8BF1B202CC26E9D1FF1ABE1910C21FE"
+                  },
+                  {
+                      "path":  "SetResolution\\SetResolution.pdb",
+                      "size":  12420,
+                      "lastWriteTime":  "2025-11-13 18:46:45Z",
+                      "sha256":  "EF5F7AD4F0C6E1C9E99734236C759AC09B0BEEE424F9C0FC5BE97D2360AF715A"
+                  }
+              ]
+}

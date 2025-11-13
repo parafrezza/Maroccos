@@ -1,0 +1,19 @@
+{
+  "count": 2,
+  "items": [
+    {
+      "path": "media/testbars_10_TC.mp4",
+      "name": "testbars_10_TC.mp4",
+      "size": 295785,
+      "mtime": 1758727900,
+      "url": "/media/testbars_10_TC.mp4"
+    },
+    {
+      "path": "media/testbars_10s.mp4",
+      "name": "testbars_10s.mp4",
+      "size": 173389,
+      "mtime": 1758727655,
+      "url": "/media/testbars_10s.mp4"
+    }
+  ]
+}
