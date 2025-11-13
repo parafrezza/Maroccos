@@ -2451,6 +2451,16 @@ if OFF_WATCHDOG_ENABLED and _is_windows:
     threading.Thread(target=_off_process_watchdog_loop, name="off-watchdog", daemon=True).start()
 off_logs: deque[str] = deque(maxlen=500)
 
+def _off_recent_logs(limit: int = 5) -> str:
+    try:
+        entries = list(off_logs)[-limit:]
+    except Exception:
+        entries = []
+    cleaned = [str(entry) for entry in entries if entry]
+    if not cleaned:
+        return ""
+    return " | ".join(cleaned)
+
 
 def request_headless_exit(reason: str, exit_code: int | None = None) -> None:
     if _exit_requested.is_set():
@@ -2534,6 +2544,7 @@ def _handle_off_process_exit(proc_obj: subprocess.Popen | None) -> None:
     reason = f"OFF-player process exited (code={exit_code})"
     ok_user = (exit_code == 0)
     if ok_user:
+        off_logger.info("OFF-player exited cleanly (code=0)")
         print(f"[OFF-WATCH] OFF-player chiuso dall'utente (code=0): lascio headless attivo.", flush=True)
         return
     # Fallimento inatteso: applica backoff di restart
@@ -2543,8 +2554,17 @@ def _handle_off_process_exit(proc_obj: subprocess.Popen | None) -> None:
     elapsed = time.time() - first_fail
     MAX_RETRIES = 3
     WINDOW = 60.0  # secondi
+    recent = _off_recent_logs()
+    off_logger.error(
+        "OFF-player terminated unexpectedly (code=%s) retry=%s elapsed=%.1fs. Recent output: %s",
+        exit_code,
+        off_proc["retries"],
+        elapsed,
+        recent or "<none>",
+    )
     print(f"[OFF-WATCH] OFF-player terminato inatteso (code={exit_code}) retry={off_proc['retries']} elapsed={elapsed:.1f}s", flush=True)
     if off_proc["retries"] > MAX_RETRIES and elapsed < WINDOW:
+        off_logger.warning("Not restarting OFF-player after %s failures in %.1fs", off_proc["retries"], elapsed)
         print(f"[OFF-WATCH] Troppi fallimenti in {WINDOW}s (>{MAX_RETRIES}). Non riavvio. Headless resta vivo.", flush=True)
         return
     if elapsed >= WINDOW:
@@ -2741,6 +2761,11 @@ def _default_off_binary() -> str | None:
             print(f"  - {d}", flush=True)
     except Exception:
         pass
+    try:
+        dirs = ", ".join(str(d) for d in candidates_dirs if d)
+        off_logger.warning("OFF-player binary not found; checked directories: %s", dirs or "<none>")
+    except Exception:
+        off_logger.warning("OFF-player binary not found; directory list unavailable")
     return None
 
 def _ensure_off_config(bin_dir: Path, port: int) -> None:
@@ -2797,6 +2822,7 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
         return {"ok": True, "running": True, "pid": off_proc["p"].pid, "port": off_proc.get("port"), "path": off_proc.get("path")}
     exe = path or _default_off_binary()
     if not exe or not Path(exe).exists():
+        off_logger.error("OFF-player binary not available (resolved path=%s)", exe)
         return {"ok": False, "error": "OFF-player non trovato. Compila ed esegui OFF-player prima, o specifica 'path'"}
     # Scegli porta libera evitando conflitto con APP_PORT
     p = int(port) if port else _find_free_port(start=int(globals().get("OFF_PORT", 8082)))
@@ -2872,6 +2898,23 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
         t.start()
         off_proc["reader"] = t
 
+        def _log_startup_failure() -> None:
+            try:
+                code = proc.poll()
+            except Exception:
+                return
+            if code is None or code == 0:
+                return
+            recent = _off_recent_logs()
+            off_logger.error(
+                "OFF-player exited immediately after launch (code=%s path=%s). Recent output: %s",
+                code,
+                exe,
+                recent or "<none>",
+            )
+
+        threading.Timer(0.75, _log_startup_failure).start()
+
         # Se è stato richiesto EGL, verifica crash rapido e applica fallback automatico
         try:
             if want_egl and os.environ.get("OFF_EGL_FALLBACK", "1") in {"1", "true", "True"}:
@@ -2931,6 +2974,7 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
             pass
         return {"ok": True, "running": True, "pid": proc.pid, "port": p, "path": exe}
     except Exception as e:
+        off_logger.exception("OFF-player launch failed (path=%s port=%s)", exe, p)
         return {"ok": False, "error": f"Launch failed: {e}", "path": exe, "port": p}
 
 def _off_stop() -> dict:
