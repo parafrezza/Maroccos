@@ -36,7 +36,8 @@ function Invoke-BashBuild {
     function To-MSYSPath([string]$winPath) {
         $full = [System.IO.Path]::GetFullPath($winPath)
         $drive = $full.Substring(0,1).ToLower()
-        $rest  = $full.Substring(2).Replace('\\','/')
+        $rest  = $full.Substring(2).TrimStart('\')
+        $rest  = $rest -replace '\\', '/'
         return "/$drive/$rest"
     }
 

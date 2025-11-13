@@ -89,6 +89,27 @@
 				},
 				"problemMatcher": [],
 				"detail": "Ricompila OFF-player (MSYS2) e copia le DLL runtime"
+			},
+			{
+				"label": "build OFF-player only",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/build_off_player_only.ps1"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Compila solo OFF-player tramite MSYS2"
 			}
 		]
 	}

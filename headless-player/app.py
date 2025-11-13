@@ -315,6 +315,7 @@ stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(nam
 _log_handlers.append(stream_handler)
 
 logging.basicConfig(level=logging.INFO, handlers=_log_handlers)
+off_logger = logging.getLogger("headless-player.off")
 try:
     # Crash handlers: log su file e Desktop + minidump (Windows)
     import faulthandler, atexit
