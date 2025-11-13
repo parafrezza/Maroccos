@@ -128,6 +128,30 @@ class ApplicationController(QObject):
         self._status_cache_lock = threading.Lock()
 
     # ------------------------------------------------------------------
+    # Snapshots (GUI helpers)
+    # ------------------------------------------------------------------
+
+    def get_snapshot_players(self) -> list[PlayerRecord]:
+        """Ritorna uno snapshot thread-safe dei player correnti.
+
+        Usato dal main window per aggiornare la UI senza fare altre HTTP.
+        """
+        try:
+            return self.player_registry.current_players()
+        except Exception:
+            return []
+
+    def get_cached_status(self, ip: str) -> dict[str, Any] | None:
+        """Ritorna l'ultimo /status noto per un IP, se presente in cache."""
+        try:
+            with self._status_cache_lock:
+                payload = self._status_cache.get(ip)
+                # Copia shallow per evitare modifiche in-place dal chiamante
+                return dict(payload) if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 

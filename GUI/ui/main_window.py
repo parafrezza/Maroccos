@@ -531,12 +531,21 @@ class MainWindow(QMainWindow):
             self._append_log(f"[{ip}] {error}")
 
     def _poll_status_tick(self) -> None:
-        if not self._selected_players or not self._status_primary:
+        """Tick di polling: usa lo snapshot del registry invece di fare nuove HTTP.
+
+        Il player_registry sta già interrogando /status periodicamente; qui
+        ci limitiamo a riflettere in UI lo stato più recente, evitando
+        richieste duplicate verso i player.
+        """
+        if not self._selected_players:
             return
         primary = self._selected_players[0]
-        if primary.ip != self._status_primary:
-            self._status_primary = primary.ip
-        self._controller.refresh_status(primary)
+        self._status_primary = primary.ip
+        # Usa il payload /status cache-ato se disponibile, altrimenti fallback
+        # ai soli dati del PlayerRecord per le parti di UI che lo supportano.
+        payload = self._controller.get_cached_status(primary.ip) or {}
+        if payload:
+            self._handle_status(primary.ip, payload)
 
     def _handle_status(self, ip: str, payload: dict) -> None:
         # Only reflect the primary selected player's status in the UI

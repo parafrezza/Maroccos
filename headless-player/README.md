@@ -400,6 +400,56 @@ Invoke-RestMethod -Method POST http://127.0.0.1:8080/settings/reload -ContentTyp
 
 - Invio comando UDP (porta 7777) da PowerShell:
 
+### Requisiti Windows per OFF-player
+
+Quando usi il backend `off` su Windows, `OFF-player.exe` dipende da DLL native che devono essere disponibili al loader:
+
+- `libcurl-4.dll`
+- `libfreetype-6.dll`
+- `libfreeimage-3.dll`
+- `glew32.dll`
+
+Questi file devono trovarsi nella stessa cartella di `OFF-player.exe` o in un percorso incluso nella variabile d'ambiente `PATH`. Se lanciare `OFF-player.exe` direttamente dal File Explorer mostra un errore del tipo "libfreeimage-3.dll non trovato", copia le DLL mancanti nella directory `OFF-player/bin` (o aggiungile a `PATH`) e poi riavvia `headless-player`. I log in `media/_logs/headless-player.log` ora mostreranno anche l’errore `0xC0000135` e la lista delle DLL richieste per facilitare il debug.
+
+Se usi Visual Studio Code, puoi invece lanciare i task di build preconfigurati: apri il pannello `Terminal > Run Task` e scegli **"rebuild OFF-player (MSYS2)"**, oppure esegui lo script `tools/windows_release.ps1` da PowerShell. Lo script compila OFF-player, copia automaticamente i DLL necessari (tramite `OFF-player/tools/copy_runtime_dlls.ps1`) e aggiorna `OFF-player/bin` in modo che headless-player li trovi al primo avvio.
+
+> Novità: se durante la fase di copia `tools/windows_release.ps1` rileva che le DLL critiche (`libcurl-4.dll`, `libfreetype-6.dll`, `libfreeimage-3.dll`, `glew32.dll`) mancano ancora, esegue automaticamente `scripts/msys2/download_libs.sh` dentro MSYS2 MinGW 64-bit e rilancia la copia. Questo evita di dover aprire manualmente la shell quando l'ambiente non è stato ancora popolato.
+
+Se ti serve forzare la copia manuale delle quattro DLL principali (per esempio dopo aver compilato con `make` dentro MSYS2 e voler solo validare l'eseguibile da PowerShell), puoi usare questo snippet da PowerShell:
+
+```powershell
+$needed = "libcurl-4.dll","libfreetype-6.dll","libfreeimage-3.dll","glew32.dll"
+$mingDllDir = "C:\msys64\mingw64\bin"
+$targetDir  = "C:\Users\Riccardo\Desktop\my_repos\Maroccos\OFF-player\bin"
+foreach ($dll in $needed) {
+  Copy-Item -Path (Join-Path $mingDllDir $dll) -Destination $targetDir -Force
+}
+```
+
+Adatta i percorsi a seconda di dove hai installato MSYS2 o clonato la repo.
+
+> **Nota MSYS2** – prima di compilare o copiare i DLL devi eseguire lo script ufficiale di openFrameworks che scarica le librerie precompilate (curl, freetype, FreeImage, glew, ecc.). Apri la shell **MSYS2 MinGW 64-bit** e lancia:
+>
+> ```bash
+> cd /c/Users/Riccardo/Desktop/my_repos/Maroccos/OFF-ROOT/of_v0.12.1_msys2_mingw64_release/scripts/msys2
+> ./download_libs.sh
+> ```
+>
+> Questo popola `OFF-ROOT/of_v0.12.1_msys2_mingw64_release/libs/*/lib/msys2/`. Solo dopo aver scaricato queste librerie i comandi di build riusciranno a copiare automaticamente le DLL in `OFF-player/bin` e `OFF-player/tools/copy_runtime_dlls.ps1` smetterà di cadere nel fallback.
+>
+> Se vuoi scriptare tutto da PowerShell (senza aprire manualmente la GUI di MSYS2), puoi invocare direttamente `bash.exe` di MSYS2 con `-lc` per eseguire un blocco di comandi in una subshell MinGW 64-bit. Esempio:
+>
+> ```powershell
+> $msysRoot = "C:\\msys64"                     # Percorso installazione MSYS2
+> $bash = Join-Path $msysRoot "usr\\bin\\bash.exe"
+> $scriptPath = "/c/Users/Riccardo/Desktop/my_repos/Maroccos/OFF-ROOT/of_v0.12.1_msys2_mingw64_release/scripts/msys2"
+> & $bash -lc "cd $scriptPath && ./download_libs.sh"
+> ```
+>
+> - Assicurati di usare il profilo `mingw64` (default quando usi `usr/bin/bash.exe` con `-lc`).
+> - Puoi incapsulare il comando precedente in uno script `.ps1` o integrarlo nei task di VS Code.
+> - Se MSYS2 non è installato in `C:\msys64`, aggiorna `$msysRoot` di conseguenza.
+
 ```powershell
 $client = [System.Net.Sockets.UdpClient]::new()
 $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Parse("127.0.0.1"), 7777)

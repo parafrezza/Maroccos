@@ -316,6 +316,20 @@ _log_handlers.append(stream_handler)
 
 logging.basicConfig(level=logging.INFO, handlers=_log_handlers)
 off_logger = logging.getLogger("headless-player.off")
+_WINDOWS_MISSING_DEP_CODE = 0xC0000135
+_WINDOWS_OFF_DEPENDENCIES = (
+    "libcurl-4.dll",
+    "libfreetype-6.dll",
+    "libfreeimage-3.dll",
+    "glew32.dll",
+)
+
+def _off_dependency_hint() -> str:
+    return (
+        "Assicurati che OFF-player.exe carichi i DLL necessari: "
+        + ", ".join(_WINDOWS_OFF_DEPENDENCIES)
+        + ". Copia i file nella stessa cartella di OFF-player o mettili nel PATH di sistema."
+    )
 try:
     # Crash handlers: log su file e Desktop + minidump (Windows)
     import faulthandler, atexit
@@ -1897,9 +1911,17 @@ def _udp_thread():
             if not cmd:
                 continue
             in_time = payload.get("in_time")
-            print(f"[UDP] Cmd={cmd} from={addr} in_time={in_time}", flush=True)
+            # Log dettagliato solo in debug per evitare flood nei log di produzione,
+            # specialmente per i probe di sync (cmd=time).
             try:
-                gui_log(f"UDP cmd={cmd}", level="INFO", kind="udp", data={"from": addr[0], "in_time": in_time})
+                logger = logging.getLogger(__name__)
+                logger.debug("[UDP] Cmd=%s from=%s in_time=%s", cmd, addr, in_time)
+            except Exception:
+                pass
+            try:
+                # Mantieni il forwarding alla GUI ma con livello DEBUG, così la
+                # GUI può filtrare o abilitare solo quando necessario.
+                gui_log(f"UDP cmd={cmd}", level="DEBUG", kind="udp", data={"from": addr[0], "in_time": in_time})
             except Exception:
                 pass
             # Lightweight time query for app-level sync (SNTP-like)
@@ -2461,6 +2483,24 @@ def _off_recent_logs(limit: int = 5) -> str:
         return ""
     return " | ".join(cleaned)
 
+def _log_missing_dependency_hint(code: int, path: str | None) -> None:
+    if not _is_windows or code != _WINDOWS_MISSING_DEP_CODE:
+        return
+    try:
+        hint = _off_dependency_hint()
+        off_logger.error(
+            "OFF-player manca di dipendenze Windows (code=%s path=%s). %s PATH=%s",
+            code,
+            path,
+            hint,
+            os.environ.get("PATH"),
+        )
+    except Exception:
+        try:
+            off_logger.error("OFF-player manca di dipendenze Windows (code=%s path=%s)", code, path)
+        except Exception:
+            pass
+
 
 def request_headless_exit(reason: str, exit_code: int | None = None) -> None:
     if _exit_requested.is_set():
@@ -2554,6 +2594,7 @@ def _handle_off_process_exit(proc_obj: subprocess.Popen | None) -> None:
     elapsed = time.time() - first_fail
     MAX_RETRIES = 3
     WINDOW = 60.0  # secondi
+    _log_missing_dependency_hint(exit_code or 0, off_proc.get("path"))
     recent = _off_recent_logs()
     off_logger.error(
         "OFF-player terminated unexpectedly (code=%s) retry=%s elapsed=%.1fs. Recent output: %s",
@@ -2905,6 +2946,7 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
                 return
             if code is None or code == 0:
                 return
+            _log_missing_dependency_hint(code, exe)
             recent = _off_recent_logs()
             off_logger.error(
                 "OFF-player exited immediately after launch (code=%s path=%s). Recent output: %s",
