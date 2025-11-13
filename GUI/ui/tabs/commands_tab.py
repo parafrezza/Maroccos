@@ -128,6 +128,9 @@ class PlaylistWidget(QListWidget):
 class CommandsTab(QWidget):
     """Expose playback commands, media upload helpers, and system actions."""
 
+    # Segnale centralizzato per upload di file dal filesystem (picker o drag&drop)
+    filesDroppedForUpload = Signal(list)
+
     playbackTriggered = Signal(str, dict)
     miscCommandTriggered = Signal(str, dict)
     uploadRequested = Signal(str)
@@ -592,37 +595,122 @@ class CommandsTab(QWidget):
         # Permetti la selezione singola per scegliere il media per fast-start
         self._device_media_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self._device_media_list.itemSelectionChanged.connect(self._update_faststart_enabled)
-        # Abilita drop: trascinando elementi dalla libreria parte l'upload
+        # Abilita drop: trascinando elementi dalla libreria o file dal filesystem parte l'upload
         self._device_media_list.setAcceptDrops(True)
         self._device_media_list.setToolTip("Trascina qui per caricare media sul device")
+
         def _dev_drag_enter(ev):
+            """Accetta sia drag interno (_MEDIA_MIME) che file dal filesystem (URLs)."""
             try:
-                if ev.mimeData().hasFormat(_MEDIA_MIME):
+                md = ev.mimeData()
+                if md.hasFormat(_MEDIA_MIME) or md.hasUrls():
+                    try:
+                        self._device_media_list.setStyleSheet("background-color: #f0fff4; border: 2px dashed #27ae60;")
+                        self._device_media_list.setDropIndicatorShown(True)
+                    except Exception:
+                        pass
+                    ev.setDropAction(Qt.CopyAction)
                     ev.acceptProposedAction()
                 else:
                     ev.ignore()
             except Exception:
                 ev.ignore()
-        def _dev_drop(ev):
+
+        def _dev_drag_move(ev):
             try:
-                raw = bytes(ev.mimeData().data(_MEDIA_MIME)) if ev.mimeData().hasFormat(_MEDIA_MIME) else b"[]"
-                items = json.loads(raw.decode("utf-8", errors="ignore"))
+                md = ev.mimeData()
+                if md.hasFormat(_MEDIA_MIME) or md.hasUrls():
+                    ev.setDropAction(Qt.CopyAction)
+                    ev.acceptProposedAction()
+                else:
+                    ev.ignore()
             except Exception:
-                items = []
-            rels: list[str] = []
-            for ent in items or []:
-                try:
-                    rel = ent.get("rel") or ent.get("label")
-                except Exception:
-                    rel = None
-                if rel:
-                    rels.append(str(rel))
-            if rels:
-                self._trigger_auto_downloads(rels)
-                ev.acceptProposedAction()
-            else:
                 ev.ignore()
+
+        def _dev_drop(ev):
+            """Gestisce drop dalla libreria interna o da file system con filtratura MIME."""
+            md = ev.mimeData()
+
+            # 1) Drag & drop interno dalla libreria (formato _MEDIA_MIME)
+            try:
+                if md.hasFormat(_MEDIA_MIME):
+                    try:
+                        raw = bytes(md.data(_MEDIA_MIME))
+                        items = json.loads(raw.decode("utf-8", errors="ignore"))
+                    except Exception:
+                        items = []
+                    rels: list[str] = []
+                    for ent in items or []:
+                        try:
+                            rel = ent.get("rel") or ent.get("label")
+                        except Exception:
+                            rel = None
+                        if rel:
+                            rels.append(str(rel))
+                    if rels:
+                        self._trigger_auto_downloads(rels)
+                        try:
+                            self._device_media_list.setStyleSheet("")
+                            self._device_media_list.setDropIndicatorShown(False)
+                        except Exception:
+                            pass
+                        ev.acceptProposedAction()
+                        return
+            except Exception:
+                # Se fallisce il formato interno, proviamo comunque gli URL
+                pass
+
+            # 2) Drag & drop dal filesystem (file URLs)
+            try:
+                if md.hasUrls():
+                    paths: list[str] = []
+                    for url in md.urls():
+                        try:
+                            if url.isLocalFile():
+                                paths.append(url.toLocalFile())
+                        except Exception:
+                            continue
+                    # Filtra le estensioni usando lo stesso criterio del file picker
+                    if paths:
+                        try:
+                            allowed = set(self._allowed_patterns())
+                        except Exception:
+                            allowed = set()
+                        filtered: list[str] = []
+                        for p in paths:
+                            ext = "*" + Path(p).suffix.lower() if Path(p).suffix else ""
+                            if not allowed or ext in allowed:
+                                filtered.append(p)
+                        if not filtered:
+                            ev.ignore()
+                            return
+                        # Riutilizza la stessa pipeline di upload esterno
+                        try:
+                            self.filesDroppedForUpload.emit(filtered)  # type: ignore[attr-defined]
+                        except Exception:
+                            # Fallback: prova a usare uploadRequested con il primo file
+                            try:
+                                self.uploadRequested.emit(filtered[0])  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                        try:
+                            self._device_media_list.setStyleSheet("")
+                            self._device_media_list.setDropIndicatorShown(False)
+                        except Exception:
+                            pass
+                        ev.acceptProposedAction()
+                        return
+            except Exception:
+                pass
+
+            try:
+                self._device_media_list.setStyleSheet("")
+                self._device_media_list.setDropIndicatorShown(False)
+            except Exception:
+                pass
+            ev.ignore()
         self._device_media_list.dragEnterEvent = _dev_drag_enter  # type: ignore[assignment]
+        self._device_media_list.dragMoveEvent = _dev_drag_move  # type: ignore[assignment]
         self._device_media_list.dropEvent = _dev_drop  # type: ignore[assignment]
         device_layout.addWidget(self._device_media_list)
         layout.addWidget(device_box, 1, 1)
@@ -1937,11 +2025,16 @@ class CommandsTab(QWidget):
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona media da caricare", start_dir, filter_str)
         if not paths:
             return
-        for p in paths:
-            try:
-                self.uploadRequested.emit(p)
-            except Exception:
-                pass
+        # Centralizza: usa il segnale condiviso per tutti gli upload da filesystem
+        try:
+            self.filesDroppedForUpload.emit(paths)
+        except Exception:
+            # Fallback: mantieni il vecchio comportamento se il segnale non è connesso
+            for p in paths:
+                try:
+                    self.uploadRequested.emit(p)
+                except Exception:
+                    pass
 
     def _on_media_selection_changed(self) -> None:
         self._update_upload_button(self._targets_enabled)

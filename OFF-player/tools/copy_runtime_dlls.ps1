@@ -36,6 +36,25 @@ if (-not (Test-Path $bash)) {
 }
 
 $copied = @()
+function Prune-StaleDlls {
+    param(
+        [string]$Dir,
+        [string[]]$Keep
+    )
+
+    if (-not (Test-Path -LiteralPath $Dir)) { return }
+    $keepSet = $Keep | Sort-Object -Unique
+    Get-ChildItem -LiteralPath $Dir -File -Filter '*.dll' -ErrorAction SilentlyContinue |
+        Where-Object { $keepSet -notcontains $_.Name } |
+        ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                Write-Host "Rimosso DLL obsoleta: $($_.Name)" -ForegroundColor DarkGray
+            } catch {
+                Write-Warning "Impossibile rimuovere $($_.Name): $($_.Exception.Message)"
+            }
+        }
+}
 
 function Copy-IfExists([string]$src, [string]$destDir) {
     if (Test-Path $src) {
@@ -130,6 +149,7 @@ if ($copied.Count -eq 0) {
 if ($copied.Count -gt 0) {
     Write-Host "DLL copiate in ${binDir}:" -ForegroundColor Green
     $copied | Sort-Object -Unique | ForEach-Object { Write-Host " - $_" }
+    Prune-StaleDlls -Dir $binDir -Keep $copied
 } else {
     Write-Warning "Nessuna DLL copiata. Forse sono già presenti o l'analisi non ha trovato dipendenze."
 }

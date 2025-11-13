@@ -172,6 +172,35 @@ function Invoke-SetResolutionAsset {
     Remove-Item -LiteralPath $publishTemp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+function Ensure-HeadlessBinary {
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $distDir = Join-Path $repoRoot 'headless-player\dist'
+    $bundleDir = Join-Path $distDir 'headless-player'
+    $exePath = Join-Path $bundleDir 'headless-player.exe'
+
+    if (Test-Path -LiteralPath $exePath) {
+        Write-Host ("headless-player.exe trovato: {0}" -f $exePath) -ForegroundColor DarkGray
+        return
+    }
+
+    $buildScript = Join-Path $PSScriptRoot 'build_headless_windows.ps1'
+    if (-not (Test-Path -LiteralPath $buildScript)) {
+        throw "build_headless_windows.ps1 non trovato: $buildScript"
+    }
+
+    Write-Host 'headless-player.exe mancante: genero la build Windows' -ForegroundColor Yellow
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "build_headless_windows.ps1 fallito ($LASTEXITCODE)"
+    }
+
+    if (-not (Test-Path -LiteralPath $exePath)) {
+        throw "headless-player.exe non trovato dopo build_headless_windows.ps1"
+    }
+
+    Write-Host ("headless-player.exe creato: {0}" -f $exePath) -ForegroundColor Green
+}
+
 try {
     $iss = Resolve-InstallerScriptPath -Path $IssPath
     Write-Host "Script Inno Setup:" $iss
@@ -255,6 +284,7 @@ try {
     }
     $assetsDir = Join-Path (Split-Path -Parent $iss) 'assets'
     Invoke-SetResolutionAsset -Root (Split-Path -Parent $PSScriptRoot) -AssetsDir $assetsDir
+    Ensure-HeadlessBinary
 
     # Verifica presenza K-Lite (nome flessibile con/senza trattino)
     $kliteVariants = @(

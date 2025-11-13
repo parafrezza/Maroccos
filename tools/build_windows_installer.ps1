@@ -58,23 +58,24 @@ function Should-RebuildOFF {
 }
 
 <#
-  0) Versione: bump patch SOLO se ricompiliamo headless-player (smart skip attivo di default).
+  0) Versione: bump patch SOLO se ricompiliamo headless-player o OFF-player (smart skip attivo di default).
      Se si usa -SkipRebuild o se lo smart skip decide per lo skip, non cambiamo la versione.
 #>
+$willBuildHeadless = Should-RebuildHeadless -ForDebug:$Debug
+$willBuildOff = Should-RebuildOFF
 $verFile = Join-Path $root 'headless-player\VERSION'
 if (Test-Path -LiteralPath $verFile) {
     $ver = (Get-Content -LiteralPath $verFile -Raw).Trim()
     $ver = $ver.TrimStart('v','V')
-    $willBuildHeadless = Should-RebuildHeadless -ForDebug:$Debug
-    if ($willBuildHeadless) {
-    if ($ver -match '^(\d+)\.(\d+)\.(\d+)$') {
-        $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = [int]$Matches[3] + 1
-        $newVer = "$maj.$min.$pat"
-        Set-Content -LiteralPath $verFile -Value $newVer -NoNewline
-        Write-Host "[VERSION] headless-player: $ver -> $newVer" -ForegroundColor Yellow
-    } else {
-        Write-Warning "[VERSION] Formato VERSION inatteso ('$ver'), nessun bump eseguito"
-    }
+    if ($willBuildHeadless -or $willBuildOff) {
+        if ($ver -match '^(\d+)\.(\d+)\.(\d+)$') {
+            $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = [int]$Matches[3] + 1
+            $newVer = "$maj.$min.$pat"
+            Set-Content -LiteralPath $verFile -Value $newVer -NoNewline
+            Write-Host "[VERSION] headless-player: $ver -> $newVer" -ForegroundColor Yellow
+        } else {
+            Write-Warning "[VERSION] Formato VERSION inatteso ('$ver'), nessun bump eseguito"
+        }
     }
 }
 
@@ -87,7 +88,7 @@ if (Test-Path -LiteralPath $killOffScript) {
 
 # 1) Build headless-player (release)
 Write-Host '==> Build headless-player' -ForegroundColor Cyan
-$doHeadless = Should-RebuildHeadless -ForDebug:$Debug
+$doHeadless = $willBuildHeadless
 if (-not $doHeadless) {
     Write-Host '[SKIP] headless-player up-to-date: salto rebuild' -ForegroundColor DarkGreen
 } else {
@@ -99,6 +100,7 @@ if (-not $doHeadless) {
 }
 
 # 2) Build OFF-player con MSYS2 (Release/Debug)
+$doOff = $willBuildOff
 Write-Host '==> Build OFF-player (MSYS2)' -ForegroundColor Cyan
 $bash = 'C:\msys64\usr\bin\bash.exe'
 if (-not (Test-Path $bash)) { throw "MSYS2 non trovato in $bash" }
@@ -107,7 +109,6 @@ $ws = $root
 $wsUnix = & $bash -lc "cygpath -u '$ws'"
 $ofRootUnix = "$wsUnix/OFF-ROOT/of_v0.12.1_msys2_mingw64_release"
 $cfg = 'Release'
-$doOff = Should-RebuildOFF
 if (-not $doOff) {
     Write-Host '[SKIP] OFF-player up-to-date: salto rebuild' -ForegroundColor DarkGreen
 } else {

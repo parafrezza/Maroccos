@@ -84,6 +84,7 @@ Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
 #if FileExists(KLitePath)
 Name: "install_klite"; Description: "Installa anche i codec K-Lite (necessari per OFF-player)"
 #endif
+Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"; Flags: unchecked
 Name: "autostart_headless"; Description: "Avvia headless all'avvio (crea Attività Pianificata)"
 Name: "set_off_autostart"; Description: "Imposta OFF_AUTOSTART=1 (consigliato su Windows)"
 Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive unchecked
@@ -117,7 +118,7 @@ Source: "{#KLitePath}"; DestDir: "{tmp}"; DestName: "{#KLiteFileName}"; Flags: i
 #if FileExists(IcoSrcPath)
 Source: "{#IcoSrcPath}"; DestDir: "{app}\assets"; DestName: "morocco-player.ico"; Flags: ignoreversion
 #endif
-Source: "{#SourcePath}\assets\tigervnc64-winvnc-1.15.0.exe"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "{#SourcePath}\assets\tigervnc64-winvnc-1.15.0.exe"; DestDir: "{app}\assets"; Flags: ignoreversion; Tasks: install_tigervnc
 Source: "{#SourcePath}\assets\SetResolution\*"; DestDir: "{app}\tools\SetResolution"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Run]
@@ -126,17 +127,17 @@ Source: "{#SourcePath}\assets\SetResolution\*"; DestDir: "{app}\tools\SetResolut
 Filename: "{tmp}\\{#KLiteFileName}"; Parameters: "/verysilent /norestart"; Flags: waituntilterminated; Tasks: install_klite
 #endif
 
-; Installa SEMPRE TigerVNC in modo silenzioso
-Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/silent"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: FileExists(ExpandConstant('{app}\\assets\\tigervnc64-winvnc-1.15.0.exe'))
+; Installa TigerVNC in modo silenzioso quando richiesto
+Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/silent"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: FileExists(ExpandConstant('{app}\\assets\\tigervnc64-winvnc-1.15.0.exe')); Tasks: install_tigervnc
 ; Configura TigerVNC SENZA password (accesso non autenticato), e riavvia servizio se presente
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; $kp='HKLM:\\SOFTWARE\\TigerVNC\\WinVNC4'; New-Item -Path $kp -Force | Out-Null; Remove-ItemProperty -Path $kp -Name 'Password' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path $kp -Name 'ControlPassword' -ErrorAction SilentlyContinue; New-ItemProperty -Path $kp -Name 'AuthRequired' -PropertyType DWord -Value 0 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'SecurityTypes' -PropertyType String -Value 'None' -Force | Out-Null; New-ItemProperty -Path $kp -Name 'AlwaysShared' -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'QuerySetting' -PropertyType DWord -Value 2 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'UseControlAuth' -PropertyType DWord -Value 0 -Force | Out-Null; Try {{ Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue }} Catch {{}}; Try {{ Restart-Service -Name 'WinVNC4' -Force -ErrorAction SilentlyContinue }} Catch {{}}; foreach($svc in 'tvnserver','WinVNC4') {{ try {{ Set-Service -Name $svc -StartupType Automatic }} catch {{}}; try {{ Start-Service -Name $svc }} catch {{}} }}"""; Flags: runhidden waituntilterminated
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; $kp='HKLM:\\SOFTWARE\\TigerVNC\\WinVNC4'; New-Item -Path $kp -Force | Out-Null; Remove-ItemProperty -Path $kp -Name 'Password' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path $kp -Name 'ControlPassword' -ErrorAction SilentlyContinue; New-ItemProperty -Path $kp -Name 'AuthRequired' -PropertyType DWord -Value 0 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'SecurityTypes' -PropertyType String -Value 'None' -Force | Out-Null; New-ItemProperty -Path $kp -Name 'AlwaysShared' -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'QuerySetting' -PropertyType DWord -Value 2 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'UseControlAuth' -PropertyType DWord -Value 0 -Force | Out-Null; Try {{ Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue }} Catch {{}}; Try {{ Restart-Service -Name 'WinVNC4' -Force -ErrorAction SilentlyContinue }} Catch {{}}; foreach($svc in 'tvnserver','WinVNC4') {{ try {{ Set-Service -Name $svc -StartupType Automatic }} catch {{}}; try {{ Start-Service -Name $svc }} catch {{}} }}"""; Flags: runhidden waituntilterminated; Tasks: install_tigervnc
 
 ; PRIMA: Crea SEMPRE l'utente "extra" (necessario per provisioning e autostart)
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference = 'Stop'; if (-not (Get-LocalUser -Name '{#ExtraUserName}' -ErrorAction SilentlyContinue)) {{ $sec = ConvertTo-SecureString '{#ExtraPassword}' -AsPlainText -Force; New-LocalUser -Name '{#ExtraUserName}' -Password $sec -FullName 'Extra Admin' -PasswordNeverExpires:$true -UserMayNotChangePassword:$true | Out-Null }}; Add-LocalGroupMember -Group 'Administrators' -Member '{#ExtraUserName}' -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; StatusMsg: "Creazione utente amministratore..."
 
 ; POI: Esegui provisioning (ora l'utente extra esiste già)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player..."
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\create_provision_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#ProvisionTaskName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Programmazione ottimizzazioni al prossimo avvio..."
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player..."; Tasks: provision\run_now
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\create_provision_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#ProvisionTaskName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Programmazione ottimizzazioni al prossimo avvio..."; Tasks: provision\schedule
 
 ; Configurazione auto-logon per utente extra
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
@@ -415,15 +416,18 @@ begin
   // Alla pagina finale, verifica lo stato del servizio TigerVNC e aggiorna la label
   if CurPageID = wpFinished then
   begin
-    try
-      Msg := 'TigerVNC: verifica stato...';
-      if IsVNCServiceRunning() then
-        Msg := 'TigerVNC: attivo'
-      else
-        Msg := 'TigerVNC: NON attivo (verificare servizio)';
-      WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 + Msg;
-    except
-      // best-effort, non bloccare la pagina finale
+    if IsTaskSelected('install_tigervnc') then
+    begin
+      try
+        Msg := 'TigerVNC: verifica stato...';
+        if IsVNCServiceRunning() then
+          Msg := 'TigerVNC: attivo'
+        else
+          Msg := 'TigerVNC: NON attivo (verificare servizio)';
+        WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 + Msg;
+      except
+        // best-effort, non bloccare la pagina finale
+      end;
     end;
   end;
 end;

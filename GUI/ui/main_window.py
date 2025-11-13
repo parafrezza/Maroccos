@@ -205,6 +205,11 @@ class MainWindow(QMainWindow):
         self._commands_tab.playbackTriggered.connect(self._handle_playback)
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
         self._commands_tab.uploadRequested.connect(self._handle_upload)
+        # Upload centralizzato da filesystem (picker + drag&drop)
+        try:
+            self._commands_tab.filesDroppedForUpload.connect(self._handle_files_dropped_for_upload)
+        except Exception:
+            pass
         self._commands_tab.mediaDirectoryRequested.connect(self._choose_media_directory)
         self._commands_tab.deviceMediaRefreshRequested.connect(self._handle_device_media_refresh)
         # Playlist wiring
@@ -434,6 +439,17 @@ class MainWindow(QMainWindow):
         if not self._selected_players:
             return
         self._controller.upload_media(Path(path), self._selected_players)
+
+    def _handle_files_dropped_for_upload(self, paths: list[str]) -> None:
+        """Gestisce upload multipli da filesystem (picker o drag&drop)."""
+        if not self._selected_players:
+            return
+        for p in paths or []:
+            try:
+                self._controller.upload_media(Path(p), self._selected_players)
+            except Exception:
+                # Ignora singoli errori, continuerà con gli altri file
+                continue
 
     def _handle_deploy(self) -> None:
         if not self._selected_players:

@@ -3235,6 +3235,32 @@ def _restore_idle_black_cover(backend: Any | None = None) -> None:
     except Exception as exc:
         print(f"[AUTOPLAY] Ripristino brightness dopo cover fallito: {exc}", flush=True)
 
+def _dim_backend_before_play(backend: Any | None = None) -> None:
+    """Abbassa temporaneamente la luminosità del backend (se supportato) prima di far partire il primo frame."""
+    if backend is None:
+        try:
+            ensure_backend()
+            backend = current_framework.get("backend")
+        except Exception:
+            backend = None
+    if not backend or not hasattr(backend, "visual_fade_to"):
+        return
+    try:
+        prev = float(globals().get("_LAST_VISUAL_BRIGHTNESS", 1.0))
+    except Exception:
+        prev = 1.0
+    try:
+        globals().update({
+            "_AUTO_IDLE_BLACK_RESTORE": prev,
+            "_LAST_VISUAL_BRIGHTNESS": 0.0,
+        })
+    except Exception:
+        pass
+    try:
+        backend.visual_fade_to(0.0, 0.0)
+    except Exception:
+        pass
+
 # Avvia in background un tentativo iniziale di mostrare il nero se lo splash non è attivo
 def _idle_bootstrap():
     try:
