@@ -1,0 +1,25 @@
+{
+  "network": {
+    "player_port": 8080,
+    "ping_interval": 10.0,
+    "ping_ms": 200,
+    "status_poll_ms": 2000
+  },
+  "media": {
+    "server_port": 9000
+  },
+  "update": {
+    "auto_build": true,
+    "serve_port": 8000
+  },
+  "remote": {
+    "vnc_password": "extra",
+    "vnc_port": 5900,
+    "vnc_extra_args": []
+  },
+  "startup": {
+    "known_macs": [],
+    "broadcast": "255.255.255.255",
+    "port": 9
+  }
+}

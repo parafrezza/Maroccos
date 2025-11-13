@@ -68,6 +68,27 @@
 				},
 				"problemMatcher": [],
 				"detail": "Genera l'installer Windows con Inno Setup"
+			},
+			{
+				"label": "rebuild OFF-player (MSYS2)",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/windows_release.ps1"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Ricompila OFF-player (MSYS2) e copia le DLL runtime"
 			}
 		]
 	}

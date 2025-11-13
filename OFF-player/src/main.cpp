@@ -1,4 +1,4 @@
-// main.cpp -RF 2025
+// main.cpp -RF 2025 
 #include "ofMain.h"
 #include "ofApp.h"
 // Usa EGLWindow SOLO se esplicitamente richiesto: molte build di oF su Linux ARM non includono ofAppEGLWindow
