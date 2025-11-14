@@ -51,6 +51,14 @@ make Release
 open bin/OFF-player.app  # macOS
 ```
 
+## Condivisione cartella media (Windows)
+
+Per rendere disponibili i contenuti locali alla rete:
+- crea (o verifica che esista) una cartella `media` sul Desktop dell'account usato dal player;
+- apri le proprietà della cartella, scheda "Condivisione", e attiva la condivisione avanzata con nome `media`;
+- concedi a "Everyone" i permessi di modifica (lettura/scrittura) così da poter caricare file da altri PC;
+- se il provisioning automatizzato viene eseguito, questi passaggi sono gestiti dallo script, ma è utile conoscerli per controlli manuali.
+
 ## Integrazione: usare OFF-player come backend del headless
 1) Avvia OFF-player (assicura `httpPort` in `OFF-player/config.json`, default 8080).
 2) Avvia headless-player.

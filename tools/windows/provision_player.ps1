@@ -29,6 +29,8 @@ param(
     [switch]$SkipTigerVNC,
     [string]$TigerVNCPassword = 'extra',
     [string]$ScheduledTaskName,
+    [string]$HeadlessTaskName = 'MaroccosHeadless',
+    [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [switch]$SkipMediaShare,
     [switch]$SkipHostnameSync
@@ -477,10 +479,11 @@ function Clean-Desktop {
         "$Env:PUBLIC\Desktop",
         "$Env:USERPROFILE\Desktop"
     )
+    $keepItems = @('Player.lnk', 'media')
     foreach ($p in $paths) {
         if (-not (Test-Path -LiteralPath $p)) { continue }
         Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notlike '*.lnk' -or $_.Name -ne 'Player.lnk' } |
+            Where-Object { $keepItems -notcontains $_.Name } |
             ForEach-Object {
                 $itemPath = $_.FullName
                 if (-not (Send-ToRecycleBin -Target $itemPath)) {
@@ -992,6 +995,98 @@ function Ensure-ServiceRecovery {
     } catch {
         Write-Warn ("Impossibile impostare restart su {0}: {1}" -f $ServiceName, $_.Exception.Message)
     }
+}
+
+function Ensure-HeadlessScheduledTask {
+    param(
+        [string]$InstallRoot = 'C:\Program Files\marocco-player',
+        [string]$TaskName = 'MaroccosHeadless',
+        [string]$RunAsUser = 'extra'
+    )
+
+    Write-Step 'Configuro avvio headless-player al login utente'
+
+    $exePath = Join-Path $InstallRoot 'headless-player\headless-player.exe'
+    if (-not (Test-Path $exePath)) {
+        Write-Warn ("headless-player.exe non trovato in {0}; salto configurazione autostart" -f $exePath)
+        return
+    }
+
+    try {
+        Import-Module ScheduledTasks -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warn ("Modulo ScheduledTasks non disponibile: {0}" -f $_.Exception.Message)
+        return
+    }
+
+    try {
+        $svc = Get-Service -Name 'MaroccosHeadless' -ErrorAction SilentlyContinue
+        if ($svc) {
+            if ($svc.Status -eq 'Running') {
+                try { Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue } catch {}
+            }
+            if ($svc.StartType -ne 'Manual') {
+                try {
+                    Set-Service -Name $svc.Name -StartupType Manual -ErrorAction Stop
+                    Write-Info 'Servizio MaroccosHeadless impostato su avvio manuale'
+                } catch {
+                    Write-Warn ("Impossibile modificare startup del servizio MaroccosHeadless: {0}" -f $_.Exception.Message)
+                }
+            }
+        }
+    } catch {
+        Write-Warn ("Errore durante la gestione del servizio MaroccosHeadless: {0}" -f $_.Exception.Message)
+    }
+
+    $workDir = Split-Path $exePath -Parent
+    $currentPrincipal = ([Security.Principal.WindowsIdentity]::GetCurrent()).Name
+    $principalUser = $currentPrincipal
+
+    if (-not [string]::IsNullOrWhiteSpace($RunAsUser)) {
+        try {
+            $targetUser = $RunAsUser
+            if ($RunAsUser -notmatch '\\|@') {
+                $targetUser = "${env:COMPUTERNAME}\$RunAsUser"
+            }
+            if (Get-LocalUser -Name $RunAsUser -ErrorAction SilentlyContinue) {
+                $principalUser = $targetUser
+            } else {
+                Write-Warn ("Utente '{0}' non trovato; userò {1}" -f $RunAsUser, $currentPrincipal)
+            }
+        } catch {
+            Write-Warn ("Impossibile verificare utente '{0}': {1}" -f $RunAsUser, $_.Exception.Message)
+        }
+    }
+
+    try {
+        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Info ("Rimuovo attività esistente {0}" -f $TaskName)
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        }
+    } catch {
+        Write-Warn ("Impossibile rimuovere l'attività {0}: {1}" -f $TaskName, $_.Exception.Message)
+    }
+
+    $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $workDir
+    if ($principalUser) {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser
+    } else {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+    }
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+    $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType Interactive -RunLevel Highest
+
+    try {
+        $definition = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+        Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force | Out-Null
+        Write-Ok ("Attività {0} registrata per l'utente {1}" -f $TaskName, $principalUser)
+    } catch {
+        Write-Warn ("Registrazione attività {0} fallita: {1}" -f $TaskName, $_.Exception.Message)
+        return
+    }
+
+    Write-Info ('Per testare subito: Start-ScheduledTask -TaskName "{0}"' -f $TaskName)
 }
 
 function Apply-PreferredResolution {
@@ -1618,7 +1713,7 @@ function Main {
     Apply-PreferredResolution
     Rename-ComputerFromConfig
     Ensure-RunOnLogin -InstallRoot $InstallRoot
-    Ensure-ServiceRecovery -ServiceName 'MaroccosHeadless'
+    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser
 
     # Applica impostazioni utente anche all'account extra se esiste
     $applyUserSettings = Join-Path $InstallRoot 'tools\windows\apply_user_settings.ps1'
