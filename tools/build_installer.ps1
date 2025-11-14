@@ -11,6 +11,57 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Parse-VersionString {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "Stringa versione non valida (vuota)."
+    }
+
+    $trimmed = $Value.Trim()
+    $prefix = ''
+    if ($trimmed.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $prefix = 'v'
+        $trimmed = $trimmed.Substring(1)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Stringa versione non valida dopo il prefisso: '$Value'"
+    }
+
+    return [pscustomobject]@{
+        Prefix = $prefix
+        Core   = $trimmed
+        Raw    = $Value
+    }
+}
+
+function Increment-VersionCore {
+    param([string]$Core)
+
+    if ([string]::IsNullOrWhiteSpace($Core)) {
+        throw "Versione di origine vuota: impossibile incrementare."
+    }
+
+    $parts = $Core.Split('.')
+    if ($parts.Count -lt 1) { throw "Versione non valida: '$Core'" }
+
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        if ($parts[$i] -notmatch '^[0-9]+$') {
+            throw "Componente versione non numerico: '$($parts[$i])' in '$Core'"
+        }
+    }
+
+    while ($parts.Count -lt 3) {
+        $parts += '0'
+    }
+
+    $lastIndex = $parts.Count - 1
+    $parts[$lastIndex] = ([int]$parts[$lastIndex] + 1).ToString()
+
+    return ($parts -join '.')
+}
+
 if ($Debug) {
     throw "L'opzione -Debug non è più supportata: OFF-player viene distribuito solo in Release."
 }
@@ -244,26 +295,46 @@ try {
 
     Write-Host "ISCC trovato:" $iscc
 
-    # Determina versione da file se non passata
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $verFile = Join-Path $repoRoot 'headless-player\VERSION'
+    $versionFileUpdate = $null
+
+    # Determina versione da file se non passata, incrementandola automaticamente
     if (-not $Version) {
-        $root = Split-Path -Parent $PSScriptRoot
-        $verFile = Join-Path $root 'headless-player\VERSION'
+        $existingRaw = $null
         if (Test-Path -LiteralPath $verFile) {
-            $Version = (Get-Content -LiteralPath $verFile -Raw).Trim()
+            $existingRaw = (Get-Content -LiteralPath $verFile -Raw).Trim()
         } else {
-            Write-Warning "VERSION non trovato, uso 0.0.0"
-            $Version = '0.0.0'
+            Write-Warning "VERSION non trovato, inizializzo da 0.0.0"
+            $existingRaw = '0.0.0'
         }
+
+        $existingParsed = Parse-VersionString $existingRaw
+        $newCore = Increment-VersionCore $existingParsed.Core
+        $prefixForFile = if ($existingParsed.Prefix) { $existingParsed.Prefix } else { 'v' }
+        $oldDisplay = if ($existingParsed.Prefix) { $existingParsed.Prefix + $existingParsed.Core } else { $existingParsed.Core }
+        $newDisplay = "${prefixForFile}${newCore}"
+        Write-Host ("Versione incrementata automaticamente: {0} -> {1}" -f $oldDisplay, $newDisplay) -ForegroundColor Cyan
+
+        $Version = $newCore
+        $versionFileUpdate = [pscustomobject]@{
+            Path = $verFile
+            Content = $newDisplay
+        }
+    } else {
+        $parsedParam = Parse-VersionString $Version
+        $Version = $parsedParam.Core
     }
 
     $mode = 'Release'
     $appName = $AppBaseName
-    $desktopLink = "${appName}_v$Version"
+    $versionTag = "v$Version"
+    $desktopLink = "${appName}_${versionTag}"
     $headlessDir = 'headless-player'
     $headlessExe = 'headless-player.exe'
-    $outBase = $desktopLink
+    $outBase = "${appName}-installer_${versionTag}"
 
-    Write-Host "Costruzione installer: AppName=$appName Version=$Version Mode=$mode" -ForegroundColor Cyan
+    Write-Host "Costruzione installer: AppName=$appName Version=$versionTag (core=$Version) Mode=$mode" -ForegroundColor Cyan
 
     $defines = @(
         "/DAppName=$appName",
@@ -349,6 +420,24 @@ try {
         }
         exit $code
     }
+        if ($versionFileUpdate) {
+            Set-Content -LiteralPath $versionFileUpdate.Path -Value $versionFileUpdate.Content -Encoding ascii
+            Write-Host ("File VERSION aggiornato a {0}" -f $versionFileUpdate.Content) -ForegroundColor Green
+        }
+
+        $installerDir = Join-Path (Split-Path -Parent $iss) 'dist'
+        $builtInstaller = Join-Path $installerDir ($outBase + '.exe')
+        if (Test-Path -LiteralPath $builtInstaller) {
+            $rootDist = Join-Path $repoRoot 'dist'
+            if (-not (Test-Path -LiteralPath $rootDist)) {
+                New-Item -ItemType Directory -Path $rootDist -Force | Out-Null
+            }
+            $destInstaller = Join-Path $rootDist (Split-Path -Leaf $builtInstaller)
+            Copy-Item -LiteralPath $builtInstaller -Destination $destInstaller -Force
+            Write-Host ("Installer copiato in {0}" -f $destInstaller) -ForegroundColor Green
+        } else {
+            Write-Warning ("Impossibile trovare l'eseguibile Inno atteso: {0}" -f $builtInstaller)
+        }
     Write-Host "Installer creato con successo."
     exit 0
 }
