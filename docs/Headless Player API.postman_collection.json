@@ -1,0 +1,463 @@
+{
+	"info": {
+		"_postman_id": "2d2a2927-0435-47a1-a5a7-057b669145c9",
+		"name": "Headless Player API",
+		"description": "Collection of common headless-player commands including display mode control and playback helpers.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "13524408",
+		"_collection_link": "https://streetartitaly.postman.co/workspace/morocco-player~73c4861f-85cf-47f1-8e94-a1f5d6eb0669/collection/13524408-2d2a2927-0435-47a1-a5a7-057b669145c9?action=share&source=collection_link&creator=13524408"
+	},
+	"item": [
+		{
+			"name": "System",
+			"item": [
+				{
+					"name": "Get Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"status"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List Media",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/media",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"media"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "UDP Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/udp/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"udp",
+								"status"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Trigger Startup",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"macs\": [\n    \"AA:BB:CC:DD:EE:FF\"\n  ],\n  \"broadcast\": \"255.255.255.255\",\n  \"port\": 9\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/system/startup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"system",
+								"startup"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Display Mode",
+			"item": [
+				{
+					"name": "Apply Custom Mode",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"width\": 1920,\n  \"height\": 1080,\n  \"refresh_hz\": 60\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/display/mode/apply",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"display",
+								"mode",
+								"apply"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Force 1280x720",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refresh_hz\": 50\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/display/mode/force_720p",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"display",
+								"mode",
+								"force_720p"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Playback",
+			"item": [
+				{
+					"name": "Prepare Faststart",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"filename\": \"sample.mp4\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/faststart/prepare",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"faststart",
+								"prepare"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Faststart Go",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/faststart/go?seconds=0.5",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"faststart",
+								"go"
+							],
+							"query": [
+								{
+									"key": "seconds",
+									"value": "0.5"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Apply Playlist",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"items\": [\n    \"sample.mp4\",\n    \"backup.mp4\"\n  ],\n  \"loop\": true\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/playlist/apply",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"playlist",
+								"apply"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Playlist Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/playlist/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"playlist",
+								"status"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Go To Start",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/go_to_start",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"go_to_start"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Visual",
+			"item": [
+				{
+					"name": "Fade To Black",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/visual/ftb?seconds=1.0",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"visual",
+								"ftb"
+							],
+							"query": [
+								{
+									"key": "seconds",
+									"value": "1.0"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Fade In",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/visual/fade_in?seconds=1.0",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"visual",
+								"fade_in"
+							],
+							"query": [
+								{
+									"key": "seconds",
+									"value": "1.0"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set Brightness",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/visual/brightness?value=0.5&seconds=0.5",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"visual",
+								"brightness"
+							],
+							"query": [
+								{
+									"key": "value",
+									"value": "0.5"
+								},
+								{
+									"key": "seconds",
+									"value": "0.5"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Autoplay",
+			"item": [
+				{
+					"name": "Get Autoplay Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/autoplay",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"autoplay"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Toggle Autoplay",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"enabled\": false,\n  \"restart\": false\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/autoplay",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"autoplay"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "UDP Reference",
+			"item": [
+				{
+					"name": "Plain-Text Commands",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/udp/docs/plain",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"udp",
+								"docs",
+								"plain"
+							]
+						},
+						"description": "Documentation only: send ASCII packets to udp://{{udpHost}}:{{udpPort}} using netcat or a similar tool. Commands are case-insensitive.\n\nQuick reference:\n- STATUS -> replies with \"OK playing=<0/1> current=<name> port=<port>\"\n- PLAY <file> [loop=on] [fade=0.5] [fade_out=1.0]\n- STOP [seconds] / PAUSE / RESUME\n- NEXT | PREV | SET <index> | JUMP <track>\n- LOOP <state> (on/off/1/0/true/false)\n- DISPLAY <spec> (e.g. 1920x1080@60 or width=1920 height=1080 refresh=60)\n- FORCE_720P [options] for the 1280x720 preset\n- FASTSTART <file> and FASTGO [seconds]\n- PLAYLIST APPLY items=a.mp4,b.mp4 [loop=on]\n- PLAYLIST STATUS (or INFO) -> returns JSON\n- AUTOPLAY <state> [delay=sec] [restart=off]\n- BRIGHTNESS <value> <seconds>\n- SPLASH_SHOW [text] / SPLASH_HIDE\n\nSee UDP_API.md for the full command matrix and response details."
+					},
+					"response": []
+				},
+				{
+					"name": "JSON Commands",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/udp/docs/json",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"udp",
+								"docs",
+								"json"
+							]
+						},
+						"description": "Documentation only: UDP JSON packets are UTF-8 objects with a \"cmd\" key and optional \"in_time\" (seconds delay or epoch). Send them to udp://{{udpHost}}:{{udpPort}}.\n\nQuick reference:\n- time -> responds with {ok,t0,t1,t2}\n- play {filename/path, loop, fade_in_seconds, fade_out_seconds}\n- pause / resume / stop {seconds}\n- next / prev / jump {index} / jump_track {n}\n- loop {on}\n- brightness {value, seconds}\n- go_to_start (or goto_start / rewind)\n- startup {macs?, broadcast?, port?}\n- splash_show {text?} / splash_hide\n- shutdown\n\nSee UDP_API.md for payload examples and optional fields."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://127.0.0.1:8080"
+		},
+		{
+			"key": "udpHost",
+			"value": "127.0.0.1"
+		},
+		{
+			"key": "udpPort",
+			"value": "7777"
+		}
+	]
+}

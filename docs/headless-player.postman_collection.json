@@ -1,10 +1,10 @@
 {
   "info": {
     "name": "Headless Player API",
-    "description": "Collection of common headless-player commands including display mode control and playback helpers.",
+    "description": "Collezione completa auto-generata dalle route FastAPI di headless-player.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "version": {
-      "major": 1,
+      "major": 2,
       "minor": 0,
       "patch": 0
     }
@@ -25,59 +25,26 @@
   ],
   "item": [
     {
-      "name": "System",
+      "name": "Autoplay",
       "item": [
         {
-          "name": "Get Status",
+          "name": "GET /autoplay",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/status",
+              "raw": "{{baseUrl}}/autoplay",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "status"
+                "autoplay"
               ]
             }
           }
         },
         {
-          "name": "List Media",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/media",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "media"
-              ]
-            }
-          }
-        },
-        {
-          "name": "UDP Status",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/udp/status",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "udp",
-                "status"
-              ]
-            }
-          }
-        },
-        {
-          "name": "Trigger Startup",
+          "name": "POST /autoplay",
           "request": {
             "method": "POST",
             "header": [
@@ -86,18 +53,13 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"macs\": [\n    \"AA:BB:CC:DD:EE:FF\"\n  ],\n  \"broadcast\": \"255.255.255.255\",\n  \"port\": 9\n}"
-            },
             "url": {
-              "raw": "{{baseUrl}}/system/startup",
+              "raw": "{{baseUrl}}/autoplay",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "system",
-                "startup"
+                "autoplay"
               ]
             }
           }
@@ -105,10 +67,27 @@
       ]
     },
     {
-      "name": "Display Mode",
+      "name": "Device",
       "item": [
         {
-          "name": "Apply Custom Mode",
+          "name": "GET /device/name",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/device/name",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "device",
+                "name"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /device/name",
           "request": {
             "method": "POST",
             "header": [
@@ -117,10 +96,33 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"width\": 1920,\n  \"height\": 1080,\n  \"refresh_hz\": 60\n}"
-            },
+            "url": {
+              "raw": "{{baseUrl}}/device/name",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "device",
+                "name"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Display",
+      "item": [
+        {
+          "name": "POST /display/mode/apply",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/display/mode/apply",
               "host": [
@@ -135,7 +137,7 @@
           }
         },
         {
-          "name": "Force 1280x720",
+          "name": "POST /display/mode/force_720p",
           "request": {
             "method": "POST",
             "header": [
@@ -144,10 +146,6 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"refresh_hz\": 50\n}"
-            },
             "url": {
               "raw": "{{baseUrl}}/display/mode/force_720p",
               "host": [
@@ -164,10 +162,26 @@
       ]
     },
     {
-      "name": "Playback",
+      "name": "Download Asset",
       "item": [
         {
-          "name": "Prepare Faststart",
+          "name": "GET /download_asset",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/download_asset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download_asset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /download_asset",
           "request": {
             "method": "POST",
             "header": [
@@ -176,10 +190,1358 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"filename\": \"sample.mp4\"\n}"
-            },
+            "url": {
+              "raw": "{{baseUrl}}/download_asset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download_asset"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fade In",
+      "item": [
+        {
+          "name": "POST /fade_in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/fade_in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "fade_in"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fade Out",
+      "item": [
+        {
+          "name": "POST /fade_out",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/fade_out",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "fade_out"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fade Out Current",
+      "item": [
+        {
+          "name": "POST /fade_out_current",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/fade_out_current",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "fade_out_current"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Framework",
+      "item": [
+        {
+          "name": "GET /framework",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/framework",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "framework"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /change_framework",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/change_framework",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "change_framework"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /components",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "components"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "status"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Hide Splash",
+      "item": [
+        {
+          "name": "POST /hide_splash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/hide_splash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "hide_splash"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Log",
+      "item": [
+        {
+          "name": "GET /log/udp/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/udp/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "log",
+                "udp",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /log/udp/subscribe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/log/udp/subscribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "log",
+                "udp",
+                "subscribe"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /log/udp/unsubscribe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/log/udp/unsubscribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "log",
+                "udp",
+                "unsubscribe"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logs",
+      "item": [
+        {
+          "name": "GET /logs/cvlc",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/logs/cvlc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "logs",
+                "cvlc"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /logs/cvlc/stream",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/logs/cvlc/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "logs",
+                "cvlc",
+                "stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /logs/off",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/logs/off",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "logs",
+                "off"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /logs/off/stream",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/logs/off/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "logs",
+                "off",
+                "stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Maintenance",
+      "item": [
+        {
+          "name": "GET /maintenance/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/maintenance/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "maintenance",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /maintenance/fix_permissions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/maintenance/fix_permissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "maintenance",
+                "fix_permissions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /maintenance/run_setup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/maintenance/run_setup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "maintenance",
+                "run_setup"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Media",
+      "item": [
+        {
+          "name": "GET /media",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /media/base",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/media/base",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media",
+                "base"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /media/clear",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/media/clear",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media",
+                "clear"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /media/clear",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/media/clear",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media",
+                "clear"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /media/playlist",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/media/playlist",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media",
+                "playlist"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /media/sync",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/media/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "media",
+                "sync"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Network",
+      "item": [
+        {
+          "name": "GET /network/ethernet/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/network/ethernet/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "network",
+                "ethernet",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /network/ethernet/config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/network/ethernet/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "network",
+                "ethernet",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OFF Backend",
+      "item": [
+        {
+          "name": "GET /off/archive",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/archive",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "archive"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/autostart",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/autostart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "autostart"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/dir",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/dir",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "dir"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/loop",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/loop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "loop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/next",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/next",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "next"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/pause",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "pause"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/play",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/play",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "play"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/playlist",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/playlist",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "playlist"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/prev",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/prev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "prev"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/process/stop",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/process/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "process",
+                "stop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/reload",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/reload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "reload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/resume",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "resume"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/set",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/set",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "set"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /off/stop",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/off/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "stop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/autostart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/autostart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "autostart"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/dir",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/dir",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "dir"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/loop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/loop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "loop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/next",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/next",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "next"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/pause",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "pause"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/play",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/play",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "play"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/prev",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/prev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "prev"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/process/stop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/process/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "process",
+                "stop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/reload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/reload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "reload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/resume",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "resume"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/set",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/set",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "set"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/start",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/start",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "start"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /off/stop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/off/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "off",
+                "stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Overlay",
+      "item": [
+        {
+          "name": "GET /overlay/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /overlay/fade",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/fade",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "fade"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /overlay/fade_at",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/fade_at",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "fade_at"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /overlay/hide",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/hide",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "hide"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /overlay/probe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/probe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "probe"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /overlay/show",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/overlay/show",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "overlay",
+                "show"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Playback",
+      "item": [
+        {
+          "name": "GET /ping",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/ping",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ping"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /play",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/play",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "play"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /play_at",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/play_at",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "play_at"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /faststart/go",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/faststart/go",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "faststart",
+                "go"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /faststart/prepare",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/faststart/prepare",
               "host": [
@@ -193,30 +1555,7 @@
           }
         },
         {
-          "name": "Faststart Go",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/faststart/go?seconds=0.5",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "faststart",
-                "go"
-              ],
-              "query": [
-                {
-                  "key": "seconds",
-                  "value": "0.5"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "Apply Playlist",
+          "name": "POST /faststart_prepare",
           "request": {
             "method": "POST",
             "header": [
@@ -225,24 +1564,192 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"items\": [\n    \"sample.mp4\",\n    \"backup.mp4\"\n  ],\n  \"loop\": true\n}"
-            },
             "url": {
-              "raw": "{{baseUrl}}/playlist/apply",
+              "raw": "{{baseUrl}}/faststart_prepare",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "playlist",
-                "apply"
+                "faststart_prepare"
               ]
             }
           }
         },
         {
-          "name": "Playlist Status",
+          "name": "POST /go_to_start",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/go_to_start",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "go_to_start"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /loop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/loop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "loop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /pause",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pause"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /ping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ping",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ping"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /play",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/play",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "play"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /play_at",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/play_at",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "play_at"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /resume",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "resume"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /stop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Playlist",
+      "item": [
+        {
+          "name": "GET /playlist/status",
           "request": {
             "method": "GET",
             "header": [],
@@ -259,17 +1766,529 @@
           }
         },
         {
-          "name": "Go To Start",
+          "name": "POST /playlist/apply",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/go_to_start",
+              "raw": "{{baseUrl}}/playlist/apply",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "go_to_start"
+                "playlist",
+                "apply"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /playlist/jump",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/playlist/jump",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "playlist",
+                "jump"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /playlist/loop",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/playlist/loop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "playlist",
+                "loop"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /playlist/next",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/playlist/next",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "playlist",
+                "next"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /playlist/prev",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/playlist/prev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "playlist",
+                "prev"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Settings",
+      "item": [
+        {
+          "name": "GET /settings/reload",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/settings/reload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "settings",
+                "reload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /settings/reload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/settings/reload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "settings",
+                "reload"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Show Splash",
+      "item": [
+        {
+          "name": "POST /show_splash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/show_splash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "show_splash"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Shutdown",
+      "item": [
+        {
+          "name": "POST /shutdown",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/shutdown",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shutdown"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "GET /packages/targets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/packages/targets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "packages",
+                "targets"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /system/disk",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/system/disk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "disk"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /system/egl_diagnostics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/system/egl_diagnostics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "egl_diagnostics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /system/os",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/system/os",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "os"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /system/reboot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/system/reboot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "reboot"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /system/service/restart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/system/service/restart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "service",
+                "restart"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /system/startup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/system/startup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "system",
+                "startup"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Test",
+      "item": [
+        {
+          "name": "POST /test/off",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/test/off",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "test",
+                "off"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /test/on",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/test/on",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "test",
+                "on"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Updates",
+      "item": [
+        {
+          "name": "GET /download_update",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/download_update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download_update"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /download_update",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/download_update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download_update"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /update",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "update"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /update/fetch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/update/fetch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "update",
+                "fetch"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /update/plan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/update/plan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "update",
+                "plan"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload Asset",
+      "item": [
+        {
+          "name": "POST /upload_asset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/upload_asset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "upload_asset"
               ]
             }
           }
@@ -280,101 +2299,24 @@
       "name": "Visual",
       "item": [
         {
-          "name": "Fade To Black",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/visual/ftb?seconds=1.0",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "visual",
-                "ftb"
-              ],
-              "query": [
-                {
-                  "key": "seconds",
-                  "value": "1.0"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "Fade In",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/visual/fade_in?seconds=1.0",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "visual",
-                "fade_in"
-              ],
-              "query": [
-                {
-                  "key": "seconds",
-                  "value": "1.0"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "Set Brightness",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/visual/brightness?value=0.5&seconds=0.5",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "visual",
-                "brightness"
-              ],
-              "query": [
-                {
-                  "key": "value",
-                  "value": "0.5"
-                },
-                {
-                  "key": "seconds",
-                  "value": "0.5"
-                }
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Autoplay",
-      "item": [
-        {
-          "name": "Get Autoplay Status",
+          "name": "GET /hud/visible",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/autoplay",
+              "raw": "{{baseUrl}}/hud/visible",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "autoplay"
+                "hud",
+                "visible"
               ]
             }
           }
         },
         {
-          "name": "Toggle Autoplay",
+          "name": "POST /hud/visible",
           "request": {
             "method": "POST",
             "header": [
@@ -383,60 +2325,80 @@
                 "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"enabled\": false,\n  \"restart\": false\n}"
-            },
             "url": {
-              "raw": "{{baseUrl}}/autoplay",
+              "raw": "{{baseUrl}}/hud/visible",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "autoplay"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "UDP Reference",
-      "item": [
-        {
-          "name": "Plain-Text Commands",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "description": "Documentation only: send ASCII packets to udp://{{udpHost}}:{{udpPort}} using netcat or a similar tool. Commands are case-insensitive.\n\nQuick reference:\n- STATUS -> replies with \"OK playing=<0/1> current=<name> port=<port>\"\n- PLAY <file> [loop=on] [fade=0.5] [fade_out=1.0]\n- STOP [seconds] / PAUSE / RESUME\n- NEXT | PREV | SET <index> | JUMP <track>\n- LOOP <state> (on/off/1/0/true/false)\n- DISPLAY <spec> (e.g. 1920x1080@60 or width=1920 height=1080 refresh=60)\n- FORCE_720P [options] for the 1280x720 preset\n- FASTSTART <file> and FASTGO [seconds]\n- PLAYLIST APPLY items=a.mp4,b.mp4 [loop=on]\n- PLAYLIST STATUS (or INFO) -> returns JSON\n- AUTOPLAY <state> [delay=sec] [restart=off]\n- BRIGHTNESS <value> <seconds>\n- SPLASH_SHOW [text] / SPLASH_HIDE\n\nSee UDP_API.md for the full command matrix and response details.",
-            "url": {
-              "raw": "{{baseUrl}}/udp/docs/plain",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "udp",
-                "docs",
-                "plain"
+                "hud",
+                "visible"
               ]
             }
           }
         },
         {
-          "name": "JSON Commands",
+          "name": "POST /visual/brightness",
           "request": {
-            "method": "GET",
-            "header": [],
-            "description": "Documentation only: UDP JSON packets are UTF-8 objects with a \"cmd\" key and optional \"in_time\" (seconds delay or epoch). Send them to udp://{{udpHost}}:{{udpPort}}.\n\nQuick reference:\n- time -> responds with {ok,t0,t1,t2}\n- play {filename/path, loop, fade_in_seconds, fade_out_seconds}\n- pause / resume / stop {seconds}\n- next / prev / jump {index} / jump_track {n}\n- loop {on}\n- brightness {value, seconds}\n- go_to_start (or goto_start / rewind)\n- startup {macs?, broadcast?, port?}\n- splash_show {text?} / splash_hide\n- shutdown\n\nSee UDP_API.md for payload examples and optional fields.",
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/udp/docs/json",
+              "raw": "{{baseUrl}}/visual/brightness",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "udp",
-                "docs",
-                "json"
+                "visual",
+                "brightness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /visual/fade_in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/visual/fade_in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "visual",
+                "fade_in"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /visual/ftb",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/visual/ftb",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "visual",
+                "ftb"
               ]
             }
           }

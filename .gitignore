@@ -20,6 +20,8 @@ __pycache__/
 *.a
 *.lib
 *.zip
+!OFF-player/bin/
+!OFF-player/bin/**
 
 # Distribution / packaging
 *.egg-info/
@@ -73,7 +75,6 @@ config.json
 GUI/TigerVNC viewer 1.15.0.app/*
 OFF-player/bin/data/media/nero.png
 headless-player/C:/Users/ricca/Desktop/media/*
-OFF-player/bin/*
 headless-player/.idle/
 headless-player/build_debug/
 installer/assets/SetResolution/*

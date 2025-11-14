@@ -28,6 +28,27 @@
 		"version": "2.0.0",
 		"tasks": [
 			{
+				"label": "build OFF-player (MSYS2 + DLL copy)",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/build_off_player_only.ps1"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Compila OFF-player con MSYS2 e sincronizza le DLL necessarie in OFF-player/bin"
+			},
+			{
 				"label": "build GUI exe",
 				"type": "shell",
 				"command": "powershell",
@@ -68,48 +89,6 @@
 				},
 				"problemMatcher": [],
 				"detail": "Genera l'installer Windows con Inno Setup"
-			},
-			{
-				"label": "rebuild OFF-player (MSYS2)",
-				"type": "shell",
-				"command": "powershell",
-				"args": [
-					"-NoProfile",
-					"-ExecutionPolicy",
-					"Bypass",
-					"-File",
-					"${workspaceFolder}/tools/windows_release.ps1"
-				],
-				"options": {
-					"cwd": "${workspaceFolder}"
-				},
-				"group": {
-					"kind": "build",
-					"isDefault": false
-				},
-				"problemMatcher": [],
-				"detail": "Ricompila OFF-player (MSYS2) e copia le DLL runtime"
-			},
-			{
-				"label": "build OFF-player only",
-				"type": "shell",
-				"command": "powershell",
-				"args": [
-					"-NoProfile",
-					"-ExecutionPolicy",
-					"Bypass",
-					"-File",
-					"${workspaceFolder}/tools/build_off_player_only.ps1"
-				],
-				"options": {
-					"cwd": "${workspaceFolder}"
-				},
-				"group": {
-					"kind": "build",
-					"isDefault": false
-				},
-				"problemMatcher": [],
-				"detail": "Compila solo OFF-player tramite MSYS2"
 			}
 		]
 	}

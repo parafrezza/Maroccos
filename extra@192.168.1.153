@@ -51,7 +51,6 @@ if ($script:ScriptDirectory) {
 
 $ProvisionLogFile = Join-Path $LogDir 'provision.log'
 $script:LogAclReady = $false
-$script:ProvisionFailures = @()
 
 function Ensure-LogDirectoryPermissions {
     if ($script:LogAclReady) { return }
@@ -186,17 +185,6 @@ function ConvertTo-RegExePath {
     $rest = $match.Groups[2].Value.TrimStart('\')
     if ([string]::IsNullOrWhiteSpace($rest)) { return $root }
     return "$root\$rest"
-}
-
-function Convert-PrefixLengthToMaskString {
-    param([Parameter(Mandatory = $true)][int]$PrefixLength)
-
-    if ($PrefixLength -lt 0 -or $PrefixLength -gt 32) { return $null }
-    $bits = ('1' * $PrefixLength).PadRight(32, '0')
-    $parts = for ($i = 0; $i -lt 4; $i++) {
-        [Convert]::ToInt32($bits.Substring($i * 8, 8), 2)
-    }
-    return ($parts -join '.')
 }
 
 function Unload-RegistryHiveIfPresent {
@@ -649,9 +637,8 @@ public static class WallpaperUtil {
 
         Write-Ok 'Sfondo impostato a SOLID nero'
     } catch {
-        $errMsg = "Impossibile impostare sfondo nero: {0}" -f $_.Exception.Message
-        Write-Fail $errMsg
-        $script:ProvisionFailures += $errMsg
+        Write-Fail ("Impossibile impostare sfondo nero: {0}" -f $_.Exception.Message)
+        throw
     } finally {
         if ($defaultLoaded) {
             $unloaded = $false
@@ -678,29 +665,14 @@ public static class WallpaperUtil {
                 } catch {}
             }
             if (-not $unloaded) {
-                Write-Warn 'Scaricamento hive Default fallito al primo tentativo: ritento tra 3 secondi'
+                Write-Fail 'Impossibile scaricare hive Default: stato incoerente'
                 $defaultUnloadFailure = $true
             }
         }
+    }
 
-        if ($defaultUnloadFailure) {
-            Start-Sleep -Seconds 3
-            try {
-                Unload-RegistryHiveIfPresent -HivePath 'HKU\DefaultUser'
-                $defaultUnloadFailure = $false
-                $defaultLoaded = $false
-                Write-Info 'Hive Default scaricato al secondo tentativo'
-            } catch {
-                $defaultUnloadFailure = $true
-                Write-Warn ("Secondo tentativo di scaricare hive Default fallito: {0}" -f $_.Exception.Message)
-            }
-        }
-
-        if ($defaultUnloadFailure) {
-            $manualMsg = 'Scaricamento hive Default fallito: eseguire manualmente reg unload "HKU\DefaultUser" prima di proseguire.'
-            Write-Fail $manualMsg
-            $script:ProvisionFailures += $manualMsg
-        }
+    if ($defaultUnloadFailure) {
+        throw 'Scaricamento hive Default fallito'
     }
 }
 
@@ -837,10 +809,9 @@ function Set-PowerButtonActionToShutdown {
     try {
         $guidPowerButton = '4f971e89-eebd-4455-a8de-9e59040e7347'
         $guidAction = '7648efa3-dd9c-4e3e-b566-50f929386280'
-        $shutdownValue = 3
         foreach ($scheme in @('SCHEME_CURRENT', 'SCHEME_MIN')) {
-            powercfg /setacvalueindex $scheme $guidPowerButton $guidAction $shutdownValue | Out-Null
-            powercfg /setdcvalueindex $scheme $guidPowerButton $guidAction $shutdownValue | Out-Null
+            powercfg /setacvalueindex $scheme $guidPowerButton $guidAction 1 | Out-Null
+            powercfg /setdcvalueindex $scheme $guidPowerButton $guidAction 1 | Out-Null
         }
         powercfg /S SCHEME_CURRENT | Out-Null
         Write-Ok 'Power button ora spegne su AC e DC'
@@ -1079,35 +1050,17 @@ function Configure-EthernetStaticIP {
     try {
         Set-NetIPInterface -InterfaceAlias $alias -Dhcp Disabled -ErrorAction Stop
     } catch {
-        $msg = "Impossibile disattivare DHCP su {0} (Active): {1}" -f $alias, $_.Exception.Message
-        Write-Fail $msg
-        $script:ProvisionFailures += $msg
+        Write-Fail ("Impossibile disattivare DHCP su {0}: {1}" -f $alias, $_.Exception.Message)
         throw
     }
 
     try {
-        Set-NetIPInterface -InterfaceAlias $alias -Dhcp Disabled -PolicyStore PersistentStore -ErrorAction Stop
-    } catch {
-        $msg = "Impossibile disattivare DHCP su {0} (PersistentStore): {1}" -f $alias, $_.Exception.Message
-        Write-Fail $msg
-        $script:ProvisionFailures += $msg
-        throw
-    }
-
-    foreach ($storeParam in @($null, 'PersistentStore')) {
-        try {
-            $getParams = @{ InterfaceAlias = $alias; AddressFamily = 'IPv4'; ErrorAction = 'SilentlyContinue' }
-            if ($storeParam) { $getParams['PolicyStore'] = $storeParam }
-            Get-NetIPAddress @getParams | ForEach-Object {
-                $removeParams = @{ InterfaceAlias = $alias; IPAddress = $_.IPAddress; Confirm = $false; ErrorAction = 'Stop' }
-                if ($storeParam) { $removeParams['PolicyStore'] = $storeParam }
-                Remove-NetIPAddress @removeParams
-            }
-        } catch {
-            $scope = if ($storeParam) { $storeParam } else { 'Active' }
-            Write-Fail ("Impossibile rimuovere IP preesistenti da {0} ({1}): {2}" -f $alias, $scope, $_.Exception.Message)
-            throw
+        Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+            Remove-NetIPAddress -InterfaceAlias $alias -IPAddress $_.IPAddress -Confirm:$false -ErrorAction Stop
         }
+    } catch {
+        Write-Fail ("Impossibile rimuovere IP preesistenti da {0}: {1}" -f $alias, $_.Exception.Message)
+        throw
     }
 
     foreach ($policyStore in @('ActiveStore','PersistentStore')) {
@@ -1132,85 +1085,19 @@ function Configure-EthernetStaticIP {
         }
     }
 
-    $ipConfigured = $false
     try {
         New-NetIPAddress -InterfaceAlias $alias -IPAddress $StaticIP -PrefixLength $PrefixLength -DefaultGateway $Gateway -ErrorAction Stop | Out-Null
-        $ipConfigured = $true
     } catch {
-        $warnMsg = "Impossibile impostare IP statico {0} su {1} tramite cmdlet: {2}" -f $StaticIP, $alias, $_.Exception.Message
-        Write-Warn $warnMsg
-
-        $maskString = Convert-PrefixLengthToMaskString -PrefixLength $PrefixLength
-        if (-not $maskString) {
-            $failMsg = "Impossibile convertire prefix {0} in subnet mask" -f $PrefixLength
-            Write-Fail $failMsg
-            $script:ProvisionFailures += $failMsg
-            throw
-        }
-
-        $gatewayArg = if ([string]::IsNullOrWhiteSpace($Gateway)) { 'none' } else { $Gateway }
-        $netshOutput = & netsh interface ipv4 set address name="$alias" static $StaticIP $maskString $gatewayArg store=persistent 2>&1
-        $exitCode = $LASTEXITCODE
-        $netshText = if ($netshOutput) { $netshOutput.Trim() } else { '<nessun output>' }
-        if ($exitCode -eq 0) {
-            if ($netshOutput) { Write-Info $netshText }
-            Write-Info 'IP statico configurato via fallback netsh (store=persistent)'
-            $ipConfigured = $true
-        } else {
-            $failMsg = "Fallback netsh set address fallito (exit {0}): {1}" -f $exitCode, $netshText
-            Write-Fail $failMsg
-            $script:ProvisionFailures += $failMsg
-            throw
-        }
+        Write-Fail ("Impossibile impostare IP statico {0} su {1}: {2}" -f $StaticIP, $alias, $_.Exception.Message)
+        throw
     }
 
     if ($DnsServers -and $DnsServers.Length -gt 0) {
-        $dnsConfigured = $false
         try {
             Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $DnsServers -ErrorAction Stop
-            $dnsConfigured = $true
         } catch {
-            $warnMsg = "Impossibile impostare DNS su {0} tramite cmdlet: {1}" -f $alias, $_.Exception.Message
-            Write-Warn $warnMsg
-
-            try {
-                $primary = $DnsServers[0]
-                $netshOutPrimary = & netsh interface ip set dns name="$alias" static $primary primary 2>&1
-                $exitPrimary = $LASTEXITCODE
-                $primaryText = if ($netshOutPrimary) { $netshOutPrimary.Trim() } else { '<nessun output>' }
-                if ($exitPrimary -ne 0) {
-                    $failMsg = "Fallback netsh set dns fallito (exit {0}): {1}" -f $exitPrimary, $primaryText
-                    Write-Fail $failMsg
-                    $script:ProvisionFailures += $failMsg
-                    throw
-                }
-                if ($netshOutPrimary) { Write-Info $primaryText }
-
-                for ($i = 1; $i -lt $DnsServers.Length; $i++) {
-                    $addr = $DnsServers[$i]
-                    $index = $i + 1
-                    $netshOutAdd = & netsh interface ip add dns name="$alias" $addr index=$index 2>&1
-                    $exitAdd = $LASTEXITCODE
-                    $addText = if ($netshOutAdd) { $netshOutAdd.Trim() } else { '<nessun output>' }
-                    if ($exitAdd -ne 0) {
-                        $failMsg = "Fallback netsh add dns {0} fallito (exit {1}): {2}" -f $addr, $exitAdd, $addText
-                        Write-Fail $failMsg
-                        $script:ProvisionFailures += $failMsg
-                        throw
-                    }
-                    if ($netshOutAdd) { Write-Info $addText }
-                }
-
-                Write-Info 'DNS configurati via fallback netsh'
-                $dnsConfigured = $true
-            } catch {
-                if (-not $dnsConfigured) {
-                    $msg = "Errore durante il fallback netsh per DNS su {0}: {1}" -f $alias, $_.Exception.Message
-                    Write-Fail $msg
-                    $script:ProvisionFailures += $msg
-                    throw
-                }
-            }
+            Write-Fail ("Impossibile impostare DNS su {0}: {1}" -f $alias, $_.Exception.Message)
+            throw
         }
     }
 
@@ -1227,82 +1114,6 @@ function Ensure-WiFiDHCP {
     } else {
         Write-Info 'Nessuna interfaccia Wi‑Fi trovata: salto'
     }
-}
-
-function Ensure-WiFiPreferredNetwork {
-    Write-Step 'Tentativo connessione Wi‑Fi extratech-marocco'
-    $tempProfile = $null
-    try {
-        $wifi = Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' -and $_.Name -match 'Wi-Fi|Wireless' } | Select-Object -First 1
-        if (-not $wifi) {
-            Write-Info 'Nessuna interfaccia Wi‑Fi disponibile: salto connessione preferita'
-            return
-        }
-
-        $profileName = 'extratech-marocco'
-        $profileXml = @"
-<?xml version="1.0"?>
-<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-    <name>extratech-marocco</name>
-    <SSIDConfig>
-        <SSID>
-            <name>extratech-marocco</name>
-        </SSID>
-    </SSIDConfig>
-    <connectionType>ESS</connectionType>
-    <connectionMode>auto</connectionMode>
-    <MSM>
-        <security>
-            <authEncryption>
-                <authentication>WPA2PSK</authentication>
-                <encryption>AES</encryption>
-                <useOneX>false</useOneX>
-            </authEncryption>
-            <sharedKey>
-                <keyType>passPhrase</keyType>
-                <protected>false</protected>
-                <keyMaterial>eXtratech</keyMaterial>
-            </sharedKey>
-        </security>
-    </MSM>
-</WLANProfile>
-"@
-
-            $tempProfile = Join-Path ([IO.Path]::GetTempPath()) 'extratech-marocco.wlan.xml'
-            try {
-                Set-Content -Path $tempProfile -Value $profileXml -Encoding ASCII -Force
-            } catch {
-                Write-Warn ('Impossibile scrivere profilo Wi-Fi temporaneo: {0}' -f $_.Exception.Message)
-                return
-            }
-
-            try {
-                & netsh wlan add profile filename="$tempProfile" user=current | Out-Null
-            } catch {
-                Write-Warn ('netsh add profile fallito: {0}' -f $_.Exception.Message)
-                return
-            }
-
-            & netsh wlan connect name="$profileName" ssid="$profileName" interface="$($wifi.Name)" | Out-Null
-            Start-Sleep -Seconds 3
-
-            $interfaces = & netsh wlan show interfaces
-            if ($LASTEXITCODE -eq 0 -and $interfaces -match 'State\s*:\s*connected' -and $interfaces -match 'SSID\s*:\s*extratech-marocco') {
-                Write-Ok 'Connessione Wi‑Fi extratech-marocco stabilita (best-effort)'
-            } else {
-                $warnMsg = 'Connessione Wi‑Fi extratech-marocco non riuscita (verificare copertura o credenziali)'
-                Write-Warn $warnMsg
-                $script:ProvisionFailures += $warnMsg
-            }
-        } catch {
-            $msg = "Errore durante il tentativo di connessione Wi‑Fi: {0}" -f $_.Exception.Message
-            Write-Warn $msg
-            $script:ProvisionFailures += $msg
-        } finally {
-            if ($tempProfile) {
-                try { Remove-Item -Path $tempProfile -Force -ErrorAction SilentlyContinue } catch {}
-            }
-        }
 }
 
 # Abilita OpenSSH Server e avvio automatico (porta di default), abilita autenticazione password
@@ -1611,7 +1422,6 @@ function Main {
     Disable-FirewallComplete
     Configure-EthernetStaticIP
     Ensure-WiFiDHCP
-    Ensure-WiFiPreferredNetwork
     Install-TigerVNC
     Configure-OpenSSH
     Configure-MediaShare
@@ -1640,24 +1450,11 @@ function Main {
 
     Create-RestorePoint
 
-    if ($script:ProvisionFailures.Count -gt 0) {
-        Write-Step 'Riepilogo problemi riscontrati'
-        foreach ($failure in $script:ProvisionFailures | Select-Object -Unique) {
-            Write-Warn $failure
-        }
-    }
-
     Write-Step 'Completato'
-    if ($script:ProvisionFailures.Count -gt 0) {
-        Write-Warn 'Provisioning completato con problemi: consultare il riepilogo per le azioni manuali.'
-    } elseif ($script:RebootRequired) {
+    if ($script:RebootRequired) {
         Write-Warn 'Provisioning terminato: riavviare il sistema per applicare il nuovo nome computer.'
     } else {
         Write-Ok 'Provisioning terminato. È consigliato riavviare il sistema.'
-    }
-
-    if ($script:ProvisionFailures.Count -gt 0 -and $script:RebootRequired) {
-        Write-Warn 'Riavvio comunque consigliato per completare il cambio nome computer.'
     }
     if (-not $NonInteractive) { Pause-IfNeeded }
 

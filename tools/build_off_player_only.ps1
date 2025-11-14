@@ -55,6 +55,15 @@ $ofRoot = Find-OFRoot -offRootDir $offRootDir
 $cpu = [Environment]::ProcessorCount
 $jobs = [Math]::Max(1, $cpu - 1)
 
-Write-Host "[1/1] Compilazione OFF-player ($jobs job) usando OF_ROOT: $ofRoot" -ForegroundColor Cyan
+Write-Host "[1/2] Compilazione OFF-player ($jobs job) usando OF_ROOT: $ofRoot" -ForegroundColor Cyan
 Invoke-BashBuild -MsysRoot $MsysRoot -RepoRoot $repoRoot -OFRoot $ofRoot -Jobs $jobs -Config 'Release'
-Write-Host "OFF-player build completata." -ForegroundColor Green
+
+$copyScript = Join-Path $repoRoot 'OFF-player\tools\copy_runtime_dlls.ps1'
+if (Test-Path $copyScript) {
+    Write-Host "[2/2] Copia delle DLL runtime in OFF-player\\bin" -ForegroundColor Cyan
+    & $copyScript -Config 'Release' -MsysRoot $MsysRoot
+    Write-Host "OFF-player build completata con librerie sincronizzate." -ForegroundColor Green
+} else {
+    Write-Warning "Script di copia DLL non trovato: $copyScript"
+    Write-Host "OFF-player build completata (DLL non sincronizzate)." -ForegroundColor Yellow
+}
