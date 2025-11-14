@@ -2585,7 +2585,16 @@ def _handle_off_process_exit(proc_obj: subprocess.Popen | None) -> None:
     ok_user = (exit_code == 0)
     if ok_user:
         off_logger.info("OFF-player exited cleanly (code=0)")
-        print(f"[OFF-WATCH] OFF-player chiuso dall'utente (code=0): lascio headless attivo.", flush=True)
+        print(f"[OFF-WATCH] OFF-player chiuso dall'utente (code=0): esco anche da headless-player.", flush=True)
+        # Se l'utente ha chiuso la finestra (tipicamente con 'q'), termina anche headless-player
+        try:
+            request_headless_exit("OFF-player closed by user", exit_code=0)
+        except Exception:
+            # Fallback hard-exit se la richiesta non passa
+            try:
+                os._exit(0)
+            except Exception:
+                pass
         return
     # Fallimento inatteso: applica backoff di restart
     retries = off_proc.setdefault("retries", 0)
