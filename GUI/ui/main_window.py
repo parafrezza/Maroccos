@@ -611,15 +611,28 @@ class MainWindow(QMainWindow):
         # HUD visible state
         try:
             hud = payload.get("hud") or {}
-            vis = None
-            if isinstance(hud, dict) and "visible" in hud:
-                hv = hud.get("visible")
-                if isinstance(hv, bool):
-                    vis = hv
-                elif isinstance(hv, (int, float)):
-                    vis = bool(int(hv) != 0)
+            mode = None
+            if isinstance(hud, dict):
+                if "mode" in hud:
+                    try:
+                        mode_val = hud.get("mode")
+                        if isinstance(mode_val, (int, float)):
+                            mode = int(mode_val)
+                    except Exception:
+                        mode = None
+                if mode is None and "visible" in hud:
+                    hv = hud.get("visible")
+                    if isinstance(hv, bool):
+                        mode = 2 if hv else 0
+                    elif isinstance(hv, (int, float)):
+                        mode = 2 if int(hv) != 0 else 0
+                if isinstance(mode, int):
+                    if mode < 0:
+                        mode = 0
+                    if mode > 2:
+                        mode = 2
             count = len(self._selected_players)
-            self._commands_tab.set_hud_state(vis, count)
+            self._commands_tab.set_hud_state(mode, count)
         except Exception:
             pass
 

@@ -1621,6 +1621,13 @@ class ApplicationController(QObject):
             return client.request("post", "/ping", params=params)
         if cmd == "hud_visible":
             # Toggle HUD text visibility on OFF-player via headless proxy
+            if "mode" in payload:
+                try:
+                    mode = int(payload.get("mode", 0))
+                except Exception:
+                    mode = 0
+                params = {"mode": mode, "on": 1 if mode > 0 else 0}
+                return client.request("post", "/hud/visible", params=params)
             on = 1 if bool(payload.get("on", False)) else 0
             return client.request("post", "/hud/visible", params={"on": on})
         if cmd == "shutdown":

@@ -605,6 +605,61 @@ LOG_UDP_PORT = 7788
 BEACON_ENABLED = True
 BEACON_PORT = int(os.environ.get("HEADLESS_BEACON_PORT", "47999"))
 
+def _emit_discovery_beacon(reason: str = "startup", retries: int = 3, delay: float = 0.4) -> bool:
+    """Broadcast a lightweight discovery packet so the GUI can pick us up quickly."""
+    try:
+        env_flag = os.environ.get("HEADLESS_BEACON_ENABLED")
+        if env_flag in {"0", "false", "False"}:
+            return False
+        if not globals().get("BEACON_ENABLED", True):
+            return False
+        payload = {
+            "type": "headless_beacon",
+            "version": VERSION,
+            "name": DEVICE_NAME,
+            "http_port": APP_PORT,
+            "ip": None,
+            "ts": time.time(),
+            "reason": reason,
+        }
+        try:
+            payload["ip"] = get_ip()
+        except Exception:
+            payload["ip"] = None
+        data = json.dumps(payload).encode("utf-8")
+        port = int(os.environ.get("HEADLESS_BEACON_PORT", str(globals().get("BEACON_PORT", 47999))))
+        last_exc: Exception | None = None
+        for attempt in range(max(1, retries)):
+            s = None
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                s.settimeout(0.25)
+                s.sendto(data, ("255.255.255.255", port))
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                print(f"[BEACON] Broadcast ({reason}) inviato su porta {port}", flush=True)
+                return True
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    if s is not None:
+                        s.close()
+                except Exception:
+                    pass
+                time.sleep(delay)
+        if last_exc:
+            print(f"[BEACON] Invio beacon ({reason}) fallito: {last_exc}", flush=True)
+        return False
+    except Exception as fatal:
+        try:
+            print(f"[BEACON] Errore interno beacon ({reason}): {fatal}", flush=True)
+        except Exception:
+            pass
+        return False
+
 # Identità dispositivo (persistita in config)
 DEVICE_NAME = os.environ.get("DEVICE_NAME", "")
 
@@ -2231,48 +2286,7 @@ async def _lifespan(app: FastAPI):
     # Startup UDP beacon (best-effort) per auto-discovery della GUI
     def _startup_beacon():
         try:
-            # Consenti disattivazione via env per test/ambienti sensibili
-            env_flag = os.environ.get("HEADLESS_BEACON_ENABLED")
-            if env_flag in {"0", "false", "False"}:
-                return
-            if not globals().get("BEACON_ENABLED", True):
-                return
-            try:
-                import json as _json
-            except Exception:
-                return
-            payload = {
-                "type": "headless_beacon",
-                "version": VERSION,
-                "name": DEVICE_NAME,
-                "http_port": APP_PORT,
-                "ip": None,
-                "ts": time.time(),
-            }
-            try:
-                payload["ip"] = get_ip()
-            except Exception:
-                payload["ip"] = None
-            data = _json.dumps(payload).encode("utf-8")
-            target_port = int(os.environ.get("HEADLESS_BEACON_PORT", str(globals().get("BEACON_PORT", 47999))))
-            # Invio ripetuto per mitigare perdite nella fase di boot di rete
-            for _ in range(3):
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    s.settimeout(0.25)
-                    s.sendto(data, ("255.255.255.255", target_port))
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-                time.sleep(0.4)
-            try:
-                print(f"[BEACON] Broadcast inviato su porta {target_port}", flush=True)
-            except Exception:
-                pass
+            _emit_discovery_beacon(reason="startup")
         except Exception as e:
             try:
                 print(f"[BEACON] Errore invio beacon: {e}", flush=True)
@@ -2367,7 +2381,7 @@ overlay_probe_info = {"detected": False, "method": None, "plane_id": None, "zpos
 faststart = {"prepared_path": None}
 
 # HUD visibility state (OFF-player HUD texts)
-HUD_VISIBLE = False
+HUD_MODE = 0
 
 # Show readiness state (usato dalla GUI per LED verde dopo push playlist)
 show_state = {"ready": False, "for": None, "ts": None}
@@ -3715,6 +3729,10 @@ def _handle_elevated_zip_apply(apath: Path, restart: bool = True) -> dict:
         }
     })
     log_update("Script apply elevato avviato: termino per completare aggiornamento…")
+    try:
+        _emit_discovery_beacon(reason="post-update-restart")
+    except Exception:
+        pass
     try:
         time.sleep(0.3)
     except Exception:
@@ -6021,7 +6039,8 @@ def status():
             "port": LOG_UDP_PORT,
         },
         "hud": {
-            "visible": bool(globals().get("HUD_VISIBLE", False)),
+            "mode": int(globals().get("HUD_MODE", 0) or 0),
+            "visible": bool(int(globals().get("HUD_MODE", 0) or 0) > 0),
             "supported": False,
         },
         "timing": {
@@ -6063,6 +6082,32 @@ def status():
             # Se disponibile, esponi alcuni campi utili in chiaro
             player_info = (off or {}).get("player") or {}
             if isinstance(player_info, dict):
+                try:
+                    off_hud = player_info.get("hud")
+                    if isinstance(off_hud, dict):
+                        hud_block = resp.get("hud") or {}
+                        mode_val = off_hud.get("mode")
+                        mode_int: int
+                        if isinstance(mode_val, (int, float)):
+                            mode_int = int(mode_val)
+                        elif "visible" in off_hud:
+                            mode_int = 2 if bool(off_hud.get("visible")) else 0
+                        else:
+                            mode_int = int(hud_block.get("mode", globals().get("HUD_MODE", 0)) or 0)
+                        if mode_int < 0:
+                            mode_int = 0
+                        if mode_int > 2:
+                            mode_int = 2
+                        hud_block["mode"] = mode_int
+                        hud_block["visible"] = bool(mode_int > 0)
+                        try:
+                            globals()["HUD_MODE"] = mode_int
+                        except Exception:
+                            pass
+                        hud_block["supported"] = True
+                        resp["hud"] = hud_block
+                except Exception:
+                    pass
                 # OFF ritorna "playing" (bool), "file" (string), "loop" (bool)
                 is_playing = player_info.get("playing")
                 resp["off_playing"] = is_playing
@@ -7226,38 +7271,59 @@ def off_playlist():
 # ------------------------------------------------------------------
 
 @app.post("/hud/visible")
-def hud_visible(on: int = Query(0)):
-    """Proxy to OFF-player HUD visibility toggle.
-    Accepts query param 'on'=1|0. Only available when framework == 'off'.
+def hud_visible(on: Optional[int] = Query(None), mode: Optional[int] = Query(None)):
+    """Proxy to OFF-player HUD visibility/mode toggle.
+    Supports mode=0|1|2 (hidden|minimal|full); legacy on=1|0 is accepted.
     """
     try:
         if current_framework.get("name") != "off":
             return JSONResponse(status_code=404, content={"ok": False, "error": "hud/visible disponibile solo con framework 'off'"})
         import urllib.request, json as _json
         port = int(globals().get('OFF_PORT', 8082))
-        url = f"http://{OFF_HOST}:{port}/hud/visible?on={1 if int(on) == 1 else 0}"
+        selected_mode: int
+        if mode is not None:
+            try:
+                selected_mode = int(mode)
+            except Exception:
+                selected_mode = 0
+        elif on is not None:
+            selected_mode = 2 if int(on) == 1 else 0
+        else:
+            selected_mode = int(globals().get("HUD_MODE", 0) or 0)
+        if selected_mode < 0:
+            selected_mode = 0
+        if selected_mode > 2:
+            selected_mode = 2
+        on_value = 1 if selected_mode > 0 else 0
+        url = f"http://{OFF_HOST}:{port}/hud/visible?mode={selected_mode}&on={on_value}"
         with urllib.request.urlopen(url, timeout=0.8) as r:
             body = r.read().decode("utf-8", errors="ignore")
+        response_mode = selected_mode
         try:
             res = _json.loads(body)
-            try:
-                # Update cached HUD state only on successful response
-                globals()["HUD_VISIBLE"] = bool(int(on) == 1)
-            except Exception:
-                pass
+            mode_field = res.get("mode") if isinstance(res, dict) else None
+            if isinstance(mode_field, (int, float)):
+                response_mode = int(mode_field)
+            elif isinstance(res, dict) and "visible" in res:
+                response_mode = 2 if bool(res.get("visible")) else 0
+            if response_mode < 0:
+                response_mode = 0
+            if response_mode > 2:
+                response_mode = 2
+            globals()["HUD_MODE"] = response_mode
+            if isinstance(res, dict):
+                res.setdefault("mode", response_mode)
+                res.setdefault("visible", bool(response_mode > 0))
             return res
         except Exception:
-            try:
-                globals()["HUD_VISIBLE"] = bool(int(on) == 1)
-            except Exception:
-                pass
-            return {"ok": True, "raw": body}
+            globals()["HUD_MODE"] = response_mode
+            return {"ok": True, "raw": body, "mode": response_mode, "visible": bool(response_mode > 0)}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 @app.get("/hud/visible")
-def hud_visible_get(on: int = Query(0)):
-    return hud_visible(on)
+def hud_visible_get(on: Optional[int] = Query(None), mode: Optional[int] = Query(None)):
+    return hud_visible(on=on, mode=mode)
 
 # ---------- System info (per GUI) ----------
 @app.get("/media/base")
@@ -8201,6 +8267,50 @@ def api_overlay_fade(target: float | None = Query(None), seconds: float = Query(
 def api_overlay_fade_at(target: float | None = Query(None), seconds: float = Query(1.0), at: float = Query(...)):
     return JSONResponse(status_code=410, content={"ok": False, "error": "overlay removed"})
 
+
+def _stop_active_media_for_clear(timeout: float = 3.0) -> dict[str, bool]:
+    """Force playback halt so media files can be safely removed."""
+    info = {"playback_stopped": False, "off_player_stopped": False}
+    log = logging.getLogger("headless-player.media")
+    try:
+        state = str(player.get("state", "")).lower() if isinstance(player, dict) else ""
+    except Exception:
+        state = ""
+    if state in {"playing", "paused", "preparing"}:
+        try:
+            stop_play()
+            info["playback_stopped"] = True
+        except Exception as exc:
+            log.warning("media_clear: stop_play() failed before cleanup: %s", exc, exc_info=True)
+    try:
+        autoplay["enabled"] = False
+    except Exception:
+        pass
+    try:
+        _autoplay_cancel_timer()
+    except Exception:
+        pass
+    try:
+        _autoplay_cancel_monitor()
+    except Exception:
+        pass
+    try:
+        proc = off_proc.get("p") if isinstance(off_proc, dict) else None
+    except Exception:
+        proc = None
+    if proc is not None and callable(getattr(proc, "poll", None)) and proc.poll() is None:
+        try:
+            result = _off_stop()
+            info["off_player_stopped"] = bool(result.get("ok"))
+        except Exception as exc:
+            log.warning("media_clear: _off_stop() failed before cleanup: %s", exc, exc_info=True)
+        end_ts = time.time() + max(timeout, 0.0)
+        while proc.poll() is None and time.time() < end_ts:
+            time.sleep(0.1)
+        if proc.poll() is None:
+            log.warning("media_clear: OFF-player still running after %.1fs", timeout)
+    return info
+
 @app.get("/overlay/status")
 def api_overlay_status():
     return JSONResponse(status_code=410, content={"ok": False, "error": "overlay removed"})
@@ -8254,6 +8364,11 @@ def media_clear(confirm: int = Query(0)):
     """
     if confirm != 1:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Conferma mancante: usa ?confirm=1"})
+    release_info = _stop_active_media_for_clear()
+    try:
+        time.sleep(0.2)
+    except Exception:
+        pass
     removed = 0
     skipped: list[str] = []
     errors = []
@@ -8271,6 +8386,8 @@ def media_clear(confirm: int = Query(0)):
         except Exception:
             state = ""
         protect_current = state in {"playing", "paused"}
+        if protect_current and (release_info.get("playback_stopped") or release_info.get("off_player_stopped")):
+            protect_current = False
     else:
         current_path = None
         current_exists = False
@@ -8293,7 +8410,11 @@ def media_clear(confirm: int = Query(0)):
                         except Exception:
                             pass
                 if entry.is_file() or entry.is_symlink():
-                    entry.unlink(missing_ok=True); removed += 1
+                    try:
+                        _safe_unlink(entry)
+                        removed += 1
+                    except Exception as e:
+                        errors.append(f"{entry.name}: {e}")
                 elif entry.is_dir():
                     shutil.rmtree(entry, ignore_errors=True); removed += 1
             except Exception as e:
@@ -8316,6 +8437,8 @@ def media_clear(confirm: int = Query(0)):
             "skipped": skipped,
             "playlist_cleared": playlist_cleared,
             "active_media_protected": protect_current,
+            "playback_stopped": release_info.get("playback_stopped", False),
+            "off_player_stopped": release_info.get("off_player_stopped", False),
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
@@ -9215,7 +9338,16 @@ def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[floa
                 log_update("Installer inviato, termino per completare l'aggiornamento…")
                 current_update["last_apply_http"] = 200
                 if restart:
+                    try:
+                        _emit_discovery_beacon(reason="post-update-restart")
+                    except Exception:
+                        pass
                     os._exit(0)
+                else:
+                    try:
+                        _emit_discovery_beacon(reason="post-update")
+                    except Exception:
+                        pass
                 return {"ok": True, "install": True}
             except Exception as _win_e:
                 current_update["status"] = "error"
@@ -9249,6 +9381,11 @@ def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[floa
         current_update["stage"] = "ok"
         current_update["last_apply_http"] = 200
         log_update("Update applicato con successo")
+        beacon_reason = "post-update-restart" if restart else "post-update"
+        try:
+            _emit_discovery_beacon(reason=beacon_reason)
+        except Exception:
+            pass
         if restart:
             log_update("Riavvio servizio…")
             os._exit(0)

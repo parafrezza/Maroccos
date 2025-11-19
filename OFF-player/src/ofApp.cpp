@@ -72,6 +72,14 @@ static std::string normalizeIncomingPath(const std::string& rawPath, const std::
     return candidate;
 }
 
+static const char* hudModeLabel(ofApp::HudMode mode){
+    switch(mode){
+        case ofApp::HudMode::Minimal: return "MINIMAL";
+        case ofApp::HudMode::Full: return "FULL";
+        default: return "HIDDEN";
+    }
+}
+
 void ofApp::saveDefaultConfigIfMissing(){
     ofFile f("config.json");
     if(!f.exists()){
@@ -179,7 +187,8 @@ void ofApp::setup(){
     api.fnSplashShow = [this](const std::string& t){ this->splash.show(t); };
     api.fnSplashHide = [this]{ this->splash.hide(); };
     api.fnSplashText = [this](const std::string& t){ this->splash.setText(t); };
-    api.fnHudVisible = [this](bool on){ this->overlayVisible = on; };
+    api.fnHudVisible = [this](bool on){ this->setHudMode(on ? HudMode::Full : HudMode::Hidden); };
+    api.fnHudMode = [this](int mode){ this->setHudModeByIndex(mode); };
     // Visual fades
     api.fnFadeIn      = [this](float s){ this->fadeIn(s); };
     api.fnFadeToBlack = [this](float s){ this->fadeToBlack(s); };
@@ -539,6 +548,9 @@ std::string ofApp::statusString() const {
         ss << "\"valid\":false";
     }
     ss << "}";
+    ss << ",\"hud\":{\"mode\":" << static_cast<int>(hudMode);
+    ss << ",\"visible\":" << (hudMode == HudMode::Hidden ? "false" : "true");
+    ss << ",\"label\":\"" << hudModeLabel(hudMode) << "\"}";
     // visual/brightness (0..1)
     ss << ",\"brightness\":" << ofClamp(brightnessCur_, 0.0f, 1.0f);
     ss << "}";
@@ -612,6 +624,31 @@ void ofApp::goToStart(){
         isPlaying = false;
         ofLogNotice() << "GO_TO_START";
     }
+}
+
+void ofApp::setHudMode(HudMode mode){
+    HudMode sanitized = HudMode::Hidden;
+    if(mode == HudMode::Minimal || mode == HudMode::Full){
+        sanitized = mode;
+    }
+    if(hudMode == sanitized){
+        return;
+    }
+    hudMode = sanitized;
+    ofLogNotice() << "Overlay HUD -> " << hudModeLabel(hudMode);
+    updateOverlayInfo(true);
+}
+
+void ofApp::setHudModeByIndex(int modeIndex){
+    if(modeIndex <= static_cast<int>(HudMode::Hidden)){
+        setHudMode(HudMode::Hidden);
+        return;
+    }
+    if(modeIndex == static_cast<int>(HudMode::Minimal)){
+        setHudMode(HudMode::Minimal);
+        return;
+    }
+    setHudMode(HudMode::Full);
 }
 
 void ofApp::pollUDP(){
@@ -783,47 +820,133 @@ void ofApp::draw(){
         }
     }
 
-    if(overlayVisible && !overlayInfo.text.empty()){
-        std::vector<std::string> lines = ofSplitString(overlayInfo.text, "\n", true, true);
-        if(!lines.empty()){
-            if(overlayFontLoaded){
-                float lineHeight = overlayFont.getLineHeight() * 1.15f;
-                float maxWidth = 0.0f;
-                for(const auto& l : lines){
-                    maxWidth = std::max(maxWidth, overlayFont.stringWidth(l));
+    auto drawHudBlock = [&](const std::string& text){
+        if(text.empty()){ return; }
+        std::vector<std::string> lines = ofSplitString(text, "\n", true, true);
+        if(lines.empty()){ return; }
+        if(overlayFontLoaded){
+            const float lineHeight = overlayFont.getLineHeight() * 1.15f;
+            std::vector<float> scales(lines.size(), 1.0f);
+            int ipIndex = -1;
+            for(size_t i = 0; i < lines.size(); ++i){
+                if(ofIsStringInString(lines[i], "IP:") && lines[i].find("IP:") == 0){
+                    ipIndex = static_cast<int>(i);
+                    break;
                 }
-                float blockHeight = lineHeight * lines.size();
-                float margin = 32.0f;
-                float x = margin;
-                float y = ofGetHeight() - blockHeight - margin;
-                float rectX = x - 24.0f;
-                float rectY = y - 24.0f;
-                float rectW = maxWidth + 48.0f;
-                float rectH = blockHeight + 48.0f;
-                ofPushStyle();
-                ofSetColor(0, 0, 0, 160);
-                ofDrawRectangle(rectX, rectY, rectW, rectH);
-                ofSetColor(255);
-                float baseline = y + overlayFont.getAscenderHeight();
-                for(size_t i = 0; i < lines.size(); ++i){
-                    overlayFont.drawString(lines[i], x, baseline + (lineHeight * i));
-                }
-                ofPopStyle();
-            }else{
-                float margin = 24.0f;
-                float y = ofGetHeight() - margin - (lines.size() * 18.0f);
-                ofPushStyle();
-                ofSetColor(0, 0, 0, 160);
-                ofDrawRectangle(12, y - 24, ofGetWidth() - 24, (lines.size() * 18.0f) + 36.0f);
-                ofSetColor(255);
-                float drawY = y;
-                for(const auto& l : lines){
-                    ofDrawBitmapStringHighlight(l, 24, drawY);
-                    drawY += 18.0f;
-                }
-                ofPopStyle();
             }
+            if(ipIndex >= 0){
+                float width = overlayFont.stringWidth(lines[ipIndex]);
+                if(width > 1.0f){
+                    const float maxAllowed = std::max(120.0f, ofGetWidth() - 64.0f);
+                    float scale = std::min(maxAllowed / width, 12.0f);
+                    scale = std::max(scale, 1.5f);
+                    scale *= 0.97f;
+                    scales[static_cast<size_t>(ipIndex)] = scale;
+                }
+            }
+            float maxWidth = 0.0f;
+            float blockHeight = 0.0f;
+            for(size_t i = 0; i < lines.size(); ++i){
+                float scale = scales[i];
+                float lineW = overlayFont.stringWidth(lines[i]) * scale;
+                maxWidth = std::max(maxWidth, lineW);
+                blockHeight += lineHeight * scale;
+            }
+            float margin = 32.0f;
+            float rectW = maxWidth + 48.0f;
+            float rectH = blockHeight + 48.0f;
+            float rectX = (ofGetWidth() - rectW) * 0.5f;
+            if(rectX < 12.0f){
+                rectX = 12.0f;
+            }
+            if(rectX + rectW > ofGetWidth() - 12.0f){
+                rectX = ofGetWidth() - rectW - 12.0f;
+            }
+            float y = ofGetHeight() - blockHeight - margin;
+            float rectY = y - 24.0f;
+            float blockCenterX = rectX + rectW * 0.5f;
+            ofPushStyle();
+            ofSetColor(0, 0, 0, 160);
+            ofDrawRectangle(rectX, rectY, rectW, rectH);
+            ofSetColor(255);
+            float cursorY = y;
+            for(size_t i = 0; i < lines.size(); ++i){
+                float scale = scales[i];
+                float asc = overlayFont.getAscenderHeight() * scale;
+                float drawY = cursorY + asc;
+                float lineWidth = overlayFont.stringWidth(lines[i]) * scale;
+                float lineX = blockCenterX - (lineWidth * 0.5f);
+                ofPushMatrix();
+                ofTranslate(lineX, drawY);
+                ofScale(scale, scale);
+                overlayFont.drawString(lines[i], 0.0f, 0.0f);
+                ofPopMatrix();
+                cursorY += lineHeight * scale;
+            }
+            ofPopStyle();
+        }else{
+            static ofBitmapFont bitmapFont;
+            const float baseHeight = 18.0f;
+            std::vector<float> widths(lines.size(), 0.0f);
+            std::vector<float> scales(lines.size(), 1.0f);
+            int ipIndex = -1;
+            for(size_t i = 0; i < lines.size(); ++i){
+                widths[i] = bitmapFont.getBoundingBox(lines[i], 0, 0).getWidth();
+                if(ipIndex < 0 && lines[i].rfind("IP:", 0) == 0){
+                    ipIndex = static_cast<int>(i);
+                }
+            }
+            if(ipIndex >= 0 && widths[ipIndex] > 1.0f){
+                const float maxAllowed = std::max(120.0f, ofGetWidth() - 64.0f);
+                float scale = std::min(maxAllowed / widths[ipIndex], 12.0f);
+                scale = std::max(scale, 1.5f);
+                scale *= 0.97f;
+                scales[static_cast<size_t>(ipIndex)] = scale;
+            }
+            float maxWidth = 0.0f;
+            float blockHeight = 0.0f;
+            for(size_t i = 0; i < lines.size(); ++i){
+                float lineW = widths[i] * scales[i];
+                maxWidth = std::max(maxWidth, lineW);
+                blockHeight += baseHeight * scales[i];
+            }
+            float margin = 32.0f;
+            float rectW = maxWidth + 48.0f;
+            float rectH = blockHeight + 48.0f;
+            float rectX = (ofGetWidth() - rectW) * 0.5f;
+            if(rectX < 12.0f){
+                rectX = 12.0f;
+            }
+            if(rectX + rectW > ofGetWidth() - 12.0f){
+                rectX = ofGetWidth() - rectW - 12.0f;
+            }
+            float y = ofGetHeight() - blockHeight - margin;
+            float rectY = y - 24.0f;
+            float blockCenterX = rectX + rectW * 0.5f;
+            ofPushStyle();
+            ofSetColor(0, 0, 0, 160);
+            ofDrawRectangle(rectX, rectY, rectW, rectH);
+            ofSetColor(255);
+            float cursorY = y;
+            for(size_t i = 0; i < lines.size(); ++i){
+                float scale = scales[i];
+                float lineW = widths[i] * scale;
+                float lineX = blockCenterX - (lineW * 0.5f);
+                ofPushMatrix();
+                ofTranslate(lineX, cursorY);
+                ofScale(scale, scale);
+                ofDrawBitmapString(lines[i], 0.0f, baseHeight);
+                ofPopMatrix();
+                cursorY += baseHeight * scale;
+            }
+            ofPopStyle();
         }
+    };
+
+    if(hudMode == HudMode::Minimal){
+        drawHudBlock(overlayInfo.minimalText);
+    }else if(hudMode == HudMode::Full){
+        drawHudBlock(overlayInfo.fullText);
     }
 }
 
@@ -996,8 +1119,11 @@ void ofApp::keyPressed(int key){
     if(key=='f' || key=='F') ofToggleFullscreen();
     if(key=='r' || key=='R') reloadPlaylist();
     if(key=='t' || key=='T'){
-        overlayVisible = !overlayVisible;
-        ofLogNotice() << "Overlay HUD -> " << (overlayVisible ? "ON" : "OFF");
+        int next = static_cast<int>(hudMode) + 1;
+        if(next > static_cast<int>(HudMode::Full)){
+            next = static_cast<int>(HudMode::Hidden);
+        }
+        setHudModeByIndex(next);
     }
     if(key=='q' || key==27) ofExit();
 }
@@ -1137,10 +1263,16 @@ void ofApp::updateOverlayInfo(bool force){
     std::vector<std::string> ips = gatherLocalIPs();
     std::string statusLine = formattedStatusLine();
 
+    std::string ipSummary = "IP: ";
+    if(ips.empty()){
+        ipSummary += "127.0.0.1";
+    }else{
+        ipSummary += ofJoinString(ips, ", ");
+    }
     std::ostringstream oss;
-    oss << "IP: " << ofJoinString(ips, ", ");
-    oss << "\nStatus: " << statusLine;
     const std::string displayIp = ips.empty() ? std::string("127.0.0.1") : ips.front();
+    oss << ipSummary;
+    oss << "\nStatus: " << statusLine;
     oss << "\nHTTP: http://" << displayIp << ":" << cfg.httpPort;
     oss << "\nUDP: " << displayIp << ":" << cfg.udpPort << " (comandi UDP)";
     oss << "\ncartella media: " << cfg.mediaDir;
@@ -1148,7 +1280,13 @@ void ofApp::updateOverlayInfo(bool force){
     if(disp.valid){
         oss << "\nDisplay: " << formatDisplayInfo(disp);
     }
-    overlayInfo.text = oss.str();
+    overlayInfo.fullText = oss.str();
+
+    std::ostringstream minimal;
+    minimal << ipSummary;
+    minimal << "\nHTTP: http://" << displayIp << ":" << cfg.httpPort;
+    minimal << "\nUDP: " << displayIp << ":" << cfg.udpPort;
+    overlayInfo.minimalText = minimal.str();
 }
 
 std::vector<std::string> ofApp::gatherLocalIPs() const{

@@ -6,7 +6,8 @@ param(
     [string]$IssPath,
     [switch]$Debug,
     [string]$Version,
-    [string]$AppBaseName = 'marocco-player'
+    [string]$AppBaseName = 'marocco-player',
+    [switch]$SilentOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -252,6 +253,80 @@ function Ensure-HeadlessBinary {
     Write-Host ("headless-player.exe creato: {0}" -f $exePath) -ForegroundColor Green
 }
 
+function Invoke-IsccBuild {
+    param(
+        [string]$IsccPath,
+        [string]$IssPath,
+        [string[]]$Defines,
+        [string]$LogsDir,
+        [string]$Version,
+        [string]$OutputBaseFilename,
+        [string]$RepoRoot,
+        [string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $LogsDir)) {
+        New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+    }
+
+    $labelSafe = if ([string]::IsNullOrWhiteSpace($Label)) { 'interactive' } else { ($Label -replace '[^A-Za-z0-9_-]', '_') }
+    $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $logPath = Join-Path $LogsDir ("iscc-$Version-$labelSafe-$ts.log")
+
+    $isccArgs = @($IssPath) + $Defines
+    Write-Host ("Invocazione ISCC [$labelSafe]: $IsccPath $($isccArgs -join ' ')") -ForegroundColor DarkGray
+
+    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $processInfo.FileName = $IsccPath
+    $processInfo.Arguments = ($isccArgs -join ' ')
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($processInfo)
+    $stdOut = $proc.StandardOutput.ReadToEnd()
+    $stdErr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    Set-Content -LiteralPath $logPath -Value ($stdOut + "`n" + $stdErr) -Encoding utf8
+    Write-Host ("Log ISCC [$labelSafe] salvato: $logPath") -ForegroundColor DarkCyan
+
+    ($stdOut.Split("`n") | Where-Object { $_ } | Select-Object -First 12) | ForEach-Object { Write-Host $_ }
+    if ($stdErr) { Write-Warning "ISCC stderr non vuoto (verificare log)" }
+
+    $global:LASTEXITCODE = $proc.ExitCode
+    $code = $proc.ExitCode
+    if ($code -ne 0) {
+        Write-Error ("ISCC ha restituito codice {0} per la build {1}" -f $code, $labelSafe)
+        if (Test-Path -LiteralPath $logPath) {
+            Write-Host ("--- Ultime 60 righe del log ISCC [$labelSafe] ---") -ForegroundColor Yellow
+            Get-Content -LiteralPath $logPath -Tail 60 | ForEach-Object { Write-Host $_ }
+            Write-Host "--- Fine log ---" -ForegroundColor Yellow
+        }
+        throw "Build Inno Setup fallita ($labelSafe)"
+    }
+
+    $installerDir = Join-Path (Split-Path -Parent $IssPath) 'dist'
+    $builtInstaller = Join-Path $installerDir ($OutputBaseFilename + '.exe')
+    if (Test-Path -LiteralPath $builtInstaller) {
+        $rootDist = Join-Path $RepoRoot 'dist'
+        if (-not (Test-Path -LiteralPath $rootDist)) {
+            New-Item -ItemType Directory -Path $rootDist -Force | Out-Null
+        }
+        $destInstaller = Join-Path $rootDist (Split-Path -Leaf $builtInstaller)
+        Copy-Item -LiteralPath $builtInstaller -Destination $destInstaller -Force
+        Write-Host ("Installer [$labelSafe] copiato in {0}" -f $destInstaller) -ForegroundColor Green
+    } else {
+        Write-Warning ("Impossibile trovare l'eseguibile Inno atteso ({0}) per la build {1}" -f $builtInstaller, $labelSafe)
+    }
+
+    return [pscustomobject]@{
+        Label = $labelSafe
+        LogPath = $logPath
+        OutputPath = if (Test-Path -LiteralPath $builtInstaller) { Join-Path (Join-Path $RepoRoot 'dist') (Split-Path -Leaf $builtInstaller) } else { $null }
+    }
+}
+
 try {
     $iss = Resolve-InstallerScriptPath -Path $IssPath
     Write-Host "Script Inno Setup:" $iss
@@ -384,61 +459,42 @@ try {
 
     Update-AssetsManifest -AssetsDir $assetsDir
 
-    # Abilita log dettagliato di ISCC per diagnosi problemi (es. errori di compressione intermittenti)
     $logsDir = Join-Path (Split-Path -Parent $iss) 'logs'
-    if (-not (Test-Path -LiteralPath $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
-    $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $logPath = Join-Path $logsDir ("iscc-" + $Version + "-" + $ts + ".log")
 
-    # Nota: ISCC non supporta /LOG (solo /LOG=filename nelle versioni più vecchie?); facciamo redirect dell'output
-    $isccCmd = @($iscc, $iss) + $defines
-    Write-Host "Invocazione ISCC: $($isccCmd -join ' ')" -ForegroundColor DarkGray
-    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $processInfo.FileName = $iscc
-    $processInfo.Arguments = ($isccCmd[1..($isccCmd.Count-1)] -join ' ')
-    $processInfo.RedirectStandardOutput = $true
-    $processInfo.RedirectStandardError = $true
-    $processInfo.UseShellExecute = $false
-    $processInfo.CreateNoWindow = $true
-    $proc = [System.Diagnostics.Process]::Start($processInfo)
-    $stdOut = $proc.StandardOutput.ReadToEnd()
-    $stdErr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
-    Set-Content -LiteralPath $logPath -Value ($stdOut + "`n" + $stdErr) -Encoding utf8
-    Write-Host "Log ISCC salvato: $logPath" -ForegroundColor DarkCyan
-    # Echo breve riassunto
-    ($stdOut.Split("`n") | Select-Object -First 12) | ForEach-Object { Write-Host $_ }
-    if ($stdErr) { Write-Warning "ISCC stderr non vuoto (verificare log)" }
-    $global:LASTEXITCODE = $proc.ExitCode
-    $code = $LASTEXITCODE
-    if ($code -ne 0) {
-        Write-Error ("ISCC ha restituito codice {0}" -f $code)
-        if (Test-Path -LiteralPath $logPath) {
-            Write-Host "--- Ultime 60 righe del log ISCC ($logPath) ---" -ForegroundColor Yellow
-            Get-Content -LiteralPath $logPath -Tail 60 | ForEach-Object { Write-Host $_ }
-            Write-Host "--- Fine log ---" -ForegroundColor Yellow
+    $results = @()
+    if (-not $SilentOnly) {
+        try {
+            $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $defines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBase -RepoRoot $repoRoot -Label 'interactive'
+        } catch {
+            Write-Warning "Build interattiva fallita: $_"
         }
-        exit $code
     }
-        if ($versionFileUpdate) {
-            Set-Content -LiteralPath $versionFileUpdate.Path -Value $versionFileUpdate.Content -Encoding ascii
-            Write-Host ("File VERSION aggiornato a {0}" -f $versionFileUpdate.Content) -ForegroundColor Green
-        }
 
-        $installerDir = Join-Path (Split-Path -Parent $iss) 'dist'
-        $builtInstaller = Join-Path $installerDir ($outBase + '.exe')
-        if (Test-Path -LiteralPath $builtInstaller) {
-            $rootDist = Join-Path $repoRoot 'dist'
-            if (-not (Test-Path -LiteralPath $rootDist)) {
-                New-Item -ItemType Directory -Path $rootDist -Force | Out-Null
-            }
-            $destInstaller = Join-Path $rootDist (Split-Path -Leaf $builtInstaller)
-            Copy-Item -LiteralPath $builtInstaller -Destination $destInstaller -Force
-            Write-Host ("Installer copiato in {0}" -f $destInstaller) -ForegroundColor Green
-        } else {
-            Write-Warning ("Impossibile trovare l'eseguibile Inno atteso: {0}" -f $builtInstaller)
+    $outBaseSilent = "${appName}-installer_${versionTag}_auto"
+    $silentDefines = $defines.Clone()
+    for ($i = 0; $i -lt $silentDefines.Length; $i++) {
+        if ($silentDefines[$i] -like '/DOutputBaseFilename=*') {
+            $silentDefines[$i] = "/DOutputBaseFilename=$outBaseSilent"
         }
-    Write-Host "Installer creato con successo."
+    }
+    $silentDefines += '/DSilentInstall=1'
+    $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'auto'
+
+    if ($versionFileUpdate) {
+        Set-Content -LiteralPath $versionFileUpdate.Path -Value $versionFileUpdate.Content -Encoding ascii
+        Write-Host ("File VERSION aggiornato a {0}" -f $versionFileUpdate.Content) -ForegroundColor Green
+    }
+
+    if ($SilentOnly) {
+        Write-Host "Installer automatico creato con successo." -ForegroundColor Green
+    } else {
+        Write-Host "Installer interattivo e automatico creati con successo." -ForegroundColor Green
+    }
+    $results | ForEach-Object {
+        if ($_.OutputPath) {
+            Write-Host (" - [{0}] {1}" -f $_.Label, $_.OutputPath) -ForegroundColor Cyan
+        }
+    }
     exit 0
 }
 catch {

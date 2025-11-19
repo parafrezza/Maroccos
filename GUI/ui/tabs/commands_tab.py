@@ -327,18 +327,19 @@ class CommandsTab(QWidget):
         overlay_row = QHBoxLayout()
         overlay_row.addWidget(QLabel("Overlay: disabilitato"))
         overlay_row.addSpacing(12)
-        self._hud_toggle = QPushButton("Testo HUD")
-        self._hud_toggle.setCheckable(True)
-        self._hud_toggle.setChecked(False)  # OFF by default
-        self._hud_toggle.setToolTip("Mostra/Nascondi testi HUD su OFF-player")
-        self._hud_toggle.setEnabled(False)
-        self._hud_toggle.toggled.connect(lambda checked: self.miscCommandTriggered.emit("hud_visible", {"on": bool(checked)}))
+        self._hud_mode_combo = QComboBox()
+        self._hud_mode_combo.addItems(["Nascosto", "IP & Porte", "Completo"])
+        self._hud_mode_combo.setCurrentIndex(0)
+        self._hud_mode_combo.setEnabled(False)
+        self._hud_mode_combo.setToolTip("Seleziona la modalità HUD del player")
+        self._hud_mode_base_style = self._hud_mode_combo.styleSheet() or ""
+        self._hud_mode_combo.currentIndexChanged.connect(self._on_hud_mode_changed)
         self._register_control(
-            self._hud_toggle,
-            enabled_tip="Attiva/Disattiva i testi HUD sul player",
+            self._hud_mode_combo,
+            enabled_tip="Configura la modalità HUD del player",
             disabled_tip=self._selection_required_tip,
         )
-        overlay_row.addWidget(self._hud_toggle)
+        overlay_row.addWidget(self._hud_mode_combo)
         overlay_row.addStretch(1)
         aux_layout.addLayout(overlay_row)
 
@@ -605,7 +606,9 @@ class CommandsTab(QWidget):
                 md = ev.mimeData()
                 if md.hasFormat(_MEDIA_MIME) or md.hasUrls():
                     try:
-                        self._device_media_list.setStyleSheet("background-color: #f0fff4; border: 2px dashed #27ae60;")
+                        self._device_media_list.setStyleSheet(
+                            "background-color: #f0fff4; border: 2px dashed #27ae60; color: #111111;"
+                        )
                         self._device_media_list.setDropIndicatorShown(True)
                     except Exception:
                         pass
@@ -1002,7 +1005,7 @@ class CommandsTab(QWidget):
             self._play_at,
             self._test_on,
             self._test_off,
-            getattr(self, "_hud_toggle", None),
+            getattr(self, "_hud_mode_combo", None),
             getattr(self, "_start_sync", None),
         ):
             if btn is None:
@@ -1987,28 +1990,54 @@ class CommandsTab(QWidget):
     # ------------------------------------------------------------------
     # HUD visible (OFF-player)
     # ------------------------------------------------------------------
-    def set_hud_state(self, visible: bool | None, multi_count: int | None = None) -> None:
-        """Reflect HUD visibility and multi-target hint.
-        - visible: True/False sets the toggle; None keeps current state.
-        - multi_count: if >1, highlight to indicate multi-apply.
+    def set_hud_state(self, mode: int | None, multi_count: int | None = None) -> None:
+        """Reflect HUD mode selection and multi-target hint.
+        - mode: 0 hidden, 1 minimal, 2 full; None keeps current selection.
+        - multi_count: if >1, highlight combo to indicate multi-apply.
         """
         try:
-            if hasattr(self, "_hud_toggle") and self._hud_toggle is not None:
-                # Update checked state without emitting signal
-                if isinstance(visible, bool):
-                    self._hud_toggle.blockSignals(True)
-                    try:
-                        self._hud_toggle.setChecked(bool(visible))
-                    finally:
-                        self._hud_toggle.blockSignals(False)
-                # Style and tooltip
-                base_tip = "Mostra/Nascondi testi HUD su OFF-player"
-                if isinstance(multi_count, int) and multi_count > 1:
-                    self._hud_toggle.setStyleSheet("background-color: #fff4e5; border: 1px solid #f39c12;")
-                    self._hud_toggle.setToolTip(f"{base_tip} (si applica a {multi_count} player)")
-                else:
-                    self._hud_toggle.setStyleSheet("")
-                    self._hud_toggle.setToolTip(base_tip)
+            combo = getattr(self, "_hud_mode_combo", None)
+            if combo is None:
+                return
+            if isinstance(mode, (int, float)):
+                idx = int(mode)
+                if idx < 0:
+                    idx = 0
+                if idx > 2:
+                    idx = 2
+                combo.blockSignals(True)
+                try:
+                    combo.setCurrentIndex(idx)
+                finally:
+                    combo.blockSignals(False)
+            base_tip = "Seleziona la modalità HUD del player"
+            if isinstance(multi_count, int) and multi_count > 1:
+                combo.setStyleSheet("background-color: #fff4e5; border: 1px solid #f39c12;")
+                combo.setToolTip(f"{base_tip} (si applica a {multi_count} player)")
+            else:
+                combo.setStyleSheet(getattr(self, "_hud_mode_base_style", ""))
+                combo.setToolTip(base_tip)
+        except Exception:
+            pass
+
+    def _on_hud_mode_changed(self, index: int) -> None:
+        """Dispatch HUD mode change to controller when user adjusts the combo."""
+        try:
+            combo = getattr(self, "_hud_mode_combo", None)
+            if combo is None or not combo.isEnabled():
+                return
+        except Exception:
+            return
+        try:
+            mode = int(index)
+        except Exception:
+            mode = 0
+        if mode < 0:
+            mode = 0
+        if mode > 2:
+            mode = 2
+        try:
+            self.miscCommandTriggered.emit("hud_visible", {"mode": mode})
         except Exception:
             pass
 

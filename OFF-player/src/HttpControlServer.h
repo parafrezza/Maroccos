@@ -47,6 +47,7 @@ struct ControlAPI {
     std::function<void()> fnGoToStart;
     // HUD visibility (overlay texts)
     std::function<void(bool)> fnHudVisible;
+    std::function<void(int)> fnHudMode;
     // LED test pattern
     std::function<void(int, int, int, int, float)> fnLedTestStart;
     std::function<void()> fnLedTestStop;

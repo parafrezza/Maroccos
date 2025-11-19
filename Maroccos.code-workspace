@@ -90,6 +90,29 @@
 				"problemMatcher": [],
 				"detail": "Genera l'installer Windows con Inno Setup"
 			}
+			,
+			{
+				"label": "build inno installer silent",
+				"type": "shell",
+				"command": "powershell",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"${workspaceFolder}/tools/build_installer.ps1",
+					"-SilentOnly"
+				],
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": false
+				},
+				"problemMatcher": [],
+				"detail": "Genera solo l'installer automatico (silenzioso)"
+			}
 		]
 	}
 }

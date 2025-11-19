@@ -67,16 +67,45 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
             if (api_.fnSplashText) api_.fnSplashText(t);
             sendOK(response);
     } else if (path == "/hud/visible") {
+        std::string modeStr = form.get("mode", "");
         std::string onStr = form.get("on", "");
-        if (api_.fnHudVisible) {
-            if (!onStr.empty()) {
-                bool on = (onStr == "1" || onStr == "true");
-                api_.fnHudVisible(on);
-            } else {
-                api_.fnHudVisible(false);
+        bool handled = false;
+        int modeValue = 0;
+        if (!modeStr.empty()) {
+            try {
+                modeValue = ofToInt(modeStr);
+                if (modeValue < 0) modeValue = 0;
+                if (modeValue > 2) modeValue = 2;
+            } catch (...) {
+                modeValue = 0;
+            }
+            if (api_.fnHudMode) {
+                api_.fnHudMode(modeValue);
+                handled = true;
+            } else if (api_.fnHudVisible) {
+                api_.fnHudVisible(modeValue > 0);
+                handled = true;
             }
         }
-        sendOK(response);
+        if (!handled) {
+            bool on = (!onStr.empty() ? (onStr == "1" || onStr == "true") : false);
+            modeValue = on ? 2 : 0;
+            if (api_.fnHudVisible) {
+                api_.fnHudVisible(on);
+                handled = true;
+            } else if (api_.fnHudMode) {
+                api_.fnHudMode(modeValue);
+                handled = true;
+            }
+        }
+        if (handled) {
+            std::ostringstream oss;
+            oss << "{\"ok\":true,\"mode\":" << modeValue
+                << ",\"visible\":" << (modeValue > 0 ? "true" : "false") << "}";
+            sendOK(response, oss.str());
+        } else {
+            sendBad(response, "{\"error\":\"hud control not supported\"}");
+        }
     } else if (path == "/visual/fade_in") {
         std::string s = form.get("seconds", "0.5");
         float sec = ofToFloat(s);

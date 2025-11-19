@@ -11,48 +11,52 @@
 #ifndef AppPublisher
 	#define AppPublisher "Maroccos"
 #endif
-#ifndef BuildMode
-	#define BuildMode "Release"
+#ifdef SilentInstall
+  #define SilentBuild 1
+#else
+  #define SilentBuild 0
 #endif
-#ifndef OutputBaseFilename
-	#define OutputBaseFilename "marocco-installer_v" + AppVersion
+
+#ifndef KLitePath
+  #define KLitePath ""
 #endif
-#ifndef DesktopLinkName
-	#define DesktopLinkName "marocco-player"
+
+  #define OutputBaseFilename "marocco-installer_v" + AppVersion
+
+#ifdef KLitePath
+  #define KLiteFileName ExtractFileName(KLitePath)
+#else
+  #define KLiteFileName "K-Lite_Codec_Pack_Basic.exe"
 #endif
+
+#if SilentBuild = 1
+  #define DisableWelcomePageValue yes
+  #define DisableDirPageValue yes
+  #define DisableReadyPageValue yes
+  #define DisableFinishedPageValue yes
+#else
+  #define DisableWelcomePageValue no
+  #define DisableDirPageValue no
+  #define DisableReadyPageValue no
+  #define DisableFinishedPageValue no
+#endif
+
 #ifndef HeadlessDirName
-	#define HeadlessDirName "headless-player"
+  #define HeadlessDirName "headless-player"
 #endif
 #ifndef HeadlessExeName
-	#define HeadlessExeName "headless-player.exe"
+  #define HeadlessExeName "headless-player.exe"
 #endif
 #ifndef ProvisionTaskName
-	#define ProvisionTaskName "MaroccosProvision"
+  #define ProvisionTaskName "MaroccosProvision"
 #endif
 #ifndef ExtraUserName
-	#define ExtraUserName "extra"
+  #define ExtraUserName "extra"
 #endif
 #ifndef ExtraPassword
-	#define ExtraPassword "extra"
+  #define ExtraPassword "extra"
 #endif
 
-; Icona: percorso sorgente (compilazione). Passato da /DIcoSrcPath, altrimenti prova default.
-#ifndef IcoSrcPath
-	#define IcoSrcPath AddBackslash(SourcePath) + "..\\icon-maker\\dist\\morocco-player\\morocco-player.ico"
-#endif
-
-; K-Lite path: può essere passato da riga comando (con varianti nome), altrimenti prova default
-#ifndef KLitePath
-	#define KLitePath AddBackslash(SourcePath) + 'assets\\KLite_Codec_Pack_Basic.exe'
-#endif
-#ifndef KLiteFileName
-	#define KLiteFileName ExtractFileName(KLitePath)
-#endif
-
-; Eseguibile OFF-player (solo release supportata)
-#if (BuildMode == 'Debug')
-	#error "BuildMode=Debug non è più supportato per OFF-player. Usa BuildMode=Release."
-#endif
 #define AppExe "OFF-player.exe"
 
 [Setup]
@@ -68,10 +72,19 @@ OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
-DisableDirPage=no
+DisableWelcomePage={#DisableWelcomePageValue}
+DisableDirPage={#DisableDirPageValue}
+DisableReadyPage={#DisableReadyPageValue}
+DisableFinishedPage={#DisableFinishedPageValue}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ChangesEnvironment=yes
+#if SilentBuild = 1
+AllowCancelDuringInstall=no
+SetupLogging=yes
+CloseApplications=force
+RestartApplications=no
+#endif
 ; Icona dell'installer (se il file esiste)
 #if FileExists(IcoSrcPath)
 SetupIconFile={#IcoSrcPath}
@@ -84,13 +97,25 @@ Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
 #if FileExists(KLitePath)
 Name: "install_klite"; Description: "Installa anche i codec K-Lite (necessari per OFF-player)"
 #endif
+#if SilentBuild = 1
+Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"
+#else
 Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"; Flags: unchecked
+#endif
 Name: "autostart_headless"; Description: "Avvia headless all'avvio (crea Attività Pianificata)"
 Name: "set_off_autostart"; Description: "Imposta OFF_AUTOSTART=1 (consigliato su Windows)"
+#if SilentBuild = 1
+Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
+#else
 Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive unchecked
 Name: "provision\schedule"; Description: "Pianifica ottimizzazioni al prossimo avvio"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive unchecked
 Name: "provision\skip"; Description: "Non applicare ottimizzazioni ora"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
+#endif
+#if SilentBuild = 1
+Name: "auto_logon_extra"; Description: "Configura auto logon con l'utente '{#ExtraUserName}' (password '{#ExtraPassword}')"
+#else
 Name: "auto_logon_extra"; Description: "Configura auto logon con l'utente '{#ExtraUserName}' (password '{#ExtraPassword}')"; Flags: unchecked
+#endif
 
 [Files]
 ; App binaries (installa OFF-player sotto {app}\OFF-player\bin)
@@ -128,7 +153,7 @@ Filename: "{tmp}\\{#KLiteFileName}"; Parameters: "/verysilent /norestart"; Flags
 #endif
 
 ; Installa TigerVNC in modo silenzioso quando richiesto
-Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/silent"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: FileExists(ExpandConstant('{app}\\assets\\tigervnc64-winvnc-1.15.0.exe')); Tasks: install_tigervnc
+Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: FileExists(ExpandConstant('{app}\\assets\\tigervnc64-winvnc-1.15.0.exe')); Tasks: install_tigervnc
 ; Configura TigerVNC SENZA password (accesso non autenticato), e riavvia servizio se presente
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; $kp='HKLM:\\SOFTWARE\\TigerVNC\\WinVNC4'; New-Item -Path $kp -Force | Out-Null; Remove-ItemProperty -Path $kp -Name 'Password' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path $kp -Name 'ControlPassword' -ErrorAction SilentlyContinue; New-ItemProperty -Path $kp -Name 'AuthRequired' -PropertyType DWord -Value 0 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'SecurityTypes' -PropertyType String -Value 'None' -Force | Out-Null; New-ItemProperty -Path $kp -Name 'AlwaysShared' -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'QuerySetting' -PropertyType DWord -Value 2 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'UseControlAuth' -PropertyType DWord -Value 0 -Force | Out-Null; Try {{ Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue }} Catch {{}}; Try {{ Restart-Service -Name 'WinVNC4' -Force -ErrorAction SilentlyContinue }} Catch {{}}; foreach($svc in 'tvnserver','WinVNC4') {{ try {{ Set-Service -Name $svc -StartupType Automatic }} catch {{}}; try {{ Start-Service -Name $svc }} catch {{}} }}"""; Flags: runhidden waituntilterminated; Tasks: install_tigervnc
 
@@ -136,8 +161,10 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference = 'Stop'; if (-not (Get-LocalUser -Name '{#ExtraUserName}' -ErrorAction SilentlyContinue)) {{ $sec = ConvertTo-SecureString '{#ExtraPassword}' -AsPlainText -Force; New-LocalUser -Name '{#ExtraUserName}' -Password $sec -FullName 'Extra Admin' -PasswordNeverExpires:$true -UserMayNotChangePassword:$true | Out-Null }}; Add-LocalGroupMember -Group 'Administrators' -Member '{#ExtraUserName}' -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; StatusMsg: "Creazione utente amministratore..."
 
 ; POI: Esegui provisioning (ora l'utente extra esiste già)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player..."; Tasks: provision\run_now
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile per avanzamento)..."; Tasks: provision\run_now
+#if SilentBuild = 0
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\create_provision_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#ProvisionTaskName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Programmazione ottimizzazioni al prossimo avvio..."; Tasks: provision\schedule
+#endif
 
 ; Configurazione auto-logon per utente extra
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
@@ -145,11 +172,15 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 ; Crea attività pianificata per avvio headless all'accesso utente (se presente l'eseguibile)
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -RunAsUser ""{#ExtraUserName}"" -RunAsPassword ""{#ExtraPassword}"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+#if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 
 ; Opzione di riavvio del sistema nella pagina finale (opzionale, non selezionata di default)
 Filename: "{cmd}"; Parameters: "/C shutdown /r /t 0"; Description: "Riavvia il sistema (opzionale)"; Flags: postinstall skipifsilent unchecked nowait
+#else
+Filename: "{cmd}"; Parameters: "/C shutdown /r /t 30 /c ""Installazione Maroccos completata: riavvio automatico in 30 secondi."""; Flags: runhidden nowait; StatusMsg: "Programmazione riavvio automatico..."
+#endif
 
 [Icons]
 ; Unica icona desktop e Start con nome versionato, punta al launcher headless
@@ -413,6 +444,7 @@ begin
     WizardForm.NextButton.Enabled := True;
   end;
 
+#if SilentBuild = 0
   // Alla pagina finale, verifica lo stato del servizio TigerVNC e aggiorna la label
   if CurPageID = wpFinished then
   begin
@@ -430,6 +462,7 @@ begin
       end;
     end;
   end;
+#endif
 end;
 
 // Best-effort: usa WMI per interrogare lo stato del servizio TigerVNC (tvnserver/WinVNC4)

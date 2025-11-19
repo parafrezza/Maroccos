@@ -24,6 +24,12 @@ struct AppConfig {
 
 class ofApp : public ofBaseApp {
 public:
+    enum class HudMode : int {
+        Hidden = 0,
+        Minimal = 1,
+        Full = 2,
+    };
+
     void setup() override;
     void update() override;
     void draw() override;
@@ -67,10 +73,14 @@ public:
     // accessori per HTTP
     const AppConfig& getConfig() const { return cfg; }
     bool isLooping() const { return cfg.loopEach; }
+    void setHudMode(HudMode mode);
+    void setHudModeByIndex(int modeIndex);
+    HudMode getHudMode() const { return hudMode; }
 
 private:
     struct OverlayInfo {
-        std::string text;
+        std::string fullText;
+        std::string minimalText;
         float lastUpdate = 0.0f;
         float updateInterval = 1.0f;
     };
@@ -126,7 +136,7 @@ private:
 
     // Overlay HUD
     OverlayInfo overlayInfo;
-    bool overlayVisible = false;
+    HudMode hudMode = HudMode::Hidden;
     ofTrueTypeFont overlayFont;
     bool overlayFontLoaded = false;
     mutable DisplayInfo displayInfoCache;
