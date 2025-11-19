@@ -1,0 +1,10 @@
+[HUD_PROXY] dispatch mode=2 on=1 (query mode=2 on=None)
+[HUD_PROXY] response -> mode=2 payload={'ok': True, 'mode': 2, 'visible': True}
+[HUD_PROXY] dispatch mode=1 on=1 (query mode=1 on=None)
+[HUD_PROXY] response -> mode=1 payload={'ok': True, 'mode': 1, 'visible': True}
+[HUD_PROXY] dispatch mode=0 on=0 (query mode=0 on=None)
+[HUD_PROXY] response -> mode=0 payload={'ok': True, 'mode': 0, 'visible': False}
+[HEADLESS] POST /stop received
+[OFF-BACKEND] /stop -> {'ok': True}
+[HEADLESS] /stop diagnostics -> {'total_ms': 11, 'cancel_ms': 0, 'stop_ms': 11, 'overlay_ms': 0}
+2025-11-19 12:27:37,695 [INFO] uvicorn.access: 127.0.0.1:50585 - "POST /stop HTTP/1.1" 200

@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
         ctrl.playlistStatusReceived.connect(self._handle_playlist_status)
         # Start Sync button wiring
         try:
-            self._commands_tab.startSyncRequested.connect(lambda: self._controller.restart_time_sync(self._selected_players))
+            self._commands_tab.startSyncRequested.connect(self._handle_start_sync_requested)
         except Exception:
             pass
         # Live framework logs wiring
@@ -283,6 +283,23 @@ class MainWindow(QMainWindow):
     def _handle_startup_request(self) -> None:
         target = self._selected_players[0] if self._selected_players else None
         self._controller.trigger_startup_magic(player=target)
+
+    def _handle_start_sync_requested(self) -> None:
+        if not self._selected_players:
+            self._append_log("Sync orologi richiesto ma nessun player selezionato.")
+            return
+        players = list(self._selected_players)
+        snippet = ", ".join(str(p.ip) for p in players[:3])
+        if len(players) > 3:
+            snippet += f", ... ({len(players)} in totale)"
+        self._append_log(f"[Sync] Richiesta manuale per i player: {snippet}")
+        try:
+            self._controller.restart_time_sync(players)
+        except Exception as exc:
+            self._append_log(f"[Sync] Errore riavviando sync: {exc}")
+        finally:
+            for player in players:
+                self._controller.refresh_status(player)
 
     def _handle_selection_changed(self, ips: list[str]) -> None:
         self._selected_players = self._controller.get_selected_players(ips)

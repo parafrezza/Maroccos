@@ -1,4 +1,5 @@
 #include "HttpControlServer.h"
+#include "ofLog.h"
 #include <sstream>
 
 // ========== HttpRequestHandler ==========
@@ -18,6 +19,7 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
         if (api_.fnResume) api_.fnResume();
         sendOK(response);
     } else if (path == "/stop") {
+        ofLogNotice("HttpServer") << "POST /stop";
         if (api_.fnStop) api_.fnStop();
         sendOK(response);
     } else if (path == "/next") {
@@ -99,11 +101,13 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
             }
         }
         if (handled) {
+            ofLogNotice("HttpServer") << "POST /hud/visible -> mode=" << modeValue << " onParam=" << (onStr.empty() ? std::string("<none>") : onStr) << " rawMode=" << (modeStr.empty() ? std::string("<none>") : modeStr);
             std::ostringstream oss;
             oss << "{\"ok\":true,\"mode\":" << modeValue
                 << ",\"visible\":" << (modeValue > 0 ? "true" : "false") << "}";
             sendOK(response, oss.str());
         } else {
+            ofLogWarning("HttpServer") << "POST /hud/visible ignored: missing handlers";
             sendBad(response, "{\"error\":\"hud control not supported\"}");
         }
     } else if (path == "/visual/fade_in") {

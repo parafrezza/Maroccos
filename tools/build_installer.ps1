@@ -225,13 +225,49 @@ function Invoke-SetResolutionAsset {
 }
 
 function Ensure-HeadlessBinary {
+    param(
+        [string]$ExpectedVersion
+    )
+
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $distDir = Join-Path $repoRoot 'headless-player\dist'
     $bundleDir = Join-Path $distDir 'headless-player'
     $exePath = Join-Path $bundleDir 'headless-player.exe'
 
-    if (Test-Path -LiteralPath $exePath) {
+    $needsBuild = $false
+    if (-not (Test-Path -LiteralPath $exePath)) {
+        $needsBuild = $true
+        Write-Host 'headless-player.exe mancante: genero la build Windows' -ForegroundColor Yellow
+    } elseif ($ExpectedVersion) {
+        $embeddedVersionPath = Join-Path $bundleDir '_internal\VERSION'
+        $currentVersion = $null
+        if (Test-Path -LiteralPath $embeddedVersionPath) {
+            try {
+                $currentVersion = (Get-Content -LiteralPath $embeddedVersionPath -Raw).Trim()
+            } catch {
+                $currentVersion = $null
+            }
+        }
+
+        if (-not $currentVersion) {
+            Write-Warning 'Impossibile determinare la versione incorporata nel player headless: rigenero eseguibile'
+            $needsBuild = $true
+        } elseif ($currentVersion -ne $ExpectedVersion) {
+            Write-Host (
+                "Versione headless corrente ({0}) diversa da quella attesa ({1}): rigenero eseguibile" -f `
+                    $currentVersion, $ExpectedVersion
+            ) -ForegroundColor Yellow
+            $needsBuild = $true
+        } else {
+            Write-Host (
+                "headless-player.exe trovato ({0}) con versione {1}" -f $exePath, $ExpectedVersion
+            ) -ForegroundColor DarkGray
+        }
+    } else {
         Write-Host ("headless-player.exe trovato: {0}" -f $exePath) -ForegroundColor DarkGray
+    }
+
+    if (-not $needsBuild) {
         return
     }
 
@@ -240,7 +276,6 @@ function Ensure-HeadlessBinary {
         throw "build_headless_windows.ps1 non trovato: $buildScript"
     }
 
-    Write-Host 'headless-player.exe mancante: genero la build Windows' -ForegroundColor Yellow
     & powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript
     if ($LASTEXITCODE -ne 0) {
         throw "build_headless_windows.ps1 fallito ($LASTEXITCODE)"
@@ -250,7 +285,25 @@ function Ensure-HeadlessBinary {
         throw "headless-player.exe non trovato dopo build_headless_windows.ps1"
     }
 
+    $postVersion = $null
+    if ($ExpectedVersion) {
+        $embeddedVersionPath = Join-Path $bundleDir '_internal\VERSION'
+        if (Test-Path -LiteralPath $embeddedVersionPath) {
+            try {
+                $postVersion = (Get-Content -LiteralPath $embeddedVersionPath -Raw).Trim()
+            } catch {
+                $postVersion = $null
+            }
+        }
+    }
+
     Write-Host ("headless-player.exe creato: {0}" -f $exePath) -ForegroundColor Green
+    if ($ExpectedVersion -and $postVersion -and $postVersion -ne $ExpectedVersion) {
+        Write-Warning (
+            "La versione incorporata nel player headless ({0}) non corrisponde a {1}" -f `
+                $postVersion, $ExpectedVersion
+        )
+    }
 }
 
 function Invoke-IsccBuild {
@@ -327,6 +380,12 @@ function Invoke-IsccBuild {
     }
 }
 
+$versionFileExisted = $false
+$originalVersionContent = $null
+$versionFileUpdated = $false
+$versionFilePath = $null
+$versionDisplay = $null
+
 try {
     $iss = Resolve-InstallerScriptPath -Path $IssPath
     Write-Host "Script Inno Setup:" $iss
@@ -372,38 +431,60 @@ try {
 
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $verFile = Join-Path $repoRoot 'headless-player\VERSION'
-    $versionFileUpdate = $null
+    $versionFilePath = $verFile
 
-    # Determina versione da file se non passata, incrementandola automaticamente
+    $existingRaw = $null
+    $existingParsed = $null
+    if (Test-Path -LiteralPath $verFile) {
+        $existingRaw = (Get-Content -LiteralPath $verFile -Raw).Trim()
+        $versionFileExisted = $true
+        $originalVersionContent = $existingRaw
+        if ($existingRaw) {
+            try {
+                $existingParsed = Parse-VersionString $existingRaw
+            } catch {
+                Write-Warning "Contenuto VERSION non riconosciuto ('${existingRaw}'): verrà sovrascritto"
+                $existingParsed = $null
+            }
+        }
+    }
+
     if (-not $Version) {
-        $existingRaw = $null
-        if (Test-Path -LiteralPath $verFile) {
-            $existingRaw = (Get-Content -LiteralPath $verFile -Raw).Trim()
-        } else {
+        if (-not $existingRaw) {
             Write-Warning "VERSION non trovato, inizializzo da 0.0.0"
             $existingRaw = '0.0.0'
+            $existingParsed = Parse-VersionString $existingRaw
+        } elseif (-not $existingParsed) {
+            $existingParsed = Parse-VersionString $existingRaw
         }
 
-        $existingParsed = Parse-VersionString $existingRaw
         $newCore = Increment-VersionCore $existingParsed.Core
         $prefixForFile = if ($existingParsed.Prefix) { $existingParsed.Prefix } else { 'v' }
         $oldDisplay = if ($existingParsed.Prefix) { $existingParsed.Prefix + $existingParsed.Core } else { $existingParsed.Core }
-        $newDisplay = "${prefixForFile}${newCore}"
-        Write-Host ("Versione incrementata automaticamente: {0} -> {1}" -f $oldDisplay, $newDisplay) -ForegroundColor Cyan
-
+        $versionDisplay = if ($prefixForFile) { $prefixForFile + $newCore } else { $newCore }
+        Write-Host ("Versione incrementata automaticamente: {0} -> {1}" -f $oldDisplay, $versionDisplay) -ForegroundColor Cyan
         $Version = $newCore
-        $versionFileUpdate = [pscustomobject]@{
-            Path = $verFile
-            Content = $newDisplay
-        }
     } else {
         $parsedParam = Parse-VersionString $Version
         $Version = $parsedParam.Core
+        if (-not $existingParsed -and $existingRaw) {
+            try {
+                $existingParsed = Parse-VersionString $existingRaw
+            } catch {
+                $existingParsed = $null
+            }
+        }
+        $prefixForFile = if ($parsedParam.Prefix) { $parsedParam.Prefix } elseif ($existingParsed -and $existingParsed.Prefix) { $existingParsed.Prefix } else { 'v' }
+        $versionDisplay = if ($prefixForFile) { $prefixForFile + $Version } else { $Version }
+    }
+
+    if (-not $versionDisplay) {
+        $versionDisplay = "v$Version"
     }
 
     $mode = 'Release'
     $appName = $AppBaseName
-    $versionTag = "v$Version"
+    $versionTag = $versionDisplay
     $desktopLink = "${appName}_${versionTag}"
     $headlessDir = 'headless-player'
     $headlessExe = 'headless-player.exe'
@@ -430,7 +511,6 @@ try {
     }
     $assetsDir = Join-Path (Split-Path -Parent $iss) 'assets'
     Invoke-SetResolutionAsset -Root (Split-Path -Parent $PSScriptRoot) -AssetsDir $assetsDir
-    Ensure-HeadlessBinary
 
     # Verifica presenza K-Lite (nome flessibile con/senza trattino)
     $kliteVariants = @(
@@ -457,6 +537,19 @@ try {
     $kliteFull = (Resolve-Path -LiteralPath $klite).Path
     $defines += "/DKLitePath=$($('"' + $kliteFull + '"'))"
 
+    if (-not (Test-Path -LiteralPath (Split-Path -Parent $verFile))) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $verFile) -Force | Out-Null
+    }
+    if ($existingRaw -ne $versionDisplay) {
+        Set-Content -LiteralPath $verFile -Value $versionDisplay -Encoding ascii
+        $versionFileUpdated = $true
+        Write-Host ("File VERSION impostato a {0}" -f $versionDisplay) -ForegroundColor Green
+    } else {
+        Write-Host ("File VERSION già impostato a {0}" -f $versionDisplay) -ForegroundColor DarkGray
+    }
+
+    Ensure-HeadlessBinary -ExpectedVersion $versionDisplay
+
     Update-AssetsManifest -AssetsDir $assetsDir
 
     $logsDir = Join-Path (Split-Path -Parent $iss) 'logs'
@@ -480,11 +573,6 @@ try {
     $silentDefines += '/DSilentInstall=1'
     $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'auto'
 
-    if ($versionFileUpdate) {
-        Set-Content -LiteralPath $versionFileUpdate.Path -Value $versionFileUpdate.Content -Encoding ascii
-        Write-Host ("File VERSION aggiornato a {0}" -f $versionFileUpdate.Content) -ForegroundColor Green
-    }
-
     if ($SilentOnly) {
         Write-Host "Installer automatico creato con successo." -ForegroundColor Green
     } else {
@@ -498,6 +586,20 @@ try {
     exit 0
 }
 catch {
+    if ($versionFileUpdated) {
+        try {
+            if ($versionFileExisted) {
+                $restoreValue = if ($null -eq $originalVersionContent) { '' } else { $originalVersionContent }
+                Set-Content -LiteralPath $versionFilePath -Value $restoreValue -Encoding ascii
+                Write-Warning "Ripristinato headless-player/VERSION al contenuto precedente"
+            } elseif ($versionFilePath -and (Test-Path -LiteralPath $versionFilePath)) {
+                Remove-Item -LiteralPath $versionFilePath -Force
+                Write-Warning "Rimosso headless-player/VERSION creato durante la build fallita"
+            }
+        } catch {
+            Write-Warning "Impossibile ripristinare headless-player/VERSION: $($_.Exception.Message)"
+        }
+    }
     Write-Error $_
     exit 1
 }

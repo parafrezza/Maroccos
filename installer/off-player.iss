@@ -21,7 +21,9 @@
   #define KLitePath ""
 #endif
 
+#ifndef OutputBaseFilename
   #define OutputBaseFilename "marocco-installer_v" + AppVersion
+#endif
 
 #ifdef KLitePath
   #define KLiteFileName ExtractFileName(KLitePath)
@@ -49,6 +51,12 @@
 #endif
 #ifndef ProvisionTaskName
   #define ProvisionTaskName "MaroccosProvision"
+#endif
+#ifndef HeadlessTaskName
+  #define HeadlessTaskName "MaroccosHeadless"
+#endif
+#ifndef HeadlessStartupTaskName
+  #define HeadlessStartupTaskName "MaroccosHeadlessBoot"
 #endif
 #ifndef ExtraUserName
   #define ExtraUserName "extra"
@@ -169,9 +177,11 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 ; Configurazione auto-logon per utente extra
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
 
-; Crea attività pianificata per avvio headless all'accesso utente (se presente l'eseguibile)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -RunAsUser ""{#ExtraUserName}"" -RunAsPassword ""{#ExtraPassword}"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+; Crea attività pianificate per avvio headless automatico (se presente l'eseguibile)
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon"; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -RunAsUser ""{#ExtraUserName}"" -RunAsPassword ""{#ExtraPassword}"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessStartupTaskName}"" -Trigger Startup -RunAsSystem"; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessStartupTaskName}"" -Trigger Startup -RunAsSystem"; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 #if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
@@ -201,7 +211,8 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [UninstallRun]
 ; Rimuovi l'attività pianificata in uninstall
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""MaroccosHeadless"" /F"; Flags: runhidden
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessTaskName}"" /F"; Flags: runhidden
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessStartupTaskName}"" /F"; Flags: runhidden
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ProvisionTaskName}"" /F"; Flags: runhidden
 Filename: "reg.exe"; Parameters: "ADD ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v AutoAdminLogon /t REG_SZ /d 0 /f"; Flags: runhidden
 Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v DefaultPassword /f"; Flags: runhidden

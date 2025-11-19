@@ -159,7 +159,12 @@ class OffBackend:
             pass
 
     def stop(self) -> None:
-        self._post("/stop")
+        try:
+            res = self._post("/stop")
+            print(f"[OFF-BACKEND] /stop -> {res}", flush=True)
+        except Exception as exc:
+            print(f"[OFF-BACKEND] /stop FAILED: {exc}", flush=True)
+            raise
         self._g["player"]["state"] = "stopped"
 
     def pause(self) -> None:
@@ -173,7 +178,12 @@ class OffBackend:
         self._g["player"]["state"] = "playing"
 
     def set_loop(self, enabled: bool) -> None:
-        self._post("/loop", params={"on": "1" if enabled else "0"})
+        try:
+            res = self._post("/loop", params={"on": "1" if enabled else "0"})
+            print(f"[OFF-BACKEND] /loop -> {res}", flush=True)
+        except Exception as exc:
+            print(f"[OFF-BACKEND] /loop FAILED: {exc}", flush=True)
+            raise
 
     def is_playing(self) -> bool:
         try:

@@ -1106,13 +1106,14 @@ void ofApp::drawLedTestPattern(){
         ofNoFill();
         ofSetColor(0);
         ofDrawRectangle(swX + (box + gap) * static_cast<float>(i), swY, box, box);
-        ofFill();
+        foffFill();
     }
 
     ofPopStyle();
 }
 
 void ofApp::keyPressed(int key){
+    ofLogNotice() << "Key pressed -> " << key;
     if(key==' '){ isPlaying ? stop() : play(); }
     if(key==OF_KEY_RIGHT) next();
     if(key==OF_KEY_LEFT) prev();

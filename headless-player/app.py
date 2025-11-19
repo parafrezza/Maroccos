@@ -7295,6 +7295,7 @@ def hud_visible(on: Optional[int] = Query(None), mode: Optional[int] = Query(Non
         if selected_mode > 2:
             selected_mode = 2
         on_value = 1 if selected_mode > 0 else 0
+        print(f"[HUD_PROXY] dispatch mode={selected_mode} on={on_value} (query mode={mode} on={on})", flush=True)
         url = f"http://{OFF_HOST}:{port}/hud/visible?mode={selected_mode}&on={on_value}"
         with urllib.request.urlopen(url, timeout=0.8) as r:
             body = r.read().decode("utf-8", errors="ignore")
@@ -7311,14 +7312,17 @@ def hud_visible(on: Optional[int] = Query(None), mode: Optional[int] = Query(Non
             if response_mode > 2:
                 response_mode = 2
             globals()["HUD_MODE"] = response_mode
+            print(f"[HUD_PROXY] response -> mode={response_mode} payload={res}", flush=True)
             if isinstance(res, dict):
                 res.setdefault("mode", response_mode)
                 res.setdefault("visible", bool(response_mode > 0))
             return res
         except Exception:
             globals()["HUD_MODE"] = response_mode
+            print(f"[HUD_PROXY] response (raw) -> mode={response_mode} body={body}", flush=True)
             return {"ok": True, "raw": body, "mode": response_mode, "visible": bool(response_mode > 0)}
     except Exception as e:
+        print(f"[HUD_PROXY] ERROR: {e}", flush=True)
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 @app.get("/hud/visible")
@@ -7490,6 +7494,7 @@ def api_loop(on: int = Query(1)):
 @app.post("/stop")
 def api_stop():
     t0 = time.time()
+    print("[HEADLESS] POST /stop received", flush=True)
     # Invalida azioni pianificate e ferma tutti i timer noti
     try:
         cancel_all_schedules()
@@ -7546,6 +7551,7 @@ def api_stop():
             "overlay_ms": int((t_end - t_before_overlay) * 1000),
         }
         gui_log("stop_diagnostics", data=diagnostics)
+        print(f"[HEADLESS] /stop diagnostics -> {diagnostics}", flush=True)
     except Exception:
         diagnostics = {}
     return {"ok": True, "state": player.get("state", "stopped"), "diagnostics": diagnostics}

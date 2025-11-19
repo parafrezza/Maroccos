@@ -30,6 +30,7 @@ param(
     [string]$TigerVNCPassword = 'extra',
     [string]$ScheduledTaskName,
     [string]$HeadlessTaskName = 'MaroccosHeadless',
+    [string]$HeadlessStartupTaskName = 'MaroccosHeadlessBoot',
     [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [switch]$SkipMediaShare,
@@ -1001,10 +1002,14 @@ function Ensure-HeadlessScheduledTask {
     param(
         [string]$InstallRoot = 'C:\Program Files\marocco-player',
         [string]$TaskName = 'MaroccosHeadless',
-        [string]$RunAsUser = 'extra'
+        [string]$RunAsUser = 'extra',
+        [ValidateSet('Logon','Startup')]
+        [string]$Trigger = 'Logon',
+        [string]$RunAsPassword,
+        [switch]$RunAsSystem
     )
 
-    Write-Step 'Configuro avvio headless-player al login utente'
+    Write-Step "Configuro avvio headless-player (trigger $Trigger)"
 
     $exePath = Join-Path $InstallRoot 'headless-player\headless-player.exe'
     if (-not (Test-Path $exePath)) {
@@ -1042,7 +1047,9 @@ function Ensure-HeadlessScheduledTask {
     $currentPrincipal = ([Security.Principal.WindowsIdentity]::GetCurrent()).Name
     $principalUser = $currentPrincipal
 
-    if (-not [string]::IsNullOrWhiteSpace($RunAsUser)) {
+    if ($RunAsSystem) {
+        $principalUser = 'SYSTEM'
+    } elseif (-not [string]::IsNullOrWhiteSpace($RunAsUser)) {
         try {
             $targetUser = $RunAsUser
             if ($RunAsUser -notmatch '\\|@') {
@@ -1069,18 +1076,39 @@ function Ensure-HeadlessScheduledTask {
     }
 
     $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $workDir
-    if ($principalUser) {
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser
-    } else {
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
+    switch ($Trigger) {
+        'Startup' { $trigger = New-ScheduledTaskTrigger -AtStartup }
+        default   {
+            if ($principalUser -and -not $RunAsSystem) { $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser }
+            else { $trigger = New-ScheduledTaskTrigger -AtLogOn }
+        }
     }
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
-    $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType Interactive -RunLevel Highest
+
+    $logonType = 'Interactive'
+    if ($RunAsSystem) {
+        $logonType = 'ServiceAccount'
+    } elseif ($RunAsPassword) {
+        $logonType = 'Password'
+    }
+
+    if ($Trigger -eq 'Startup' -and -not $RunAsSystem -and -not $RunAsPassword) {
+        Write-Warn 'Trigger Startup richiede credenziali o account SYSTEM: userò SYSTEM.'
+        $principalUser = 'SYSTEM'
+        $logonType = 'ServiceAccount'
+        $RunAsSystem = $true
+    }
+
+    $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType $logonType -RunLevel Highest
 
     try {
         $definition = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
-        Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force | Out-Null
-        Write-Ok ("Attività {0} registrata per l'utente {1}" -f $TaskName, $principalUser)
+        if ($RunAsPassword -and -not $RunAsSystem) {
+            Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force -User $principalUser -Password $RunAsPassword | Out-Null
+        } else {
+            Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force | Out-Null
+        }
+        Write-Ok ("Attività {0} registrata (utente {1}, trigger {2})" -f $TaskName, $principalUser, $Trigger)
     } catch {
         Write-Warn ("Registrazione attività {0} fallita: {1}" -f $TaskName, $_.Exception.Message)
         return
@@ -1713,7 +1741,8 @@ function Main {
     Apply-PreferredResolution
     Rename-ComputerFromConfig
     Ensure-RunOnLogin -InstallRoot $InstallRoot
-    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser
+    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser -Trigger 'Logon'
+    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessStartupTaskName -Trigger 'Startup' -RunAsSystem
 
     # Applica impostazioni utente anche all'account extra se esiste
     $applyUserSettings = Join-Path $InstallRoot 'tools\windows\apply_user_settings.ps1'

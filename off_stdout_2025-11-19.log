@@ -1,0 +1,28 @@
+[warning] ofInit: MSYS2 has limited support for UTF-8. using English_United States.1252
+[warning] ofUtils: std::locale not supported. Using C locale: English_United States.1252
+[notice ] Playlist: 2 file.
+[notice ] Carico: [0] C:\Users\Riccardo\Desktop\media\2025-10-03_06-40-27_UTC.mp4
+[notice ] UDP bind ok su porta 7778
+[ error ] ofTrueTypeFont: loadFontFace(): couldn't find font verdana.ttf
+[notice ] Comandi UDP (porta 7778): PLAY, STOP, NEXT, PREV, SET <n>, DIR <path>, RELOAD, STATUS, LOOP on|off
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[ error ] ofxNetwork: ../OFF-ROOT/of_v0.12.1_msys2_mingw64_release/addons/ofxNetwork/src/ofxUDPManager.cpp: 186 EINVAL: invalid argument
+[warning] UDP bind fallito su porta base 7778 e fallback +10: disabilito comandi UDP
+[notice ] HTTP control server in avvio sulla porta 8085
+[notice ] Comandi UDP (porta 7778): PLAY, STOP, NEXT, PREV, SET <n>, DIR <path>, RELOAD, STATUS, LOOP on|off
+[notice ] API HTTP (porta 8085): GET /status /healthz /splash/* /visual/* | POST /play /stop /next /prev /set?index=N /dir?path=P /reload /loop?on=1|0 /pause /resume
+[notice ] HttpServer: Avvio HTTP su porta 8085
+[notice ] HttpServer: Server HTTP attivo su /status /playlist /play ...
+[notice ] BRIGHTNESS -> 0 (instant)
+[notice ] Overlay HUD -> FULL
+[notice ] Overlay HUD -> MINIMAL
+[notice ] Overlay HUD -> HIDDEN
+[notice ] STOP

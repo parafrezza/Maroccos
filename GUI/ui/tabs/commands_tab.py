@@ -311,6 +311,18 @@ class CommandsTab(QWidget):
         timing_row.addWidget(self._timing_text)
         # Start sync button
         self._start_sync = QPushButton("Start Sync")
+        self._start_sync.setStyleSheet(
+            "QPushButton {"
+            " padding: 6px 14px;"
+            " font-weight: 600;"
+            " color: #ecf0f1;"
+            " background-color: #2c3e50;"
+            " border: none;"
+            " border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #34495e; }"
+            "QPushButton:pressed { background-color: #1f2a36; }"
+        )
         self._start_sync.setEnabled(False)
         self._start_sync.clicked.connect(lambda _=False: self._emit_start_sync())
         self._register_control(
@@ -325,7 +337,7 @@ class CommandsTab(QWidget):
 
         # Overlay controls removed (feature deprecated) + HUD text toggle for OFF-player
         overlay_row = QHBoxLayout()
-        overlay_row.addWidget(QLabel("Overlay: disabilitato"))
+        overlay_row.addWidget(QLabel("HUD:"))
         overlay_row.addSpacing(12)
         self._hud_mode_combo = QComboBox()
         self._hud_mode_combo.addItems(["Nascosto", "IP & Porte", "Completo"])

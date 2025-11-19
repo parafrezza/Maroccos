@@ -6,7 +6,10 @@ param(
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [string]$TaskName = 'MaroccosHeadless',
     [string]$RunAsUser,
-    [string]$RunAsPassword
+    [string]$RunAsPassword,
+    [ValidateSet('Logon','Startup')]
+    [string]$Trigger = 'Logon',
+    [switch]$RunAsSystem
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +34,7 @@ if (-not $isAdmin) {
     exit 1
 }
 
-Write-Step "Riparazione attività pianificata $TaskName"
+Write-Step "Riparazione attività pianificata $TaskName ($Trigger)"
 
 $exePath = Join-Path $InstallRoot 'headless-player\headless-player.exe'
 $workDir = Split-Path $exePath -Parent
@@ -64,17 +67,43 @@ try {
 }
 
 $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $workDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
 $principalUser = $RunAsUser
-if (-not $principalUser) {
+if ($RunAsSystem) {
+    $principalUser = 'SYSTEM'
+} elseif (-not $principalUser) {
     $principalUser = ([Security.Principal.WindowsIdentity]::GetCurrent()).Name
 } elseif ($principalUser -notmatch '\\|@') {
     $principalUser = "${env:COMPUTERNAME}\$principalUser"
 }
 
-$logonType = if ($RunAsPassword) { 'Password' } else { 'Interactive' }
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+
+switch ($Trigger) {
+    'Startup' { $trigger = New-ScheduledTaskTrigger -AtStartup }
+    default   {
+        if ($principalUser -and -not $RunAsSystem) {
+            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser
+        } else {
+            $trigger = New-ScheduledTaskTrigger -AtLogOn
+        }
+    }
+}
+
+$logonType = 'Interactive'
+if ($RunAsSystem) {
+    $logonType = 'ServiceAccount'
+} elseif ($RunAsPassword) {
+    $logonType = 'Password'
+}
+
+if ($Trigger -eq 'Startup' -and -not $RunAsSystem -and -not $RunAsPassword) {
+    Write-Warn 'AtStartup richiede credenziali memorizzate o esecuzione come SYSTEM; uso account SYSTEM.'
+    $principalUser = 'SYSTEM'
+    $logonType = 'ServiceAccount'
+    $RunAsSystem = $true
+}
+
 $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType $logonType -RunLevel Highest
 
 Write-Info "Registrazione nuova attività (utente: $principalUser, logonType: $logonType)"
@@ -82,7 +111,7 @@ Write-Info "Registrazione nuova attività (utente: $principalUser, logonType: $l
 $taskDefinition = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 
 try {
-    if ($RunAsPassword) {
+    if ($RunAsPassword -and -not $RunAsSystem) {
         Register-ScheduledTask -TaskName $TaskName -InputObject $taskDefinition -Force -User $principalUser -Password $RunAsPassword | Out-Null
     } else {
         Register-ScheduledTask -TaskName $TaskName -InputObject $taskDefinition -Force | Out-Null
@@ -113,6 +142,6 @@ try {
 
 Write-Step 'Completato'
 Write-Ok "L'attività $TaskName è stata riparata"
-Write-Info 'Al prossimo login, headless-player.exe verrà avviato automaticamente'
+Write-Info "Trigger $Trigger avvierà headless-player.exe automaticamente"
 Write-Host ''
 Write-Info "Per testare subito, esegui: Start-ScheduledTask -TaskName $TaskName"
