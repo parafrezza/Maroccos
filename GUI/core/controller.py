@@ -1897,7 +1897,7 @@ class ApplicationController(QObject):
         except OSError as exc:
             self.logMessage.emit(f"Impossibile avviare file server update: {exc}")
             raise
-        host_ip = self._host_ip()
+        host_ip = self._host_ip(targets)
         bundle_url = f"http://{host_ip}:{cfg.update.serve_port}/{bundle_path.name}"
         try:
             players_payload = [{"ip": p.ip, "port": cfg.network.player_port} for p in targets]
@@ -2199,7 +2199,55 @@ echo "[remote] Fatto."
         known = {p.ip: p for p in self.player_registry.current_players()}
         return [known[ip] for ip in ips if ip in known]
 
-    def _host_ip(self) -> str:
+    def _local_ipv4_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        if psutil is not None:
+            try:
+                for iface_addrs in psutil.net_if_addrs().values():  # type: ignore[attr-defined]
+                    for addr in iface_addrs:
+                        if addr.family != socket.AF_INET:
+                            continue
+                        ip = getattr(addr, "address", None) or getattr(addr, "addr", None)
+                        if not ip or not isinstance(ip, str):
+                            continue
+                        if ip.startswith("127.") or ip.startswith("169.254."):
+                            continue
+                        candidates.append(ip)
+            except Exception:
+                pass
+        if not candidates:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                candidates.append(s.getsockname()[0])
+                s.close()
+            except Exception:
+                pass
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        result: list[str] = []
+        for ip in candidates:
+            if ip not in seen:
+                seen.add(ip)
+                result.append(ip)
+        return result
+
+    def _host_ip(self, targets: Iterable[PlayerRecord] | None = None) -> str:
+        candidates = self._local_ipv4_candidates()
+        if targets and candidates:
+            for player in targets:
+                try:
+                    player_net = ipaddress.ip_network(f"{player.ip}/24", strict=False)
+                except Exception:
+                    continue
+                for candidate in candidates:
+                    try:
+                        if ipaddress.ip_address(candidate) in player_net:
+                            return candidate
+                    except Exception:
+                        continue
+        if candidates:
+            return candidates[0]
         if updater and hasattr(updater, "local_primary_ip"):
             try:
                 return updater.local_primary_ip()

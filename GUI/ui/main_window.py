@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from GUI.core.controller import ApplicationController
+from GUI.app_meta import APP_DISPLAY_NAME
 from GUI.ui.tabs.commands_tab import CommandsTab
 from GUI.ui.tabs.update_tab import UpdateTab
 from GUI.ui.panels.player_panel import PlayerPanel
@@ -40,7 +41,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._controller = controller
         self._selected_players = []
-        self.setWindowTitle("Morocco Player Manager")
+        self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(QSize(1200, 800))
 
         self._tabs = QTabWidget()

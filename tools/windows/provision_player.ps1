@@ -30,7 +30,6 @@ param(
     [string]$TigerVNCPassword = 'extra',
     [string]$ScheduledTaskName,
     [string]$HeadlessTaskName = 'MaroccosHeadless',
-    [string]$HeadlessStartupTaskName = 'MaroccosHeadlessBoot',
     [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [switch]$SkipMediaShare,
@@ -1742,7 +1741,6 @@ function Main {
     Rename-ComputerFromConfig
     Ensure-RunOnLogin -InstallRoot $InstallRoot
     Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser -Trigger 'Logon'
-    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessStartupTaskName -Trigger 'Startup' -RunAsSystem
 
     # Applica impostazioni utente anche all'account extra se esiste
     $applyUserSettings = Join-Path $InstallRoot 'tools\windows\apply_user_settings.ps1'

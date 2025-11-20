@@ -104,6 +104,7 @@ sudo ./scripts/provision_pi.sh
 ```powershell
 # Verifica servizio headless-player
 Get-ScheduledTask -TaskName "MaroccosHeadless"
+# (Facoltativo) se hai creato anche l'avvio al boot:
 Get-ScheduledTask -TaskName "MaroccosHeadlessBoot"
 
 # Verifica utente extra

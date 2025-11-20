@@ -132,6 +132,7 @@ Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" |
 ### 4. Verifica scheduled task headless
 ```powershell
 Get-ScheduledTask -TaskName "MaroccosHeadless" -ErrorAction SilentlyContinue
+# (Facoltativo) Se hai configurato anche l'avvio al boot:
 Get-ScheduledTask -TaskName "MaroccosHeadlessBoot" -ErrorAction SilentlyContinue
 ```
 
@@ -203,8 +204,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\windows\provision_player.ps1 -N
 **Verifica**: Controlla scheduled task
 ```powershell
 Get-ScheduledTask -TaskName "MaroccosHeadless"
-Get-ScheduledTask -TaskName "MaroccosHeadlessBoot"
 schtasks /Query /TN "MaroccosHeadless" /V /FO LIST
+# (Facoltativo) se hai creato l'attività anche all'avvio del sistema:
+Get-ScheduledTask -TaskName "MaroccosHeadlessBoot"
 schtasks /Query /TN "MaroccosHeadlessBoot" /V /FO LIST
 ```
 
@@ -216,7 +218,8 @@ Test-Path "C:\Program Files\marocco-player\headless-player\headless-player.exe"
 **Soluzione**: Ricrea task manualmente
 ```powershell
 schtasks /Create /TN "MaroccosHeadless" /SC ONLOGON /RL HIGHEST /F /RU "extra" /RP "extra" /TR "C:\Program Files\marocco-player\headless-player\headless-player.exe"
-schtasks /Create /TN "MaroccosHeadlessBoot" /SC ONSTART /RL HIGHEST /RU SYSTEM /F /TR "C:\Program Files\marocco-player\headless-player\headless-player.exe"
+# (Facoltativo) per tentare l'avvio anche prima del login (richiede ambiente grafico disponibile):
+# schtasks /Create /TN "MaroccosHeadlessBoot" /SC ONSTART /RL HIGHEST /RU SYSTEM /F /TR "C:\Program Files\marocco-player\headless-player\headless-player.exe"
 ```
 
 ## Cleanup Manuale (per test ripetuti)
@@ -232,8 +235,8 @@ reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Force
 
 # Rimuovi tasks
 schtasks /Delete /TN "MaroccosHeadless" /F
-schtasks /Delete /TN "MaroccosHeadlessBoot" /F
 schtasks /Delete /TN "MaroccosProvision" /F
+# (Se presente) schtasks /Delete /TN "MaroccosHeadlessBoot" /F
 
 # Rimuovi Run key
 reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v MaroccosUserSettings /f

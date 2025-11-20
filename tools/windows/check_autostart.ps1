@@ -22,8 +22,12 @@ function Write-Info([string]$Message) {
 Write-Step 'Verifica autopartenza headless-player'
 
 # 1. Verifica attività pianificate
-$taskNames = @('MaroccosHeadless','MaroccosHeadlessBoot')
-foreach ($taskName in $taskNames) {
+$taskDefinitions = @(
+    @{ Name = 'MaroccosHeadless'; Required = $true },
+    @{ Name = 'MaroccosHeadlessBoot'; Required = $false }
+)
+foreach ($taskDef in $taskDefinitions) {
+    $taskName = $taskDef.Name
     Write-Info "--- Attività '$taskName' ---"
     try {
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
@@ -56,14 +60,13 @@ foreach ($taskName in $taskNames) {
         }
 
     } catch {
-        Write-Warn "Attività pianificata '$taskName' NON trovata"
-        if ($taskName -eq 'MaroccosHeadless') {
+        if ($taskDef.Required) {
+            Write-Warn "Attività pianificata '$taskName' NON trovata"
             Write-Info "Per configurarla, esegui l'installer con l'opzione 'Avvia headless all'avvio'"
             Write-Info "oppure crea manualmente l'attività con:"
             Write-Info "  schtasks.exe /Create /TN ""MaroccosHeadless"" /SC ONLOGON /RL HIGHEST /F /TR ""C:\Program Files\marocco-player\headless-player\headless-player.exe"""
         } else {
-            Write-Info "Per avvio al boot, crea l'attività con:"
-            Write-Info "  schtasks.exe /Create /TN ""MaroccosHeadlessBoot"" /SC ONSTART /RL HIGHEST /RU SYSTEM /F /TR ""C:\Program Files\marocco-player\headless-player\headless-player.exe"""
+            Write-Info "Attività opzionale '$taskName' non presente (avvio al boot non configurato)"
         }
     }
 }

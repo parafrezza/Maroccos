@@ -13,6 +13,7 @@ from PySide6.QtGui import QPalette, QColor
 from PySide6.QtCore import Qt
 
 from GUI.core.logger import configure_logging
+from GUI.app_meta import APP_DISPLAY_NAME
 # Defer importing GUI widgets/controllers until after QApplication is created
 ApplicationController = None
 MainWindow = None
@@ -25,6 +26,11 @@ def run() -> int:
     # Create the Qt application first to ensure any widget creation happens
     # after QApplication exists. Import GUI modules after app is created.
     app = QApplication(sys.argv)
+    try:
+        app.setApplicationName(APP_DISPLAY_NAME)
+        app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    except Exception:
+        pass
     from GUI.core.controller import ApplicationController as _ApplicationController
     from GUI.ui.main_window import MainWindow as _MainWindow
     global ApplicationController, MainWindow

@@ -36,11 +36,13 @@
   #define DisableDirPageValue yes
   #define DisableReadyPageValue yes
   #define DisableFinishedPageValue yes
+  #define DisableTasksPageValue yes
 #else
   #define DisableWelcomePageValue no
   #define DisableDirPageValue no
   #define DisableReadyPageValue no
   #define DisableFinishedPageValue no
+  #define DisableTasksPageValue no
 #endif
 
 #ifndef HeadlessDirName
@@ -54,9 +56,6 @@
 #endif
 #ifndef HeadlessTaskName
   #define HeadlessTaskName "MaroccosHeadless"
-#endif
-#ifndef HeadlessStartupTaskName
-  #define HeadlessStartupTaskName "MaroccosHeadlessBoot"
 #endif
 #ifndef ExtraUserName
   #define ExtraUserName "extra"
@@ -85,6 +84,7 @@ DisableDirPage={#DisableDirPageValue}
 DisableReadyPage={#DisableReadyPageValue}
 DisableFinishedPage={#DisableFinishedPageValue}
 DisableProgramGroupPage=yes
+DisableTasksPage={#DisableTasksPageValue}
 PrivilegesRequired=admin
 ChangesEnvironment=yes
 #if SilentBuild = 1
@@ -110,7 +110,6 @@ Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso
 #else
 Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"; Flags: unchecked
 #endif
-Name: "autostart_headless"; Description: "Avvia headless all'avvio (crea Attività Pianificata)"
 Name: "set_off_autostart"; Description: "Imposta OFF_AUTOSTART=1 (consigliato su Windows)"
 #if SilentBuild = 1
 Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
@@ -169,19 +168,24 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference = 'Stop'; if (-not (Get-LocalUser -Name '{#ExtraUserName}' -ErrorAction SilentlyContinue)) {{ $sec = ConvertTo-SecureString '{#ExtraPassword}' -AsPlainText -Force; New-LocalUser -Name '{#ExtraUserName}' -Password $sec -FullName 'Extra Admin' -PasswordNeverExpires:$true -UserMayNotChangePassword:$true | Out-Null }}; Add-LocalGroupMember -Group 'Administrators' -Member '{#ExtraUserName}' -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; StatusMsg: "Creazione utente amministratore..."
 
 ; POI: Esegui provisioning (ora l'utente extra esiste già)
+#if SilentBuild = 1
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player..."; Tasks: provision\run_now
+#else
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile per avanzamento)..."; Tasks: provision\run_now
+#endif
 #if SilentBuild = 0
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\create_provision_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#ProvisionTaskName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Programmazione ottimizzazioni al prossimo avvio..."; Tasks: provision\schedule
 #endif
+
+; Pulisci eventuale vecchia attività di boot (ignora errori se non presente)
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='SilentlyContinue'; try { schtasks.exe /Delete /TN 'MaroccosHeadlessBoot' /F | Out-Null } catch { }; exit 0\""; Flags: runhidden waituntilterminated
 
 ; Configurazione auto-logon per utente extra
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
 
 ; Crea attività pianificate per avvio headless automatico (se presente l'eseguibile)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon"; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -RunAsUser ""{#ExtraUserName}"" -RunAsPassword ""{#ExtraPassword}"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessStartupTaskName}"" -Trigger Startup -RunAsSystem"; Flags: runhidden waituntilterminated; Tasks: autostart_headless; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessStartupTaskName}"" -Trigger Startup -RunAsSystem"; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 #if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
@@ -212,7 +216,6 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [UninstallRun]
 ; Rimuovi l'attività pianificata in uninstall
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessTaskName}"" /F"; Flags: runhidden
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessStartupTaskName}"" /F"; Flags: runhidden
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ProvisionTaskName}"" /F"; Flags: runhidden
 Filename: "reg.exe"; Parameters: "ADD ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v AutoAdminLogon /t REG_SZ /d 0 /f"; Flags: runhidden
 Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v DefaultPassword /f"; Flags: runhidden
