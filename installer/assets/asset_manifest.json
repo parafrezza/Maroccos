@@ -1,5 +1,5 @@
 ﻿{
-    "generatedAtUtc":  "2025-11-21 10:37:20Z",
+    "generatedAtUtc":  "2025-11-21 12:49:02Z",
     "totalFiles":  6,
     "files":  [
                   {
@@ -29,14 +29,14 @@
                   {
                       "path":  "SetResolution\\SetResolution.exe",
                       "size":  67536456,
-                      "lastWriteTime":  "2025-11-21 10:37:19Z",
-                      "sha256":  "99374CB0808174F5B92FE358A52757CAD12800F1D7D6F570AF87FB483C56A83A"
+                      "lastWriteTime":  "2025-11-21 12:48:24Z",
+                      "sha256":  "BBB7F0C4C5D0DF7184E6F82F9153CDACC41E7B53E2B302756C63F16C63871DFB"
                   },
                   {
                       "path":  "SetResolution\\SetResolution.pdb",
                       "size":  13348,
-                      "lastWriteTime":  "2025-11-21 10:25:43Z",
-                      "sha256":  "1E95D33AD22D2FFAE75C8E7F6FDCD507337C242DDBC0490A4C47E1C2964AEEDB"
+                      "lastWriteTime":  "2025-11-21 10:39:17Z",
+                      "sha256":  "47F73DFC402C1D4D2B90B2FE477542A193A36565F77BC41D26F006A10E7B00FF"
                   }
               ]
 }

@@ -488,15 +488,15 @@ try {
     $desktopLink = "${appName}_${versionTag}"
     $headlessDir = 'headless-player'
     $headlessExe = 'headless-player.exe'
-    $outBase = "${appName}-installer_${versionTag}"
+    $outBaseInteractive = "${appName}-installer_${versionTag}_interactive"
 
     Write-Host "Costruzione installer: AppName=$appName Version=$versionTag (core=$Version) Mode=$mode" -ForegroundColor Cyan
 
     $defines = @(
         "/DAppName=$appName",
         "/DAppVersion=$Version",
-    "/DBuildMode=$mode",
-        "/DOutputBaseFilename=$outBase",
+        "/DBuildMode=$mode",
+        "/DOutputBaseFilename=$outBaseInteractive",
         "/DDesktopLinkName=$desktopLink",
         "/DHeadlessDirName=$headlessDir",
         "/DHeadlessExeName=$headlessExe"
@@ -557,13 +557,13 @@ try {
     $results = @()
     if (-not $SilentOnly) {
         try {
-            $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $defines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBase -RepoRoot $repoRoot -Label 'interactive'
+            $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $defines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseInteractive -RepoRoot $repoRoot -Label 'interactive'
         } catch {
             Write-Warning "Build interattiva fallita: $_"
         }
     }
 
-    $outBaseSilent = "${appName}-installer_${versionTag}_auto"
+    $outBaseSilent = "${appName}-installer_${versionTag}_silent"
     $silentDefines = $defines.Clone()
     for ($i = 0; $i -lt $silentDefines.Length; $i++) {
         if ($silentDefines[$i] -like '/DOutputBaseFilename=*') {
@@ -571,12 +571,12 @@ try {
         }
     }
     $silentDefines += '/DSilentInstall=1'
-    $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'auto'
+    $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'silent'
 
     if ($SilentOnly) {
-        Write-Host "Installer automatico creato con successo." -ForegroundColor Green
+        Write-Host "Installer silent creato con successo." -ForegroundColor Green
     } else {
-        Write-Host "Installer interattivo e automatico creati con successo." -ForegroundColor Green
+        Write-Host "Installer interattivo e silent creati con successo." -ForegroundColor Green
     }
     $results | ForEach-Object {
         if ($_.OutputPath) {

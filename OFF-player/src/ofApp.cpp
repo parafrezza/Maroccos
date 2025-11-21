@@ -1103,10 +1103,10 @@ void ofApp::drawLedTestPattern(){
     for(size_t i = 0; i < swatches.size(); ++i){
         ofSetColor(swatches[i]);
         ofDrawRectangle(swX + (box + gap) * static_cast<float>(i), swY, box, box);
-        ofNoFill();
-        ofSetColor(0);
-        ofDrawRectangle(swX + (box + gap) * static_cast<float>(i), swY, box, box);
-        foffFill();
+    ofNoFill();
+    ofSetColor(0);
+    ofDrawRectangle(swX + (box + gap) * static_cast<float>(i), swY, box, box);
+    ofFill();
     }
 
     ofPopStyle();
@@ -1118,19 +1118,21 @@ void ofApp::keyPressed(int key){
     if(key==OF_KEY_RIGHT) next();
     if(key==OF_KEY_LEFT) prev();
     if(key=='f' || key=='F'){
-        bool wasFullscreen = false;
-        if(auto window = ofGetWindowPtr()){
-            wasFullscreen = (window->getWindowMode() == OF_FULLSCREEN);
+        auto window = ofGetWindowPtr();
+        if(!window){
+            ofToggleFullscreen();
+            return;
         }
-        ofToggleFullscreen();
-        if(wasFullscreen){
+        bool isFullscreen = (window->getWindowMode() == OF_FULLSCREEN);
+        if(isFullscreen){
+            window->setFullscreen(false);
             DisplayInfo info = detectDisplayInfo();
             int screenW = info.valid ? info.width : static_cast<int>(ofGetScreenWidth());
             int screenH = info.valid ? info.height : static_cast<int>(ofGetScreenHeight());
             if(screenW <= 0) screenW = static_cast<int>(ofGetWidth());
             if(screenH <= 0) screenH = static_cast<int>(ofGetHeight());
-            int targetW = std::max(640, screenW / 2);
-            int targetH = std::max(360, screenH / 2);
+            int targetW = 640;
+            int targetH = 360;
             ofSetWindowShape(targetW, targetH);
             if(screenW > 0 && screenH > 0){
                 int posX = std::max(0, (screenW - targetW) / 2);
@@ -1138,6 +1140,9 @@ void ofApp::keyPressed(int key){
                 ofSetWindowPosition(posX, posY);
             }
             ofLogNotice() << "Fullscreen OFF -> windowed " << targetW << "x" << targetH;
+        }else{
+            window->setFullscreen(true);
+            ofLogNotice() << "Windowed -> fullscreen";
         }
     }
     if(key=='r' || key=='R') reloadPlaylist();
