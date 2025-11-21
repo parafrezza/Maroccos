@@ -36,13 +36,11 @@
   #define DisableDirPageValue yes
   #define DisableReadyPageValue yes
   #define DisableFinishedPageValue yes
-  #define DisableTasksPageValue yes
 #else
   #define DisableWelcomePageValue no
   #define DisableDirPageValue no
   #define DisableReadyPageValue no
   #define DisableFinishedPageValue no
-  #define DisableTasksPageValue no
 #endif
 
 #ifndef HeadlessDirName
@@ -84,7 +82,6 @@ DisableDirPage={#DisableDirPageValue}
 DisableReadyPage={#DisableReadyPageValue}
 DisableFinishedPage={#DisableFinishedPageValue}
 DisableProgramGroupPage=yes
-DisableTasksPage={#DisableTasksPageValue}
 PrivilegesRequired=admin
 ChangesEnvironment=yes
 #if SilentBuild = 1
@@ -178,7 +175,7 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 #endif
 
 ; Pulisci eventuale vecchia attività di boot (ignora errori se non presente)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='SilentlyContinue'; try { schtasks.exe /Delete /TN 'MaroccosHeadlessBoot' /F | Out-Null } catch { }; exit 0\""; Flags: runhidden waituntilterminated
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; Unregister-ScheduledTask -TaskName 'MaroccosHeadlessBoot' -Confirm:$false -ErrorAction SilentlyContinue; exit 0"""; Flags: runhidden waituntilterminated
 
 ; Configurazione auto-logon per utente extra
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
