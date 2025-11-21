@@ -14,6 +14,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#ifndef GLFW_EXPOSE_NATIVE_WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#endif
+#include "ofAppGLFWWindow.h"
+#include <GLFW/glfw3native.h>
 #else
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -1137,7 +1142,33 @@ void ofApp::keyPressed(int key){
             if(screenW > 0 && screenH > 0){
                 int posX = std::max(0, (screenW - targetW) / 2);
                 int posY = std::max(0, (screenH - targetH) / 2);
+#ifdef _WIN32
+                if(auto windowPtr = ofGetWindowPtr()){
+                    if(auto glfwWindow = std::dynamic_pointer_cast<ofAppGLFWWindow>(windowPtr)){
+                        if(GLFWwindow* nativeGLFW = glfwWindow->getGLFWWindow()){
+                            if(HWND hwnd = glfwGetWin32Window(nativeGLFW)){
+                                // Force native window size/position so the OS applies chrome offsets correctly
+                                RECT rect{posX, posY, posX + targetW, posY + targetH};
+                                DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+                                AdjustWindowRectEx(&rect, style, FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
+                                int widthAdj = rect.right - rect.left;
+                                int heightAdj = rect.bottom - rect.top;
+                                SetWindowPos(hwnd, nullptr, std::max(0, posX), std::max(0, posY), widthAdj, heightAdj, SWP_NOZORDER | SWP_NOACTIVATE);
+                            }else{
+                                ofSetWindowPosition(posX, posY);
+                            }
+                        }else{
+                            ofSetWindowPosition(posX, posY);
+                        }
+                    }else{
+                        ofSetWindowPosition(posX, posY);
+                    }
+                }else{
+                    ofSetWindowPosition(posX, posY);
+                }
+#else
                 ofSetWindowPosition(posX, posY);
+#endif
             }
             ofLogNotice() << "Fullscreen OFF -> windowed " << targetW << "x" << targetH;
         }else{

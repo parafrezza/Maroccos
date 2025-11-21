@@ -92,6 +92,34 @@ try {
 
     Write-Host "Running PyInstaller..." -ForegroundColor Cyan
     & $python -m PyInstaller @args
+
+    $distDir = Join-Path $Root "dist"
+    $exePath = Join-Path $distDir ("{0}.exe" -f $Name)
+    if (Test-Path -LiteralPath $exePath) {
+        $versionFile = Join-Path $Root 'headless-player\VERSION'
+        if (Test-Path -LiteralPath $versionFile) {
+            $versionTag = $null
+            try {
+                $versionTag = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+            } catch {
+                $versionTag = $null
+            }
+
+            if ($versionTag) {
+                $safeVersion = $versionTag -replace '[^0-9A-Za-z_.-]', '_'
+                $versionedName = "{0}_{1}.exe" -f $Name, $safeVersion
+                $versionedPath = Join-Path $distDir $versionedName
+                Copy-Item -LiteralPath $exePath -Destination $versionedPath -Force
+                Write-Host "Created versioned copy: $versionedName" -ForegroundColor DarkCyan
+            } else {
+                Write-Warning "VERSION file empty: $versionFile (skipping versioned copy)"
+            }
+        } else {
+            Write-Host "VERSION file not found (skipping versioned copy)" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Warning "GUI executable non trovato: $exePath"
+    }
 }
 finally {
     Pop-Location
