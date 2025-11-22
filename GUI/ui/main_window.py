@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QTimer, Qt
+from PySide6.QtCore import QSize, QTimer, Qt, QFileSystemWatcher
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
@@ -116,6 +116,20 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self._setup_connections()
+        # Watcher per la cartella media locale (auto-refresh libreria)
+        self._media_watcher = QFileSystemWatcher(self)
+        try:
+            self._media_watcher.directoryChanged.connect(self._handle_media_dir_changed)
+            self._media_watcher.fileChanged.connect(self._handle_media_dir_changed)
+        except Exception:
+            pass
+        # Inizializza watcher sul media root attuale
+        try:
+            current_media_root = getattr(controller.state.config.media, "media_root", None)
+            if current_media_root:
+                self._update_media_watcher(current_media_root)
+        except Exception:
+            pass
         # Status polling timer (stopped by default)
         self._status_timer = QTimer(self)
         try:
@@ -213,6 +227,11 @@ class MainWindow(QMainWindow):
             pass
         self._commands_tab.mediaDirectoryRequested.connect(self._choose_media_directory)
         self._commands_tab.deviceMediaRefreshRequested.connect(self._handle_device_media_refresh)
+        # Refresh manuale libreria media locale
+        try:
+            self._commands_tab.mediaLibraryRefreshRequested.connect(ctrl.refresh_media_library)
+        except Exception:
+            pass
         # Playlist wiring
         self._commands_tab.playlistChanged.connect(self._handle_playlist_changed)
         self._commands_tab.playlistPushRequested.connect(self._handle_push_playlist)
@@ -1014,6 +1033,11 @@ class MainWindow(QMainWindow):
             networks = ", ".join(self._controller.state.config.network.scan_ranges)
             self._update_tab.set_settings(networks=networks, media_root=media_root)
             self._commands_tab.set_media_root(Path(selected))
+            # Aggiorna watcher
+            try:
+                self._update_media_watcher(Path(selected))
+            except Exception:
+                pass
 
     def _handle_settings_changed(self, payload: dict) -> None:
         raw_media_root = payload.get("media_root")
@@ -1022,6 +1046,11 @@ class MainWindow(QMainWindow):
         poll_ms = payload.get("status_poll_ms") or int(getattr(self._controller.state.config.network, "status_poll_ms", 2000))
         self._update_tab.set_settings(networks=networks, media_root=media_root, polling_ms=int(poll_ms))
         self._commands_tab.set_media_root(raw_media_root)
+        # Aggiorna watcher se cambia cartella media
+        try:
+            self._update_media_watcher(raw_media_root)
+        except Exception:
+            pass
         try:
             self._status_timer.setInterval(int(poll_ms))
         except Exception:
@@ -1029,6 +1058,43 @@ class MainWindow(QMainWindow):
 
     def _handle_purge_offline(self) -> None:
         self._controller.purge_offline_players()
+
+    # -----------------------------
+    # Media directory watcher helpers
+    # -----------------------------
+    def _update_media_watcher(self, root: Path | str | None) -> None:
+        try:
+            watcher = getattr(self, "_media_watcher", None)
+            if watcher is None:
+                return
+            # Rimuovi precedenti path osservati
+            try:
+                for d in watcher.directories():
+                    watcher.removePath(d)
+            except Exception:
+                pass
+            path_obj: Path | None = None
+            if isinstance(root, Path):
+                path_obj = root
+            elif isinstance(root, str) and root and root != "<non impostata>":
+                try:
+                    path_obj = Path(root)
+                except Exception:
+                    path_obj = None
+            if path_obj and path_obj.exists() and path_obj.is_dir():
+                try:
+                    watcher.addPath(str(path_obj))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _handle_media_dir_changed(self, path: str) -> None:
+        # Trigger refresh della libreria locale quando cambia la cartella o i file
+        try:
+            self._controller.refresh_media_library()
+        except Exception:
+            pass
 
     # -----------------------------
     # Helpers: versione bundle UI

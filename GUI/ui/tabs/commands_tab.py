@@ -135,6 +135,7 @@ class CommandsTab(QWidget):
     miscCommandTriggered = Signal(str, dict)
     uploadRequested = Signal(str)
     mediaDirectoryRequested = Signal()
+    mediaLibraryRefreshRequested = Signal()
     deviceMediaRefreshRequested = Signal()
     # Playlist signals
     playlistChanged = Signal(list)
@@ -549,6 +550,14 @@ class CommandsTab(QWidget):
         self._choose_files_button.setToolTip("Seleziona file video/immagine dal disco e caricali sui device selezionati")
         self._choose_files_button.clicked.connect(self._open_media_picker)
         choose_row.addWidget(self._choose_files_button)
+        # Pulsante refresh libreria locale
+        self._refresh_library_button = QPushButton("Aggiorna libreria")
+        self._refresh_library_button.setToolTip("Rileggi la cartella media locale e aggiorna la lista")
+        try:
+            self._refresh_library_button.clicked.connect(self.mediaLibraryRefreshRequested.emit)
+        except Exception:
+            pass
+        choose_row.addWidget(self._refresh_library_button)
         choose_row.addStretch(1)
         media_layout.addLayout(choose_row)
         # Media list with external drag enabled

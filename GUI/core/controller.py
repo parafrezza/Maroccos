@@ -17,6 +17,7 @@ from typing import Any, Iterable, Optional
 
 import requests
 import time
+from urllib.parse import quote
 
 
 def _build_magic_packet(mac: str) -> bytes:
@@ -1088,7 +1089,22 @@ class ApplicationController(QObject):
                 rel_path_str = None
         # Se file server attivo e abbiamo relativo, usa pull URL; altrimenti si andrà in push
         if self._file_server and rel_path_str:
-            media_url = f"http://{self._host_ip()}:{self.state.config.media.server_port}/{rel_path_str}"
+            # Sanitize: rimuovi caratteri di controllo e applica URL encoding per ciascun segmento
+            try:
+                cleaned = re.sub(r"[\x00-\x1f\x7f]", "", rel_path_str)
+            except Exception:
+                cleaned = rel_path_str
+            try:
+                # Evita backslash e normalizza
+                cleaned = cleaned.replace("\\", "/")
+                # Quota ogni segmento mantenendo caratteri utili comuni
+                safe_segments = [quote(seg, safe="@:!$&'()*+,;=-._~") for seg in cleaned.split("/") if seg]
+                sanitized_rel = "/".join(safe_segments)
+            except Exception:
+                sanitized_rel = cleaned
+            media_url = f"http://{self._host_ip()}:{self.state.config.media.server_port}/{sanitized_rel}"
+            if sanitized_rel != rel_path_str:
+                self.logMessage.emit(f"Path media normalizzato per URL: {rel_path_str} -> {sanitized_rel}")
             self.logMessage.emit(
                 f"Richiesta download asset (pull) per {Path(rel_path_str).name} ({rel_path_str}) verso {len(target_list)} player"
             )
