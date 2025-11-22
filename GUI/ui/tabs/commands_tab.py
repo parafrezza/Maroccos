@@ -80,6 +80,7 @@ class PlaylistWidget(QListWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
     def dragEnterEvent(self, event) -> None:  # type: ignore[override]
         if event.mimeData().hasFormat(_MEDIA_MIME):
@@ -775,8 +776,8 @@ class CommandsTab(QWidget):
         self._remove_from_playlist.setEnabled(False)
         self._register_control(
             self._remove_from_playlist,
-            enabled_tip="Rimuove l'elemento selezionato dalla playlist",
-            disabled_tip="Disponibile solo con player selezionati e una traccia evidenziata",
+            enabled_tip="Rimuove gli elementi selezionati dalla playlist",
+            disabled_tip="Disponibile solo con player selezionati e almeno una traccia evidenziata",
         )
         quick_row.addWidget(self._remove_from_playlist)
         self._refresh_playlist = QPushButton("Aggiorna da player")
@@ -1521,7 +1522,7 @@ class CommandsTab(QWidget):
 
     def _update_playlist_controls_state(self) -> None:
         has_items = self._playlist.count() > 0
-        has_selection = self._playlist.currentRow() >= 0
+        has_selection = bool(self._playlist.selectedIndexes())
         valid_playlist = has_items and not self._playlist_missing
         can_push = self._targets_enabled and has_items and self._media_root_valid
         if not self._targets_enabled:
@@ -1717,11 +1718,6 @@ class CommandsTab(QWidget):
                 return
 
         self.playbackTriggered.emit(command, payload)
-        if command == "stop":
-            try:
-                self.miscCommandTriggered.emit("media_clear", {})
-            except Exception:
-                pass
 
     def _emit_misc_command(self) -> None:
         if not self._targets_enabled:
@@ -2180,14 +2176,15 @@ class CommandsTab(QWidget):
         self._emit_playlist_changed()
 
     def _remove_selected_from_playlist(self) -> None:
-        row = self._playlist.currentRow()
-        if row < 0:
+        rows = sorted({idx.row() for idx in self._playlist.selectedIndexes()}, reverse=True)
+        if not rows:
             return
-        it = self._playlist.takeItem(row)
-        try:
-            del it
-        except Exception:
-            pass
+        for row in rows:
+            it = self._playlist.takeItem(row)
+            try:
+                del it
+            except Exception:
+                pass
         self._emit_playlist_changed()
 
     def _on_playlist_items_added(self, items: list[str]) -> None:
@@ -2575,7 +2572,7 @@ class CommandsTab(QWidget):
     def _update_jump_buttons(self) -> None:
         """Aggiorna stato pulsanti jump in base a selezione playlist."""
         try:
-            has_selection = self._playlist.currentRow() >= 0
+            has_selection = bool(self._playlist.selectedIndexes())
             has_items = self._playlist.count() > 0
             jump_reason = None
             if not self._targets_enabled:

@@ -292,6 +292,66 @@ except Exception:
     pass
 LOG_FILE = LOG_DIR / "headless-player.log"
 
+def _ensure_windows_media_share() -> None:
+    """Su Windows crea/conferma la share SMB 'media' sulla MEDIA_DIR (best-effort)."""
+    try:
+        if platform.system().lower() != "windows":
+            return
+        path = MEDIA_DIR
+    except Exception:
+        return
+    try:
+        ps = r"""
+$ErrorActionPreference = 'Stop'
+$path = '{path}'
+$shareName = 'media'
+try {{ New-Item -ItemType Directory -Path $path -Force | Out-Null }} catch {{}}
+try {{
+    $svc = Get-Service -Name 'LanmanServer' -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Running') {{ Start-Service -Name $svc.Name -ErrorAction SilentlyContinue | Out-Null }}
+}} catch {{}}
+try {{
+    $existing = Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue
+    if ($existing -and $existing.Path -ne $path) {{
+        Remove-SmbShare -Name $shareName -Force -ErrorAction SilentlyContinue
+    }}
+    if (-not (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue)) {{
+        New-SmbShare -Name $shareName -Path $path -FullAccess 'Everyone' -ErrorAction Stop | Out-Null
+    }}
+    Grant-SmbShareAccess -Name $shareName -AccountName 'Everyone' -AccessRight Change -Force -ErrorAction SilentlyContinue | Out-Null
+    icacls $path /grant 'Everyone:(OI)(CI)M' /T /C | Out-Null
+    Write-Output 'ok'
+}} catch {{
+    Write-Output 'skip'
+}}
+""".format(path=str(path).replace("'", "''"))
+        res = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if res.returncode == 0 and "ok" in res.stdout:
+            print(f"[MEDIA] Share 'media' attiva su {path}", flush=True)
+        else:
+            # Silenzia errori di permessi e segnala solo presenza cartella
+            print(f"[MEDIA] Cartella media pronta in {path} (share SMB non configurata, permessi non sufficienti)", flush=True)
+    except Exception as e:
+        try:
+            print(f"[MEDIA] Cartella media pronta in {path} (share SMB ignorata: {e})", flush=True)
+        except Exception:
+            pass
+
+_ensure_windows_media_share()
+
 _log_handlers = []
 try:
     file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8")
@@ -5840,6 +5900,87 @@ def _safe_unlink(path: Path, attempts: int = 20, delay: float = 0.2) -> None:
             raise last_exc
         raise
 
+def _file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Calcola SHA-256 di un file (chunked) con fallback stringa vuota su errore."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+def _playlist_fingerprint(force: bool = False) -> dict[str, Any]:
+    """Ritorna fingerprint della playlist corrente (cached su playlist['fingerprint'])."""
+    try:
+        cached = playlist.get("fingerprint") if isinstance(playlist, dict) else None
+    except Exception:
+        cached = None
+    items = []
+    try:
+        items = list(playlist.get("items", []))
+    except Exception:
+        items = []
+    if not items:
+        fp = {"hash": "", "items": [], "missing": [], "invalid": [], "ready": True}
+        playlist["fingerprint"] = fp
+        return fp
+    # Usa cache se non forzato e file invariati
+    if cached and not force:
+        stale = False
+        for f in cached.get("items", []):
+            try:
+                p = Path(f["path"])
+                st = p.stat()
+                if st.st_size != f.get("size") or int(st.st_mtime) != int(f.get("mtime", 0)):
+                    stale = True
+                    break
+            except Exception:
+                stale = True
+                break
+        if not stale:
+            return cached
+    missing: list[str] = []
+    invalid: list[str] = []
+    files: list[dict[str, Any]] = []
+    h = hashlib.sha256()
+    for raw in items:
+        try:
+            p = Path(raw)
+            if not p.is_absolute():
+                p = MEDIA_DIR / raw
+            p = p.resolve()
+            rel = str(p.relative_to(MEDIA_DIR))
+        except Exception:
+            invalid.append(str(raw))
+            continue
+        if not p.exists():
+            missing.append(rel)
+            continue
+        try:
+            st = p.stat()
+            sha = _file_sha256(p)
+            entry = {"path": str(p), "rel": rel, "size": int(st.st_size), "mtime": int(st.st_mtime), "sha256": sha}
+            files.append(entry)
+            h.update(rel.encode("utf-8", "ignore"))
+            h.update(str(st.st_size).encode())
+            h.update(sha.encode())
+        except Exception as exc:
+            invalid.append(f"{rel}:{exc}")
+    fp = {
+        "hash": h.hexdigest(),
+        "items": files,
+        "missing": missing,
+        "invalid": invalid,
+        "ready": not missing and not invalid and len(files) == len(items),
+    }
+    try:
+        playlist["fingerprint"] = fp
+    except Exception:
+        pass
+    return fp
+
 # ---------- FastAPI ----------
 @app.on_event("startup")
 def on_start():
@@ -7493,6 +7634,7 @@ def api_loop(on: int = Query(1)):
 
 @app.post("/stop")
 def api_stop():
+    global VIDEO_PATH
     t0 = time.time()
     print("[HEADLESS] POST /stop received", flush=True)
     # Invalida azioni pianificate e ferma tutti i timer noti
@@ -7539,6 +7681,16 @@ def api_stop():
             show_idle_black()
         except Exception:
             pass
+    # Riposiziona al primo elemento della playlist per lo stop
+    try:
+        if playlist.get("items"):
+            playlist["index"] = 0
+            try:
+                VIDEO_PATH = playlist["items"][0]
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Stato
     player["state"] = "stopped"
     t_end = time.time()
@@ -8274,8 +8426,8 @@ def api_overlay_fade_at(target: float | None = Query(None), seconds: float = Que
     return JSONResponse(status_code=410, content={"ok": False, "error": "overlay removed"})
 
 
-def _stop_active_media_for_clear(timeout: float = 3.0) -> dict[str, bool]:
-    """Force playback halt so media files can be safely removed."""
+def _stop_active_media(timeout: float = 3.0) -> dict[str, bool]:
+    """Force playback halt so media files can be safely removed or released."""
     info = {"playback_stopped": False, "off_player_stopped": False}
     log = logging.getLogger("headless-player.media")
     try:
@@ -8287,7 +8439,7 @@ def _stop_active_media_for_clear(timeout: float = 3.0) -> dict[str, bool]:
             stop_play()
             info["playback_stopped"] = True
         except Exception as exc:
-            log.warning("media_clear: stop_play() failed before cleanup: %s", exc, exc_info=True)
+            log.warning("media_release: stop_play() failed before cleanup: %s", exc, exc_info=True)
     try:
         autoplay["enabled"] = False
     except Exception:
@@ -8309,12 +8461,12 @@ def _stop_active_media_for_clear(timeout: float = 3.0) -> dict[str, bool]:
             result = _off_stop()
             info["off_player_stopped"] = bool(result.get("ok"))
         except Exception as exc:
-            log.warning("media_clear: _off_stop() failed before cleanup: %s", exc, exc_info=True)
+            log.warning("media_release: _off_stop() failed before cleanup: %s", exc, exc_info=True)
         end_ts = time.time() + max(timeout, 0.0)
         while proc.poll() is None and time.time() < end_ts:
             time.sleep(0.1)
         if proc.poll() is None:
-            log.warning("media_clear: OFF-player still running after %.1fs", timeout)
+            log.warning("media_release: OFF-player still running after %.1fs", timeout)
     return info
 
 @app.get("/overlay/status")
@@ -8370,7 +8522,7 @@ def media_clear(confirm: int = Query(0)):
     """
     if confirm != 1:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Conferma mancante: usa ?confirm=1"})
-    release_info = _stop_active_media_for_clear()
+    release_info = _stop_active_media()
     try:
         time.sleep(0.2)
     except Exception:
@@ -8453,6 +8605,21 @@ def media_clear(confirm: int = Query(0)):
 def media_clear_get(confirm: int = Query(0)):
     """Alias GET per compatibilità: richiede comunque confirm=1."""
     return media_clear(confirm)
+
+
+@app.post("/media/release")
+def media_release(timeout: float = Query(3.0)):
+    """Ferma riproduzione/off-player e disabilita autoplay per liberare i file senza cancellarli."""
+    release_info = _stop_active_media(timeout=max(0.0, float(timeout or 0.0)))
+    try:
+        time.sleep(0.2)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "playback_stopped": release_info.get("playback_stopped", False),
+        "off_player_stopped": release_info.get("off_player_stopped", False),
+    }
 
 
 def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> list[str]:
@@ -8744,6 +8911,42 @@ def _handle_download_asset(url: str, filename: Optional[str] = None):
         print(f"[DOWNLOAD] ERRORE: {e}", flush=True)
         dest.unlink(missing_ok=True)
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+@app.post("/probe_url")
+def probe_url(payload: dict = Body(...)):
+    """Prova reachability di una URL dal punto di vista del player.
+
+    Tenta prima una HEAD; se non supportata, usa GET con Range 0-0 per minimizzare traffico.
+    Ritorna ok=True su status 200/206.
+    """
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Body JSON richiesto"})
+    url = payload.get("url")
+    if not url:
+        return JSONResponse(status_code=422, content={"ok": False, "error": "Campo 'url' mancante"})
+    try:
+        # 1) HEAD
+        try:
+            req = Request(url, method="HEAD")  # type: ignore[arg-type]
+            with urlopen(req, timeout=5) as resp:  # nosec - URL controllato dalla GUI
+                status = getattr(resp, "status", 200)
+                headers = dict(resp.headers.items()) if getattr(resp, "headers", None) else {}
+                ok = int(status) in (200, 204)
+                return {"ok": bool(ok), "status": int(status), "headers": headers}
+        except Exception as head_exc:
+            # 2) Fallback GET con range 0-0
+            try:
+                req = Request(url)
+                req.add_header("Range", "bytes=0-0")
+                with urlopen(req, timeout=5) as resp:  # nosec
+                    status = getattr(resp, "status", 200)
+                    headers = dict(resp.headers.items()) if getattr(resp, "headers", None) else {}
+                    ok = int(status) in (200, 206)
+                    return {"ok": bool(ok), "status": int(status), "headers": headers}
+            except Exception as get_exc:
+                return {"ok": False, "error": f"{head_exc} / {get_exc}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/download_asset")
 def download_asset(payload: dict = Body(...)):
@@ -9091,12 +9294,14 @@ def api_playlist_apply(payload: dict = Body(...)):
 
 @app.get("/playlist/status")
 def api_playlist_status():
+    fp = _playlist_fingerprint()
     return {
         "ok": True,
         "items": playlist["items"],
         "index": playlist["index"],
         "current": playlist["items"][playlist["index"]] if (playlist["items"] and 0 <= playlist["index"] < len(playlist["items"])) else None,
         "loop": playlist["loop"],
+        "fingerprint": fp,
     }
 
 

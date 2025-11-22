@@ -32,7 +32,7 @@ param(
     [string]$HeadlessTaskName = 'MaroccosHeadless',
     [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
-    [switch]$SkipMediaShare,
+    [switch]$SkipMediaShare = $true,
     [switch]$SkipHostnameSync
 )
 

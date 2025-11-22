@@ -1,11 +1,11 @@
 ﻿{
-    "generatedAtUtc":  "2025-11-21 12:49:02Z",
+    "generatedAtUtc":  "2025-11-22 14:51:37Z",
     "totalFiles":  6,
     "files":  [
                   {
                       "path":  ".gitkeep",
                       "size":  0,
-                      "lastWriteTime":  "2025-10-31 16:19:45Z",
+                      "lastWriteTime":  "2025-11-14 08:06:05Z",
                       "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
                   },
                   {
@@ -28,15 +28,15 @@
                   },
                   {
                       "path":  "SetResolution\\SetResolution.exe",
-                      "size":  67536456,
-                      "lastWriteTime":  "2025-11-21 12:48:24Z",
-                      "sha256":  "BBB7F0C4C5D0DF7184E6F82F9153CDACC41E7B53E2B302756C63F16C63871DFB"
+                      "size":  67523976,
+                      "lastWriteTime":  "2025-11-22 14:50:31Z",
+                      "sha256":  "D4FCFB234C9A060FBA88279642A7C9DB2606F659DE7AE99EAE82ABABB4EDCBD4"
                   },
                   {
                       "path":  "SetResolution\\SetResolution.pdb",
                       "size":  13348,
-                      "lastWriteTime":  "2025-11-21 10:39:17Z",
-                      "sha256":  "47F73DFC402C1D4D2B90B2FE477542A193A36565F77BC41D26F006A10E7B00FF"
+                      "lastWriteTime":  "2025-11-22 12:19:29Z",
+                      "sha256":  "81EF28CFD887AB7AAA9105177BEB43760074A9FFB4FE5C0B2AAECAAE023C3F31"
                   }
               ]
 }

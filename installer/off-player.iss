@@ -11,6 +11,12 @@
 #ifndef AppPublisher
 	#define AppPublisher "Maroccos"
 #endif
+#ifndef IcoSrcPath
+  #define IcoSrcPath ""
+#endif
+#ifndef DesktopLinkName
+  #define DesktopLinkName "marocco-player"
+#endif
 #ifdef SilentInstall
   #define SilentBuild 1
 #else
@@ -107,7 +113,7 @@ Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso
 #else
 Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"; Flags: unchecked
 #endif
-Name: "set_off_autostart"; Description: "Imposta OFF_AUTOSTART=1 (consigliato su Windows)"
+Name: "set_off_autostart"; Description: "Abilita avvio scaletta OFF all'avvio del player (OFF_AUTOSTART=1)"
 #if SilentBuild = 1
 Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
 #else
@@ -125,7 +131,9 @@ Name: "auto_logon_extra"; Description: "Configura auto logon con l'utente '{#Ext
 ; App binaries (installa OFF-player sotto {app}\OFF-player\bin)
 Source: "{#SourcePath}\\..\\OFF-player\\bin\\{#AppExe}"; DestDir: "{app}\\OFF-player\\bin"; Flags: ignoreversion
 Source: "{#SourcePath}\\..\\OFF-player\\bin\\*.dll"; DestDir: "{app}\\OFF-player\\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if DirExists(AddBackslash(SourcePath) + "..\\OFF-player\\bin\\data")
 Source: "{#SourcePath}\\..\\OFF-player\\bin\\data\\*"; DestDir: "{app}\\OFF-player\\bin\\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 ; Headless-player eseguibile e risorse (parametrico: release o debug)
 #if DirExists(AddBackslash(SourcePath) + "..\\headless-player\\dist\\" + HeadlessDirName)
@@ -145,7 +153,7 @@ Source: "{#KLitePath}"; DestDir: "{tmp}"; DestName: "{#KLiteFileName}"; Flags: i
 
 ; Copia l'icona nello spool dell'app per usarla nei collegamenti
 #if FileExists(IcoSrcPath)
-Source: "{#IcoSrcPath}"; DestDir: "{app}\assets"; DestName: "morocco-player.ico"; Flags: ignoreversion
+Source: "{#IcoSrcPath}"; DestDir: "{app}\assets"; DestName: "marocco-player.ico"; Flags: ignoreversion
 #endif
 Source: "{#SourcePath}\assets\tigervnc64-winvnc-1.15.0.exe"; DestDir: "{app}\assets"; Flags: ignoreversion; Tasks: install_tigervnc
 Source: "{#SourcePath}\assets\SetResolution\*"; DestDir: "{app}\tools\SetResolution"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -166,12 +174,10 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 
 ; POI: Esegui provisioning (ora l'utente extra esiste già)
 #if SilentBuild = 1
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player..."; Tasks: provision\run_now
+; SilentBuild: mostra una finestra console per monitorare l'avanzamento del provisioning
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -NoLogo -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile)..."; Tasks: provision\run_now
 #else
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile per avanzamento)..."; Tasks: provision\run_now
-#endif
-#if SilentBuild = 0
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\create_provision_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#ProvisionTaskName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Programmazione ottimizzazioni al prossimo avvio..."; Tasks: provision\schedule
 #endif
 
 ; Pulisci eventuale vecchia attività di boot (ignora errori se non presente)
@@ -186,9 +192,6 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 #if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-
-; Opzione di riavvio del sistema nella pagina finale (opzionale, non selezionata di default)
-Filename: "{cmd}"; Parameters: "/C shutdown /r /t 0"; Description: "Riavvia il sistema (opzionale)"; Flags: postinstall skipifsilent unchecked nowait
 #else
 Filename: "{cmd}"; Parameters: "/C shutdown /r /t 30 /c ""Installazione Maroccos completata: riavvio automatico in 30 secondi."""; Flags: runhidden nowait; StatusMsg: "Programmazione riavvio automatico..."
 #endif
@@ -196,8 +199,8 @@ Filename: "{cmd}"; Parameters: "/C shutdown /r /t 30 /c ""Installazione Maroccos
 [Icons]
 ; Unica icona desktop e Start con nome versionato, punta al launcher headless
 #if FileExists(IcoSrcPath)
-Name: "{commondesktop}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; IconFilename: "{app}\assets\morocco-player.ico"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-Name: "{group}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; IconFilename: "{app}\assets\morocco-player.ico"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Name: "{commondesktop}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; IconFilename: "{app}\assets\marocco-player.ico"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Name: "{group}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; IconFilename: "{app}\assets\marocco-player.ico"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 #else
 Name: "{commondesktop}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 Name: "{group}\{#DesktopLinkName}"; Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
@@ -220,6 +223,9 @@ Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[Dirs]
+Name: "{app}\logs"; Flags: uninsalwaysuninstall
 
 [Code]
 type

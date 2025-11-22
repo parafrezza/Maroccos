@@ -502,7 +502,7 @@ try {
         "/DHeadlessExeName=$headlessExe"
     )
     # Passa percorso icona se disponibile
-    $icoPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'icon-maker\dist\morocco-player\morocco-player.ico'
+    $icoPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'icon-maker\dist\marocco-player\marocco-player.ico'
     if (Test-Path -LiteralPath $icoPath) {
         $icoFull = (Resolve-Path -LiteralPath $icoPath).Path
         $defines += "/DIcoSrcPath=$($('"' + $icoFull + '"'))"

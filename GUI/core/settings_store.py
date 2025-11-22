@@ -105,9 +105,17 @@ class SettingsStore:
 
     def _parse_media(self, payload: dict[str, Any]) -> MediaSettings:
         root = payload.get("media_root")
+        host_override = payload.get("server_host_override")
+        scheme = payload.get("server_scheme", "http")
+        try:
+            port_val = int(payload.get("server_port", 9000))
+        except Exception:
+            port_val = 9000
         return MediaSettings(
             media_root=Path(root) if root else None,
-            server_port=int(payload.get("server_port", 9000)),
+            server_port=port_val,
+            server_host_override=str(host_override) if host_override else None,
+            server_scheme=str(scheme or "http"),
         )
 
     def _parse_update(self, payload: dict[str, Any]) -> UpdateSettings:

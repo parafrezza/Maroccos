@@ -1097,12 +1097,12 @@ class ApplicationController(QObject):
             try:
                 # Evita backslash e normalizza
                 cleaned = cleaned.replace("\\", "/")
-                # Quota ogni segmento mantenendo caratteri utili comuni
+                original_cleaned = cleaned
                 safe_segments = [quote(seg, safe="@:!$&'()*+,;=-._~") for seg in cleaned.split("/") if seg]
                 sanitized_rel = "/".join(safe_segments)
             except Exception:
                 sanitized_rel = cleaned
-            media_url = f"http://{self._host_ip()}:{self.state.config.media.server_port}/{sanitized_rel}"
+            media_url = f"http://{self._host_ip(target_list)}:{self.state.config.media.server_port}/{sanitized_rel}"
             if sanitized_rel != rel_path_str:
                 self.logMessage.emit(f"Path media normalizzato per URL: {rel_path_str} -> {sanitized_rel}")
             self.logMessage.emit(
@@ -1171,6 +1171,10 @@ class ApplicationController(QObject):
     def _invoke_media_clear_sync(self, player: PlayerRecord) -> bool:
         client = self._client_for(player)
         try:
+            try:
+                client.request("post", "/media/release", timeout=10)
+            except Exception as exc:
+                self.logMessage.emit(f"Release media su {player.ip} fallito (proseguo comunque con clear): {exc}")
             resp = client.request("post", "/media/clear", params={"confirm": 1}, timeout=120)
             self.commandCompleted.emit(player.ip, resp if isinstance(resp, dict) else {"ok": True})
             return bool((isinstance(resp, dict) and resp.get("ok", True)) or resp)
@@ -1243,32 +1247,78 @@ class ApplicationController(QObject):
                 parts.append(str(detail))
             return " - ".join(parts) if parts else str(error)
 
-        # Se abbiamo una URL da cui il device può scaricare, prova pull prima
+        # Se abbiamo una URL da cui il device può scaricare, prima verifica reachability lato device,
+        # poi prova pull con retry prima del fallback
         if media_url:
             try:
-                response = client.upload_media(media_url, target)
-                self.commandCompleted.emit(player.ip, response)
-                self._uploads_mark_done(1)
-                self._uploads_dec(1)
-                return
-            except requests.HTTPError as exc:
-                reason = _describe_http_error(exc)
-                self.logMessage.emit(f"Upload pull fallito su {player.ip}: {reason}; provo push diretto…")
+                probe = client.probe_url(media_url, timeout=5)
+                if isinstance(probe, dict) and not probe.get("ok", False):
+                    self.logMessage.emit(f"Probe URL fallito su {player.ip}: skip pull → push diretto")
+                    media_url = None
             except Exception as exc:
-                self.logMessage.emit(f"Upload pull fallito su {player.ip} ({exc}); provo push diretto…")
+                # Se la probe fallisce per errori di rete, non bloccare: continueremo con pull+retry
+                self.logMessage.emit(f"Probe URL su {player.ip} non riuscita (continuo con pull): {exc}")
+            max_attempts_env = os.environ.get("UPLOAD_PULL_RETRIES")
+            try:
+                max_attempts = int(max(1, int(max_attempts_env))) if max_attempts_env else 2
+            except Exception:
+                max_attempts = 2
+            backoff = 1.5  # seconds base
+            attempt = 0
+            while media_url and attempt < max_attempts:
+                attempt += 1
+                try:
+                    response = client.upload_media(media_url, target)
+                    if attempt > 1:
+                        self.logMessage.emit(f"Upload pull riuscito su {player.ip} (tentativo {attempt}/{max_attempts})")
+                    self.commandCompleted.emit(player.ip, response)
+                    self._uploads_mark_done(1)
+                    self._uploads_dec(1)
+                    return
+                except requests.HTTPError as exc:
+                    reason = _describe_http_error(exc)
+                    fatal = getattr(exc.response, "status_code", None) in {400, 403, 404}
+                    self.logMessage.emit(
+                        f"Upload pull fallito su {player.ip} (tentativo {attempt}/{max_attempts}): {reason}" + (" (non ritento)" if fatal else "")
+                    )
+                    if fatal:
+                        break  # errori logici: non serve ritentare
+                except Exception as exc:
+                    self.logMessage.emit(f"Upload pull eccezione su {player.ip} (tentativo {attempt}/{max_attempts}): {exc}")
+                # Attendi backoff se ci sono tentativi residui
+                if attempt < max_attempts:
+                    try:
+                        time.sleep(backoff * attempt)
+                    except Exception:
+                        pass
+            self.logMessage.emit(f"Procedo con fallback push su {player.ip} dopo tentativi pull esauriti")
         # Fallback o percorso primario: push upload
         if local_path and local_path.exists():
-            try:
-                resp2 = client.upload_media_push(local_path, target_name or local_path.name)
-                self.commandCompleted.emit(player.ip, resp2)
-                self._uploads_mark_done(1)
-                self._uploads_dec(1)
-                return
-            except requests.HTTPError as exc2:
-                reason = _describe_http_error(exc2)
-                self.logMessage.emit(f"Upload push verso {player.ip} fallito: {reason}")
-            except Exception as exc2:
-                self.logMessage.emit(f"Upload push verso {player.ip} fallito: {exc2}")
+            push_attempts = 2  # single retry on transient failure
+            for p_try in range(1, push_attempts + 1):
+                try:
+                    resp2 = client.upload_media_push(local_path, target_name or local_path.name)
+                    if p_try > 1:
+                        self.logMessage.emit(f"Upload push riuscito su {player.ip} (retry {p_try}/{push_attempts})")
+                    self.commandCompleted.emit(player.ip, resp2)
+                    self._uploads_mark_done(1)
+                    self._uploads_dec(1)
+                    return
+                except requests.HTTPError as exc2:
+                    reason = _describe_http_error(exc2)
+                    fatal = getattr(exc2.response, "status_code", None) in {400, 403, 404}
+                    self.logMessage.emit(
+                        f"Upload push fallito su {player.ip} (tentativo {p_try}/{push_attempts}): {reason}" + (" (non ritento)" if fatal else "")
+                    )
+                    if fatal:
+                        break
+                except Exception as exc2:
+                    self.logMessage.emit(f"Upload push eccezione su {player.ip} (tentativo {p_try}/{push_attempts}): {exc2}")
+                if p_try < push_attempts:
+                    try:
+                        time.sleep(1.0 * p_try)
+                    except Exception:
+                        pass
         else:
             self.logMessage.emit(f"Upload verso {player.ip} fallito: file locale non trovato")
         # Failure path: mark done and decrement
@@ -1666,6 +1716,10 @@ class ApplicationController(QObject):
             force = bool(payload.get("force", False))
             return client.request("post", "/maintenance/run_setup", json={"force": force}, timeout=120)
         if cmd == "media_clear":
+            try:
+                client.request("post", "/media/release", timeout=10)
+            except Exception as exc:
+                self.logMessage.emit(f"Release media su {player.ip} fallito (clear comunque): {exc}")
             return client.request("post", "/media/clear", params={"confirm": 1}, timeout=60)
         if cmd == "playlist_build":
             loop = bool(payload.get("loop", True))

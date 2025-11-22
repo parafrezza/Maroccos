@@ -25,6 +25,11 @@ class MediaSettings:
 
     media_root: Path | None = None
     server_port: int = 9000
+    # Optional: override host or FQDN used by players to pull from GUI file server
+    # If None, the GUI auto-selects the best local IP per target subnet
+    server_host_override: str | None = None
+    # Scheme for the file server URL (default http)
+    server_scheme: str = "http"
 
 
 @dataclass(slots=True)

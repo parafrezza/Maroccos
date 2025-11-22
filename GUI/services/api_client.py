@@ -95,6 +95,11 @@ class ApiClient:
             payload["sha256"] = checksum
         return self.request("post", "/download_update", json=payload, timeout=30)
 
+    def probe_url(self, url: str, timeout: float = 5.0) -> dict[str, Any]:
+        """Ask the player to probe reachability of a given URL (HEAD/GET)."""
+        payload = {"url": url}
+        return self.request("post", "/probe_url", json=payload, timeout=timeout)
+
     def get_autoplay(self) -> dict[str, Any]:
         """Read current autoplay state."""
         return self.request("get", "/autoplay")
