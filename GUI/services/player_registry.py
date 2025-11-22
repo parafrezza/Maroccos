@@ -44,6 +44,11 @@ class PlayerRecord:
     discovered_via: str | None = None  # es. "beacon" | "scan"
     framework: str | None = None
     media_available: bool = True
+    playlist_ready: bool = False
+    playlist_hash: str | None = None
+    playlist_missing: int = 0
+    playlist_invalid: int = 0
+    expected_playlist_hash: str | None = None
     # GUI-only: debouncing emission
     _ui_last_status_key: str | None = None
     _ui_last_emit_ts: float = 0.0
@@ -105,6 +110,15 @@ class PlayerRegistry(QObject):
     def current_players(self) -> list[PlayerRecord]:
         with self._lock:
             return list(self._players.values())
+
+    def get_player(self, ip: str) -> PlayerRecord | None:
+        with self._lock:
+            return self._players.get(ip)
+
+    def set_expected_playlist_hash(self, value: str | None) -> None:
+        with self._lock:
+            for rec in self._players.values():
+                rec.expected_playlist_hash = value
 
     def _run(self) -> None:
         while self._running:
@@ -209,6 +223,19 @@ class PlayerRegistry(QObject):
                 record.media_available = has_media
         except Exception:
             pass
+        # Playlist readiness info
+        try:
+            record.playlist_ready = bool(data.get("playlist_ready"))
+            record.playlist_hash = data.get("playlist_hash")
+            missing = data.get("playlist_missing") or []
+            invalid = data.get("playlist_invalid") or []
+            record.playlist_missing = len(missing) if isinstance(missing, (list, tuple)) else 0
+            record.playlist_invalid = len(invalid) if isinstance(invalid, (list, tuple)) else 0
+        except Exception:
+            record.playlist_ready = False
+            record.playlist_hash = None
+            record.playlist_missing = 0
+            record.playlist_invalid = 0
         # Update metadata for update status badges
         try:
             record.update_stage = data.get("update_stage") or None

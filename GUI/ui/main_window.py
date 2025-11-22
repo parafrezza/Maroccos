@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, QTimer, Qt, QFileSystemWatcher
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 
 from GUI.core.controller import ApplicationController
@@ -43,6 +44,13 @@ class MainWindow(QMainWindow):
         self._selected_players = []
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(QSize(1200, 800))
+        # Applica icona finestra se disponibile
+        try:
+            icon = self._resolve_app_icon()
+            if icon is not None:
+                self.setWindowIcon(icon)
+        except Exception:
+            pass
 
         self._tabs = QTabWidget()
         self._commands_tab = CommandsTab(parent=self._tabs)
@@ -54,6 +62,8 @@ class MainWindow(QMainWindow):
         self._player_panel = PlayerPanel()
         self._player_panel_default_min = self._player_panel.minimumWidth()
         self._player_panel_default_max = self._player_panel.maximumWidth()
+        self._player_panel_placeholder: QWidget | None = None
+        self._player_panel_window: QDialog | None = None
 
         splitter = QSplitter()
         splitter.addWidget(self._player_panel)
@@ -93,12 +103,22 @@ class MainWindow(QMainWindow):
         self._clear_log_button.setToolTip("Svuota la vista degli eventi")
         self._clear_log_button.clicked.connect(self._clear_log_view)
         header_layout.addWidget(self._clear_log_button)
+        self._detach_log_button = QToolButton()
+        self._detach_log_button.setText("↗")
+        self._detach_log_button.setToolTip("Stacca Event Log in finestra separata")
+        self._detach_log_button.setCursor(Qt.PointingHandCursor)
+        self._detach_log_button.setAutoRaise(True)
+        self._detach_log_button.clicked.connect(self._detach_log_panel)
+        self._detach_log_button.setFixedSize(24, 24)
+        header_layout.addWidget(self._detach_log_button)
         header_layout.addStretch(1)
         header_layout.addWidget(self._log_toggle_btn)
         log_layout.addWidget(self._log_header)
         log_layout.addWidget(self._log_view, 1)
         self._log_container_default_min = self._log_container.minimumHeight()
         self._log_container_default_max = self._log_container.maximumHeight()
+        self._log_placeholder: QWidget | None = None
+        self._log_window: QDialog | None = None
 
         self._main_splitter = QSplitter(Qt.Vertical)
         self._main_splitter.setHandleWidth(10)
@@ -116,6 +136,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self._setup_connections()
+        self._player_panel.detachRequested.connect(self._detach_player_panel)
         # Watcher per la cartella media locale (auto-refresh libreria)
         self._media_watcher = QFileSystemWatcher(self)
         try:
@@ -216,6 +237,7 @@ class MainWindow(QMainWindow):
         self._player_panel.syncMediaRequested.connect(self._handle_sync_media_request)
         self._player_panel.purgeRequested.connect(self._handle_purge_offline)
         self._player_panel.vncRequested.connect(self._handle_open_vnc)
+        self._player_panel.detachRequested.connect(self._detach_player_panel)
 
         self._commands_tab.playbackTriggered.connect(self._handle_playback)
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
@@ -278,6 +300,106 @@ class MainWindow(QMainWindow):
         self._update_tab.set_startup_mac_summary(len(ctrl.known_startup_macs()))
 
     # ------------------------------------------------------------------
+    # Floating detach helpers
+    # ------------------------------------------------------------------
+    def _create_floating_window(self, title: str, on_close) -> QDialog:
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+        dlg._on_close_cb = on_close  # type: ignore[attr-defined]
+
+        def _close(ev):
+            try:
+                if dlg._on_close_cb:  # type: ignore[attr-defined]
+                    dlg._on_close_cb()
+            except Exception:
+                pass
+            ev.accept()
+        dlg.closeEvent = _close  # type: ignore[assignment]
+        return dlg
+
+    def _detach_player_panel(self) -> None:
+        if self._player_panel_window:
+            try:
+                self._player_panel_window.raise_()
+                self._player_panel_window.activateWindow()
+            except Exception:
+                pass
+            return
+        placeholder = QWidget()
+        placeholder.setMinimumWidth(1)
+        idx = self._splitter.indexOf(self._player_panel)
+        if idx < 0:
+            idx = 0
+        self._splitter.replaceWidget(idx, placeholder)
+        self._player_panel_placeholder = placeholder
+        self._player_panel.setParent(None)
+        dlg = self._create_floating_window("Player", self._reattach_player_panel)
+        dlg.layout().addWidget(self._player_panel)
+        self._player_panel_window = dlg
+        dlg.resize(420, 700)
+        dlg.show()
+
+    def _reattach_player_panel(self) -> None:
+        if not self._player_panel_window:
+            return
+        try:
+            self._player_panel_window.layout().removeWidget(self._player_panel)  # type: ignore[arg-type]
+        except Exception:
+            pass
+        self._player_panel.setParent(None)
+        idx = self._splitter.indexOf(self._player_panel_placeholder) if self._player_panel_placeholder else 0
+        if idx < 0:
+            idx = 0
+        self._splitter.replaceWidget(idx, self._player_panel)
+        if self._player_panel_placeholder:
+            self._player_panel_placeholder.deleteLater()
+            self._player_panel_placeholder = None
+        self._player_panel_window = None
+
+    def _detach_log_panel(self) -> None:
+        if self._log_window:
+            try:
+                self._log_window.raise_()
+                self._log_window.activateWindow()
+            except Exception:
+                pass
+            return
+        placeholder = QWidget()
+        placeholder.setMinimumHeight(1)
+        idx = self._main_splitter.indexOf(self._log_container)
+        if idx < 0:
+            idx = 1
+        self._main_splitter.replaceWidget(idx, placeholder)
+        self._log_placeholder = placeholder
+        self._log_container.setParent(None)
+        dlg = self._create_floating_window("Event Log", self._reattach_log_panel)
+        dlg.layout().addWidget(self._log_container)
+        self._log_window = dlg
+        dlg.resize(900, 260)
+        dlg.show()
+
+    def _reattach_log_panel(self) -> None:
+        if not self._log_window:
+            return
+        try:
+            self._log_window.layout().removeWidget(self._log_container)  # type: ignore[arg-type]
+        except Exception:
+            pass
+        self._log_container.setParent(None)
+        idx = self._main_splitter.indexOf(self._log_placeholder) if self._log_placeholder else 1
+        if idx < 0:
+            idx = 1
+        self._main_splitter.replaceWidget(idx, self._log_container)
+        if self._log_placeholder:
+            self._log_placeholder.deleteLater()
+            self._log_placeholder = None
+        self._log_window = None
+
+    # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
 
@@ -294,6 +416,50 @@ class MainWindow(QMainWindow):
                 }
             )
         self._update_tab.set_players(formatted)
+
+    # --------------------------------------------------
+    # Icon helpers
+    # --------------------------------------------------
+    def _resolve_app_icon(self) -> QIcon | None:
+        """Trova un'icona applicabile (PNG o ICO) tra:
+        - Percorso esplicito via env GUI_ICON_PATH
+        - icon.png accanto al main (packaged via PyInstaller add-data)
+        - icon-maker/icon.png nella root repo (sviluppo)
+        - Risorse estratte in _MEIPASS (onefile)
+        Ritorna None se non trovata.
+        """
+        import os, sys
+        candidates: list[Path] = []
+        env_path = os.environ.get("GUI_ICON_PATH")
+        if env_path:
+            try:
+                candidates.append(Path(env_path))
+            except Exception:
+                pass
+        try:
+            here = Path(__file__).resolve().parent
+            candidates.append(here / "icon.png")
+        except Exception:
+            pass
+        try:
+            repo_root = Path(__file__).resolve().parents[2]
+            candidates.append(repo_root / "icon-maker" / "icon.png")
+        except Exception:
+            pass
+        # PyInstaller onefile unpack dir
+        try:
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                candidates.append(Path(meipass) / "icon.png")
+        except Exception:
+            pass
+        for c in candidates:
+            try:
+                if c.exists() and c.is_file():
+                    return QIcon(str(c))
+            except Exception:
+                continue
+        return None
 
     def _handle_startup_mac_request(self) -> None:
         dialog = StartupMacDialog(self)
@@ -716,6 +882,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        try:
+            self._update_playlist_led_state()
+        except Exception:
+            pass
+
         # Brightness value (0..1)
         try:
             b = payload.get("brightness")
@@ -854,6 +1025,10 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as exc:
             print(f"[GUI] Errore aggiornamento playlist: {exc}", flush=True)
+        try:
+            self._update_playlist_led_state()
+        except Exception:
+            pass
 
     def _handle_device_media(self, ip: str, payload: dict) -> None:
         # Mostra la lista media del device primario selezionato
@@ -1187,6 +1362,12 @@ class MainWindow(QMainWindow):
         # Reset pending state
         self._playlist_active = False
         self._playlist_pending.clear()
+        try:
+            local_hash = self._commands_tab.get_local_playlist_hash()
+            self._controller.set_expected_playlist_hash(local_hash)
+        except Exception:
+            pass
+        self._update_playlist_led_state()
 
     def _handle_playlist_refresh(self) -> None:
         if not self._selected_players:
@@ -1199,6 +1380,11 @@ class MainWindow(QMainWindow):
         # Track pending devices for LED aggregation
         self._playlist_pending = {p.ip for p in self._selected_players}
         self._playlist_active = True
+        try:
+            local_hash = self._commands_tab.get_local_playlist_hash()
+            self._controller.set_expected_playlist_hash(local_hash)
+        except Exception:
+            pass
         # Banner during phases
         if clear_before:
             try:
@@ -1217,6 +1403,53 @@ class MainWindow(QMainWindow):
             loop=bool(loop_enabled),
             clear_before=bool(clear_before),
         )
+
+    def _update_playlist_led_state(self) -> None:
+        # LED aggregato: rosso se dirty, arancio se parziale, verde se tutti pronti, grigio se nessuna selezione
+        try:
+            if self._commands_tab.is_playlist_dirty():
+                self._commands_tab.set_playlist_led("red")
+                self._commands_tab.set_action_badge("Playlist non inviata")
+                return
+        except Exception:
+            pass
+        if not self._selected_players:
+            try:
+                self._commands_tab.set_playlist_led("gray")
+                self._commands_tab.set_action_badge(None)
+            except Exception:
+                pass
+            return
+        local_hash = None
+        try:
+            local_hash = self._commands_tab.get_local_playlist_hash()
+        except Exception:
+            local_hash = None
+        ready_all = True
+        ready_any = False
+        not_ready_ips: list[str] = []
+        for p in self._selected_players:
+            rec = self._controller.get_player_record(p.ip)
+            ready = bool(rec and getattr(rec, "playlist_ready", False))
+            if ready and local_hash:
+                ready = rec.playlist_hash == local_hash  # type: ignore[union-attr]
+            if ready:
+                ready_any = True
+            else:
+                ready_all = False
+                not_ready_ips.append(p.ip)
+        try:
+            if ready_all:
+                self._commands_tab.set_playlist_led("green")
+                self._commands_tab.set_action_badge(None)
+            elif ready_any:
+                self._commands_tab.set_playlist_led("orange")
+                self._commands_tab.set_action_badge(f"Pending: {len(not_ready_ips)} non pronti")
+            else:
+                self._commands_tab.set_playlist_led("red")
+                self._commands_tab.set_action_badge(f"Pending: {len(not_ready_ips)} non pronti")
+        except Exception:
+            pass
 
     def _handle_start_show(self, in_time: float | None) -> None:
         """Handle START SHOW button or UDP trigger.
@@ -1245,6 +1478,26 @@ class MainWindow(QMainWindow):
             self._countdown_timer.stop()
             self._commands_tab.set_countdown_text("In corso")
         # Issue faststart_go with in_time
+        # Pre-flight check: warn if alcuni player non pronti
+        not_ready = []
+        local_hash = None
+        try:
+            local_hash = self._commands_tab.get_local_playlist_hash()
+        except Exception:
+            local_hash = None
+        for p in targets:
+            rec = self._controller.get_player_record(p.ip)
+            ready = bool(rec and getattr(rec, "playlist_ready", False))
+            if ready and local_hash:
+                ready = rec.playlist_hash == local_hash  # type: ignore[union-attr]
+            if not ready:
+                not_ready.append(p.ip)
+        if not_ready:
+            msg = "Questi player non risultano pronti:\n- " + "\n- ".join(not_ready) + "\nProcedere comunque?"
+            ans = QMessageBox.warning(self, "Player non pronti", msg, QMessageBox.Yes | QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
+
         payload = {"in_time": start_epoch}
         self._controller.send_misc_command("faststart_go", payload, targets)
 

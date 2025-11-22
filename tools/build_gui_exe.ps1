@@ -3,7 +3,9 @@ Param(
     [string]$Entry = "GUI/main.py",
     [string]$Name = "marocco-manager",
     [string]$Settings = "GUI/settings.json",
-    [string]$Viewer = "GUI/vncviewer64-1.15.0.exe"
+    [string]$Viewer = "GUI/vncviewer64-1.15.0.exe",
+    [string]$IconSource = "icon-maker/icon.png",
+    [string]$IconName = "marocco-manager"
 )
 
 Set-StrictMode -Version Latest
@@ -130,9 +132,42 @@ try {
         "--add-data", "$viewerPath$sep.",
         $Entry
     )
+    # Pre-build icona (se sorgente presente): genera ICO multi-size e aggiunge --icon
+    $iconSourcePath = Join-Path $Root $IconSource
+    $generatedIcon = $null
+    if (Test-Path -LiteralPath $iconSourcePath) {
+        try {
+            $iconBuildDir = Join-Path $Root 'build/icons'
+            if (-not (Test-Path -LiteralPath $iconBuildDir)) {
+                New-Item -ItemType Directory -Path $iconBuildDir -Force | Out-Null
+            }
+            Write-Host "Generazione icone da $iconSourcePath..." -ForegroundColor Cyan
+            & $python "icon-maker/build_app_icons.py" --src "$iconSourcePath" --name "$IconName" --outdir "$iconBuildDir" | Write-Host
+            $candidateIco = Join-Path $iconBuildDir "$IconName/$IconName.ico"
+            if (Test-Path -LiteralPath $candidateIco) {
+                $generatedIcon = $candidateIco
+                Write-Host "Icona generata: $generatedIcon" -ForegroundColor Cyan
+            } else {
+                Write-Warning "ICO non trovato dopo build: $candidateIco"
+            }
+        } catch {
+            Write-Warning "Generazione icone fallita: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warning "Icon source non trovato: $iconSourcePath (salto generazione icone)"
+    }
+
     if ($versionDataPath) {
         $args += "--add-data"
         $args += "$versionDataPath$sep."
+    }
+    # Aggiungi png originale come risorsa (per setWindowIcon runtime) se presente
+    if (Test-Path -LiteralPath $iconSourcePath) {
+        $args += "--add-data"
+        $args += "$iconSourcePath$sep."  # copia icon.png accanto all'eseguibile
+    }
+    if ($generatedIcon) {
+        $args += "--icon"; $args += $generatedIcon
     }
 
     Write-Host "Running PyInstaller..." -ForegroundColor Cyan

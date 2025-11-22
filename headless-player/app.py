@@ -6193,6 +6193,11 @@ def status():
         },
         "show_ready": bool(show_state.get("ready")),
         "ready_for": show_state.get("for"),
+        # Playlist readiness summary
+        "playlist_hash": _playlist_fingerprint().get("hash"),
+        "playlist_ready": bool(_playlist_fingerprint().get("ready")),
+        "playlist_missing": _playlist_fingerprint().get("missing", []),
+        "playlist_invalid": _playlist_fingerprint().get("invalid", []),
         "playlist_loop": bool(playlist.get("loop", False)),
         "os": simple_os,
         "arch": platform.machine(),
@@ -8426,15 +8431,16 @@ def api_overlay_fade_at(target: float | None = Query(None), seconds: float = Que
     return JSONResponse(status_code=410, content={"ok": False, "error": "overlay removed"})
 
 
-def _stop_active_media(timeout: float = 3.0) -> dict[str, bool]:
-    """Force playback halt so media files can be safely removed or released."""
+def _stop_active_media(timeout: float = 3.0, force: bool = True) -> dict[str, bool]:
+    """Force playback halt so media files can be safely removed or released.
+    If force=False, only stop OFF-player when idle/failed, otherwise skip."""
     info = {"playback_stopped": False, "off_player_stopped": False}
     log = logging.getLogger("headless-player.media")
     try:
         state = str(player.get("state", "")).lower() if isinstance(player, dict) else ""
     except Exception:
         state = ""
-    if state in {"playing", "paused", "preparing"}:
+    if force and state in {"playing", "paused", "preparing"}:
         try:
             stop_play()
             info["playback_stopped"] = True
@@ -8457,16 +8463,18 @@ def _stop_active_media(timeout: float = 3.0) -> dict[str, bool]:
     except Exception:
         proc = None
     if proc is not None and callable(getattr(proc, "poll", None)) and proc.poll() is None:
-        try:
-            result = _off_stop()
-            info["off_player_stopped"] = bool(result.get("ok"))
-        except Exception as exc:
-            log.warning("media_release: _off_stop() failed before cleanup: %s", exc, exc_info=True)
-        end_ts = time.time() + max(timeout, 0.0)
-        while proc.poll() is None and time.time() < end_ts:
-            time.sleep(0.1)
-        if proc.poll() is None:
-            log.warning("media_release: OFF-player still running after %.1fs", timeout)
+        # stop OFF only if forced or player not playing
+        if force or state not in {"playing", "paused", "preparing"}:
+            try:
+                result = _off_stop()
+                info["off_player_stopped"] = bool(result.get("ok"))
+            except Exception as exc:
+                log.warning("media_release: _off_stop() failed before cleanup: %s", exc, exc_info=True)
+            end_ts = time.time() + max(timeout, 0.0)
+            while proc.poll() is None and time.time() < end_ts:
+                time.sleep(0.1)
+            if proc.poll() is None:
+                log.warning("media_release: OFF-player still running after %.1fs", timeout)
     return info
 
 @app.get("/overlay/status")
@@ -8610,7 +8618,7 @@ def media_clear_get(confirm: int = Query(0)):
 @app.post("/media/release")
 def media_release(timeout: float = Query(3.0)):
     """Ferma riproduzione/off-player e disabilita autoplay per liberare i file senza cancellarli."""
-    release_info = _stop_active_media(timeout=max(0.0, float(timeout or 0.0)))
+    release_info = _stop_active_media(timeout=max(0.0, float(timeout or 0.0)), force=True)
     try:
         time.sleep(0.2)
     except Exception:
@@ -8620,6 +8628,97 @@ def media_release(timeout: float = Query(3.0)):
         "playback_stopped": release_info.get("playback_stopped", False),
         "off_player_stopped": release_info.get("off_player_stopped", False),
     }
+
+
+@app.post("/media/prune_to_playlist")
+def media_prune_to_playlist(payload: dict = Body(...)):
+    """Rimuove i file in MEDIA_DIR che non fanno parte della playlist indicata."""
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Campo 'items' (array) obbligatorio"})
+    # Risolve keep-set
+    keep: set[Path] = set()
+    for raw in items:
+        try:
+            rel = Path(str(raw))
+            if rel.is_absolute():
+                p = rel
+            else:
+                p = MEDIA_DIR / rel
+            p = p.resolve()
+            if not str(p).startswith(str(MEDIA_DIR.resolve())):
+                continue
+            keep.add(p)
+        except Exception:
+            continue
+    # Non stoppare se il player sta suonando: limitiamoci a file non in uso
+    release_info = _stop_active_media(force=False)
+    removed = 0
+    errors: list[str] = []
+    try:
+        current_playing: Path | None = None
+        try:
+            current_playing = Path(VIDEO_PATH).resolve()
+        except Exception:
+            current_playing = None
+        for entry in MEDIA_DIR.iterdir():
+            try:
+                p = entry.resolve()
+                if p in keep:
+                    continue
+                # Se il file corrente è in riproduzione, non toccarlo
+                if current_playing and p == current_playing:
+                    continue
+                if entry.is_file() or entry.is_symlink():
+                    try:
+                        _safe_unlink(entry)
+                        removed += 1
+                    except Exception as exc:
+                        errors.append(f"{entry.name}: {exc}")
+                elif entry.is_dir():
+                    try:
+                        shutil.rmtree(entry, ignore_errors=True)
+                        removed += 1
+                    except Exception as exc:
+                        errors.append(f"{entry.name}: {exc}")
+            except Exception as exc:
+                errors.append(f"{entry.name}: {exc}")
+        # Aggiorna la playlist interna: rimuovi elementi cancellati (tranne quello corrente se esiste)
+        try:
+            current_items = list(playlist.get("items", [])) if isinstance(playlist, dict) else []
+            new_items: list[str] = []
+            for it in current_items:
+                try:
+                    pt = Path(it).resolve()
+                except Exception:
+                    continue
+                if pt == current_playing:
+                    new_items.append(str(pt))
+                    continue
+                if pt.exists() and (pt in keep or pt == current_playing):
+                    new_items.append(str(pt))
+            if new_items:
+                playlist["items"] = new_items
+                # reset index to first valid item
+                playlist["index"] = 0
+            else:
+                playlist["items"] = []
+                playlist["index"] = -1
+        except Exception:
+            pass
+
+        fp = _playlist_fingerprint(force=True)
+        return {
+            "ok": True,
+            "removed": removed,
+            "errors": errors,
+            "playback_stopped": release_info.get("playback_stopped", False),
+            "off_player_stopped": release_info.get("off_player_stopped", False),
+            "playlist_hash": fp.get("hash"),
+            "playlist_ready": fp.get("ready"),
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
 def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> list[str]:

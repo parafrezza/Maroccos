@@ -50,6 +50,13 @@ class SettingsStore:
             data["media"]["media_root"] = str(config.media.media_root)
         if config.update.bundle_path is not None:
             data["update"]["bundle_path"] = str(config.update.bundle_path)
+        # Ensure optional media server override keys exist (explicit None omits the key)
+        data.setdefault("media", {})
+        if config.media.server_host_override:
+            data["media"]["server_host_override"] = config.media.server_host_override
+        else:
+            data["media"].pop("server_host_override", None)
+        data["media"]["server_scheme"] = config.media.server_scheme or "http"
         # Explicitly ensure status_poll_ms and ping_ms are present
         if "status_poll_ms" not in data["network"]:
             data["network"]["status_poll_ms"] = config.network.status_poll_ms

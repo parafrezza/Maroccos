@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from GUI.ui.widgets.status_indicator import StatusIndicator
 
 
-_COLUMNS = ("Name", "IP", "State", "Last Seen", "Version", "Status")
+_COLUMNS = ("Name", "IP", "State", "Playlist", "Last Seen", "Version", "Status")
 
 
 class PlayerStatusTable(QTableWidget):
@@ -35,7 +35,7 @@ class PlayerStatusTable(QTableWidget):
         header.setSectionResizeMode(QHeaderView.Fixed)
         header.setStretchLastSection(False)
 
-    def upsert_record(self, *, name: str, ip: str, state: str, last_seen: str, version: str, status_text: str | None = None) -> None:
+    def upsert_record(self, *, name: str, ip: str, state: str, last_seen: str, version: str, status_text: str | None = None, playlist_state: str | None = None, playlist_tip: str | None = None) -> None:
         """Insert or update the row for a player."""
         row = self._find_row(ip)
         if row is None:
@@ -43,18 +43,30 @@ class PlayerStatusTable(QTableWidget):
             self.insertRow(row)
             indicator = StatusIndicator()
             self.setCellWidget(row, 2, indicator)
+            pl_indicator = StatusIndicator()
+            self.setCellWidget(row, 3, pl_indicator)
         else:
             indicator = self.cellWidget(row, 2)
             if not isinstance(indicator, StatusIndicator):
                 indicator = StatusIndicator()
                 self.setCellWidget(row, 2, indicator)
+            pl_indicator = self.cellWidget(row, 3)
+            if not isinstance(pl_indicator, StatusIndicator):
+                pl_indicator = StatusIndicator()
+                self.setCellWidget(row, 3, pl_indicator)
 
         self._set_item(row, 0, name or "-")
         self._set_item(row, 1, ip)
         indicator.set_state(state)
-        self._set_item(row, 3, last_seen)
-        self._set_item(row, 4, version)
-        self._set_item(row, 5, status_text or "")
+        try:
+            pl_indicator.set_state(playlist_state or "unknown")
+            if playlist_tip:
+                pl_indicator.setToolTip(playlist_tip)
+        except Exception:
+            pass
+        self._set_item(row, 4, last_seen)
+        self._set_item(row, 5, version)
+        self._set_item(row, 6, status_text or "")
         # Re-alloca larghezze dopo aggiornamento contenuto
         self._auto_resize_columns()
 
@@ -102,7 +114,7 @@ class PlayerStatusTable(QTableWidget):
         row = self._find_row(ip)
         if row is None:
             return
-        item = self.item(row, 4)
+        item = self.item(row, 5)
         if item is None:
             return
         try:
@@ -122,7 +134,7 @@ class PlayerStatusTable(QTableWidget):
         row = self._find_row(ip)
         if row is None:
             return
-        item = self.item(row, 4)
+        item = self.item(row, 5)
         if item is None:
             return
         try:
@@ -140,7 +152,7 @@ class PlayerStatusTable(QTableWidget):
         row = self._find_row(ip)
         if row is None:
             return
-        item = self.item(row, 5)
+        item = self.item(row, 6)
         if item is None:
             return
         try:
@@ -159,7 +171,7 @@ class PlayerStatusTable(QTableWidget):
         row = self._find_row(ip)
         if row is None:
             return
-        item = self.item(row, 5)
+        item = self.item(row, 6)
         if item is None:
             return
         try:
@@ -197,21 +209,22 @@ class PlayerStatusTable(QTableWidget):
         if self.columnCount() != len(_COLUMNS):
             return
         viewport_w = max(0, self.viewport().width())
-        # Colonna LED/State (index 2): fissa
+        # Colonne LED (state=2, playlist=3): fisse
         led_w = 28
         self.setColumnWidth(2, led_w)
+        self.setColumnWidth(3, led_w)
         # Spazio residuo
-        avail = max(0, viewport_w - led_w)
+        avail = max(0, viewport_w - (led_w * 2))
         if avail <= 0:
             return
-        # Pesi: Name(0)=2, IP(1)=1, Last Seen(3)=1, Version(4)=1, Status(5)=2
-        weights = {0: 2, 1: 1, 3: 1, 4: 1, 5: 2}
+        # Pesi: Name(0)=2, IP(1)=1, Last Seen(4)=1, Version(5)=1, Status(6)=2
+        weights = {0: 2, 1: 1, 4: 1, 5: 1, 6: 2}
         total = sum(weights.values())
         # Calcola larghezze proporzionali
         widths = {i: int(avail * weights[i] / total) for i in weights}
         # Imposta larghezze
         for i, w in widths.items():
-            self.setColumnWidth(i, max(60 if i in (0, 5) else 40, w))
+            self.setColumnWidth(i, max(60 if i in (0, 6) else 40, w))
         # Garantisce che non compaia scrollbar orizzontale per piccoli arrotondamenti
         remainder = avail - sum(widths.values())
         if remainder > 0:

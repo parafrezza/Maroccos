@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 import json
+import hashlib
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer, QDateTime, QMimeData, QSize, QTime
@@ -168,6 +169,7 @@ class CommandsTab(QWidget):
         self._playlist_banner_validation = False
         self._device_media_names: set[str] = set()
         self._device_media_seen: bool = False
+        self._local_playlist_fp: dict[str, Any] | None = None
         self._downloads_in_progress: set[str] = set()
         self._banner_fallback: tuple[str, str] | None = None
         self._playback_buttons: list[QPushButton] = []
@@ -1132,6 +1134,7 @@ class CommandsTab(QWidget):
             # Re-applica eventuali warning su elementi mancanti
             self._apply_playlist_validation()
             self._update_playlist_controls_state()
+            self._compute_local_playlist_fingerprint()
         except Exception as exc:
             print(f"[GUI] Errore popolamento playlist: {exc}", flush=True)
 
@@ -1169,6 +1172,7 @@ class CommandsTab(QWidget):
         if not self._banner_label.text().strip():
             self.set_banner(None)
         self._update_playlist_controls_state()
+        self._compute_local_playlist_fingerprint()
 
     def set_playback_loop(self, loop: bool | None, multi_count: int | None = None) -> None:
         if loop is not None:
@@ -2207,10 +2211,76 @@ class CommandsTab(QWidget):
         self._playlist_dirty = True
         # LED rosso (dirty)
         self._set_playlist_led_color("red")
+        self._compute_local_playlist_fingerprint()
         self.playlistChanged.emit(items)
         self._update_total_tc()
         self._update_playlist_controls_state()
         self._apply_playlist_availability_styles()
+
+    def _compute_local_playlist_fingerprint(self) -> dict[str, Any]:
+        """Calcola hash locale della playlist usando la media root configurata."""
+        items: list[dict[str, Any]] = []
+        missing: list[str] = []
+        invalid: list[str] = []
+        h = hashlib.sha256()
+        root = self._media_root if self._media_root and self._media_root.exists() else None
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            rel = str(it.data(Qt.UserRole) or it.text())
+            try:
+                p = Path(rel)
+                if not p.is_absolute():
+                    if root is None:
+                        missing.append(rel)
+                        continue
+                    p = root / p
+                p = p.resolve()
+            except Exception:
+                invalid.append(rel)
+                continue
+            try:
+                st = p.stat()
+            except Exception:
+                missing.append(rel)
+                continue
+            try:
+                sha = hashlib.sha256()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        sha.update(chunk)
+                entry = {
+                    "path": str(p),
+                    "rel": rel,
+                    "size": int(st.st_size),
+                    "mtime": int(st.st_mtime),
+                    "sha256": sha.hexdigest(),
+                }
+                items.append(entry)
+                h.update(rel.encode("utf-8", "ignore"))
+                h.update(str(st.st_size).encode())
+                h.update(entry["sha256"].encode())
+            except Exception:
+                invalid.append(rel)
+        fp = {
+            "items": items,
+            "missing": missing,
+            "invalid": invalid,
+            "hash": h.hexdigest() if items else "",
+            "ready": not missing and not invalid and len(items) == self._playlist.count(),
+        }
+        self._local_playlist_fp = fp
+        return fp
+
+    def get_local_playlist_fingerprint(self) -> dict[str, Any]:
+        if self._local_playlist_fp is None:
+            return self._compute_local_playlist_fingerprint()
+        return self._local_playlist_fp
+
+    def get_local_playlist_hash(self) -> str | None:
+        return (self._local_playlist_fp or self._compute_local_playlist_fingerprint()).get("hash")
+
+    def is_playlist_dirty(self) -> bool:
+        return bool(self._playlist_dirty)
 
     def _handle_new_playlist_entries(self, rel_items: Sequence[str]) -> None:
         """Gestisce i media aggiunti alla playlist lato GUI.

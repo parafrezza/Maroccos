@@ -7,7 +7,9 @@ param(
     [switch]$Debug,
     [string]$Version,
     [string]$AppBaseName = 'marocco-player',
-    [switch]$SilentOnly
+    [switch]$SilentOnly,
+    [string]$IconSource = 'icon-maker/icon.png',
+    [string]$IconName = 'marocco-player'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -430,6 +432,38 @@ try {
     Write-Host "ISCC trovato:" $iscc
 
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    # Prepara icona dell'installer: genera ICO coerente se il sorgente esiste
+    $icoDefineAdded = $false
+    $icoDefine = $null
+    try {
+        $iconSourcePath = Join-Path $repoRoot $IconSource
+        if (Test-Path -LiteralPath $iconSourcePath) {
+            $python = Get-Command python -ErrorAction SilentlyContinue
+            if ($python) {
+                $iconsOut = Join-Path $repoRoot 'build/icons'
+                if (-not (Test-Path -LiteralPath $iconsOut)) {
+                    New-Item -ItemType Directory -Path $iconsOut -Force | Out-Null
+                }
+                Write-Host ("[ICON] Generazione ICO per installer da {0}" -f $iconSourcePath) -ForegroundColor Cyan
+                & $python.Source "$(Join-Path $repoRoot 'icon-maker/build_app_icons.py')" --src "$iconSourcePath" --name "$IconName" --outdir "$iconsOut" | Out-Null
+                $generatedIco = Join-Path $iconsOut (Join-Path $IconName ("{0}.ico" -f $IconName))
+                if (Test-Path -LiteralPath $generatedIco) {
+                    $icoFull = (Resolve-Path -LiteralPath $generatedIco).Path
+                    $icoDefine = "/DIcoSrcPath=$($('"' + $icoFull + '"'))"
+                    $icoDefineAdded = $true
+                    Write-Host ("[ICON] Userò icona generata: {0}" -f $icoFull) -ForegroundColor DarkCyan
+                } else {
+                    Write-Warning "ICO non trovato dopo generazione: $generatedIco"
+                }
+            } else {
+                Write-Warning "Python non trovato nel PATH: salto generazione icone per l'installer"
+            }
+        } else {
+            Write-Warning "Sorgente icona non trovato: $iconSourcePath (salto generazione)"
+        }
+    } catch {
+        Write-Warning "Generazione icone per installer fallita: $($_.Exception.Message)"
+    }
     $verFile = Join-Path $repoRoot 'headless-player\VERSION'
     $versionFilePath = $verFile
 
@@ -501,13 +535,17 @@ try {
         "/DHeadlessDirName=$headlessDir",
         "/DHeadlessExeName=$headlessExe"
     )
-    # Passa percorso icona se disponibile
-    $icoPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'icon-maker\dist\marocco-player\marocco-player.ico'
-    if (Test-Path -LiteralPath $icoPath) {
-        $icoFull = (Resolve-Path -LiteralPath $icoPath).Path
-        $defines += "/DIcoSrcPath=$($('"' + $icoFull + '"'))"
-    } else {
-        Write-Warning "Icona ICO non trovata: $icoPath (l'installer userà le icone di default)"
+    if ($icoDefine) { $defines += $icoDefine }
+    # Se non ho già aggiunto l'icona generata, prova la posizione legacy sotto icon-maker\dist
+    if (-not $icoDefineAdded) {
+        $legacyIcoPath = Join-Path $repoRoot ("icon-maker\dist\{0}\{0}.ico" -f $IconName)
+        if (Test-Path -LiteralPath $legacyIcoPath) {
+            $icoFull = (Resolve-Path -LiteralPath $legacyIcoPath).Path
+            $defines += "/DIcoSrcPath=$($('"' + $icoFull + '"'))"
+            Write-Host ("[ICON] Userò icona legacy: {0}" -f $icoFull) -ForegroundColor DarkCyan
+        } else {
+            Write-Warning "Icona ICO non trovata: $legacyIcoPath (l'installer userà le icone di default)"
+        }
     }
     $assetsDir = Join-Path (Split-Path -Parent $iss) 'assets'
     Invoke-SetResolutionAsset -Root (Split-Path -Parent $PSScriptRoot) -AssetsDir $assetsDir

@@ -12,6 +12,10 @@ _COLORS: dict[str, QColor] = {
     "warning": QColor(243, 156, 18),
     "offline": QColor(231, 76, 60),
     "unknown": QColor(127, 140, 141),
+    # Playlist readiness states (reuse same widget)
+    "ready": QColor(46, 204, 113),
+    "partial": QColor(243, 156, 18),
+    "dirty": QColor(231, 76, 60),
 }
 
 

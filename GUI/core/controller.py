@@ -429,8 +429,65 @@ class ApplicationController(QObject):
             self.discoveryFinished.emit([])
             return
         self.player_registry.sync_players(result.players)
+        # Se non esiste un override host esplicito, prova a impostarne uno dinamico
+        try:
+            self._maybe_set_dynamic_media_host_override(result.players)
+        except Exception:
+            pass
         self._update_known_startup_macs(result.raw)
         self.discoveryFinished.emit(result.raw)
+
+    def _maybe_set_dynamic_media_host_override(self, players: list[PlayerRecord]) -> None:
+        """Se l'override host del file server non è impostato, sceglie dinamicamente
+        l'IP locale che copre il maggior numero di player (match /24) e lo persiste.
+        Non fa nulla se un override è già configurato o se non ci sono player.
+        """
+        try:
+            media_cfg = self.state.config.media
+        except Exception:
+            return
+        # Rispetta override già configurato
+        try:
+            if getattr(media_cfg, "server_host_override", None):
+                return
+        except Exception:
+            pass
+        if not players:
+            return
+        candidates = []
+        try:
+            candidates = self._local_ipv4_candidates()
+        except Exception:
+            candidates = []
+        if not candidates:
+            return
+        # Conta quanti player per candidato (stessa /24)
+        best_ip = None
+        best_score = -1
+        for cand in candidates:
+            score = 0
+            for p in players:
+                try:
+                    net = ipaddress.ip_network(f"{p.ip}/24", strict=False)
+                    if ipaddress.ip_address(cand) in net:
+                        score += 1
+                except Exception:
+                    continue
+            if score > best_score:
+                best_score = score
+                best_ip = cand
+        # Imposta solo se copre almeno un player
+        if best_ip and best_score > 0:
+            try:
+                media_cfg.server_host_override = best_ip
+                self._settings_store.save(self.state.config)
+                self._emit_settings_snapshot()
+                self.logMessage.emit(
+                    f"Host file server dinamico impostato: {best_ip} (copertura {best_score} player)"
+                )
+            except Exception:
+                # Non interrompere il flusso in caso di errore di persistenza
+                pass
 
     def known_startup_macs(self) -> list[dict[str, Any]]:
         with self.state.lock:
@@ -1102,7 +1159,12 @@ class ApplicationController(QObject):
                 sanitized_rel = "/".join(safe_segments)
             except Exception:
                 sanitized_rel = cleaned
-            media_url = f"http://{self._host_ip(target_list)}:{self.state.config.media.server_port}/{sanitized_rel}"
+            # Determina host e schema: override via env o settings, altrimenti best-IP
+            scheme = os.environ.get("MEDIA_SERVER_SCHEME") or getattr(self.state.config.media, "server_scheme", "http") or "http"
+            host_override_env = os.environ.get("MEDIA_SERVER_HOST")
+            host_override_cfg = getattr(self.state.config.media, "server_host_override", None)
+            host = (host_override_env or host_override_cfg or self._host_ip(target_list)).strip()
+            media_url = f"{scheme}://{host}:{self.state.config.media.server_port}/{sanitized_rel}"
             if sanitized_rel != rel_path_str:
                 self.logMessage.emit(f"Path media normalizzato per URL: {rel_path_str} -> {sanitized_rel}")
             self.logMessage.emit(
@@ -1140,7 +1202,7 @@ class ApplicationController(QObject):
             self.playlistPhaseChanged.emit("clearing")
             futs: list[concurrent.futures.Future[bool]] = []
             for player in targets_list:
-                futs.append(self._executor.submit(self._invoke_media_clear_sync, player))
+                futs.append(self._executor.submit(self._invoke_media_prune, player, items))
             ok_all = True
             for f in concurrent.futures.as_completed(futs):
                 try:
@@ -1168,18 +1230,15 @@ class ApplicationController(QObject):
         for player in targets_list:
             self._executor.submit(self._invoke_apply_playlist, player, items, loop)
 
-    def _invoke_media_clear_sync(self, player: PlayerRecord) -> bool:
+    def _invoke_media_prune(self, player: PlayerRecord, items: list[str]) -> bool:
         client = self._client_for(player)
         try:
-            try:
-                client.request("post", "/media/release", timeout=10)
-            except Exception as exc:
-                self.logMessage.emit(f"Release media su {player.ip} fallito (proseguo comunque con clear): {exc}")
-            resp = client.request("post", "/media/clear", params={"confirm": 1}, timeout=120)
+            payload = {"items": items}
+            resp = client.request("post", "/media/prune_to_playlist", json=payload, timeout=120)
             self.commandCompleted.emit(player.ip, resp if isinstance(resp, dict) else {"ok": True})
             return bool((isinstance(resp, dict) and resp.get("ok", True)) or resp)
         except Exception as exc:
-            self.logMessage.emit(f"Clear media su {player.ip} fallito: {exc}")
+            self.logMessage.emit(f"Prune media su {player.ip} fallito: {exc}")
             return False
 
     def _invoke_apply_playlist(self, player: PlayerRecord, items: list[str], loop: bool) -> None:
@@ -1719,8 +1778,8 @@ class ApplicationController(QObject):
             try:
                 client.request("post", "/media/release", timeout=10)
             except Exception as exc:
-                self.logMessage.emit(f"Release media su {player.ip} fallito (clear comunque): {exc}")
-            return client.request("post", "/media/clear", params={"confirm": 1}, timeout=60)
+                self.logMessage.emit(f"Release media su {player.ip} fallito (proseguo comunque): {exc}")
+            return client.request("post", "/media/prune_to_playlist", json={"items": []}, timeout=120)
         if cmd == "playlist_build":
             loop = bool(payload.get("loop", True))
             return client.request("post", "/media/playlist", json={"loop": loop}, timeout=30)
@@ -2268,6 +2327,18 @@ echo "[remote] Fatto."
     def get_selected_players(self, ips: Iterable[str]) -> list[PlayerRecord]:
         known = {p.ip: p for p in self.player_registry.current_players()}
         return [known[ip] for ip in ips if ip in known]
+
+    def get_player_record(self, ip: str) -> PlayerRecord | None:
+        try:
+            return self.player_registry.get_player(ip)
+        except Exception:
+            return None
+
+    def set_expected_playlist_hash(self, value: str | None) -> None:
+        try:
+            self.player_registry.set_expected_playlist_hash(value)
+        except Exception:
+            pass
 
     def _local_ipv4_candidates(self) -> list[str]:
         candidates: list[str] = []

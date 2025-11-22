@@ -28,6 +28,7 @@ class PlayerPanel(QWidget):
     purgeRequested = Signal()
     vncRequested = Signal(str)
     toggleCollapseRequested = Signal()
+    detachRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -39,6 +40,14 @@ class PlayerPanel(QWidget):
         title_row = QHBoxLayout()
         title_row.addWidget(QLabel("Player rilevati"))
         title_row.addStretch(1)
+        self._detach_button = QToolButton()
+        self._detach_button.setText("↗")
+        self._detach_button.setToolTip("Stacca elenco in finestra separata")
+        self._detach_button.setCursor(Qt.PointingHandCursor)
+        self._detach_button.setAutoRaise(True)
+        self._detach_button.clicked.connect(lambda: self.detachRequested.emit())
+        self._detach_button.setFixedSize(24, 24)
+        title_row.addWidget(self._detach_button)
         self._collapse_button = QToolButton()
         self._collapse_button.setArrowType(Qt.DownArrow)
         self._collapse_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -92,6 +101,8 @@ class PlayerPanel(QWidget):
             last_seen=last_seen,
             version=record.version or "-",
             status_text=record.status_text or "",
+            playlist_state=self._playlist_state_for(record),
+            playlist_tip=self._playlist_tip_for(record),
         )
         self._records[record.ip] = record
         # Tooltip con identificativi sul nome
@@ -140,16 +151,51 @@ class PlayerPanel(QWidget):
                 self._table.clear_status_highlight(record.ip)
             if not highlight_applied:
                 media_missing = hasattr(record, "media_available") and not record.media_available
+                playlist_warn = not getattr(record, "playlist_ready", True)
+                tip_parts: list[str] = []
                 if media_missing:
-                    tip = "Cartella media vuota"
+                    tip_parts.append("Cartella media vuota")
+                pmiss = getattr(record, "playlist_missing", 0)
+                pinv = getattr(record, "playlist_invalid", 0)
+                if playlist_warn:
+                    if pmiss or pinv:
+                        tip_parts.append(f"Playlist incompleta (missing: {pmiss}, invalid: {pinv})")
+                    else:
+                        tip_parts.append("Playlist non pronta")
+                tip = " • ".join(tip_parts)
+                if media_missing or playlist_warn:
                     self._table.set_status_highlight(
-                        ip, background="#fff3cd", foreground="#856404", tooltip=tip
+                        ip, background="#fff3cd", foreground="#856404", tooltip=tip or "Media/playlist non pronti"
                     )
                 else:
                     self._table.clear_status_highlight(ip)
         except Exception:
             # Best-effort UI; don't break updates due to UI decorators
             pass
+
+    def _playlist_state_for(self, record: PlayerRecord) -> str:
+        try:
+            if record.state not in {"online"}:
+                return "offline"
+            if record.playlist_ready and record.expected_playlist_hash and record.playlist_hash == record.expected_playlist_hash:
+                return "ready"
+            if record.playlist_ready:
+                return "partial"
+            return "dirty"
+        except Exception:
+            return "unknown"
+
+    def _playlist_tip_for(self, record: PlayerRecord) -> str | None:
+        try:
+            if record.expected_playlist_hash and record.playlist_hash and record.expected_playlist_hash != record.playlist_hash:
+                return f"Hash diverso: local {record.expected_playlist_hash[:8]} vs remote {record.playlist_hash[:8]}"
+            if not record.playlist_ready:
+                if record.playlist_missing or record.playlist_invalid:
+                    return f"Playlist incompleta (missing: {record.playlist_missing}, invalid: {record.playlist_invalid})"
+                return "Playlist non pronta"
+            return "Playlist pronta"
+        except Exception:
+            return None
 
     def set_busy(self, busy: bool) -> None:
         self._refresh_button.setEnabled(not busy)
