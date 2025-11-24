@@ -270,6 +270,11 @@ try:
     print(f"[MEDIA] Base: {MEDIA_DIR} (source={globals().get('MEDIA_DIR_SOURCE', 'auto')})", flush=True)
 except Exception:
     pass
+MEDIA_LOG_DIR = MEDIA_DIR / "_logs"
+try:
+    MEDIA_LOG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 VERSION_FILE = APP_DIR / "VERSION"
 VERSION = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else "v0.1.0"
 USE_KMS = os.environ.get("USE_KMS", "1") == "1"
@@ -285,11 +290,7 @@ SPLASH_BLACK = os.environ.get("SPLASH_BLACK", "0") == "1"
 CONFIG_DIR = _user_config_dir()
 LEGACY_CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-LOG_DIR = CONFIG_DIR / "logs"
-try:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
+LOG_DIR = MEDIA_LOG_DIR
 LOG_FILE = LOG_DIR / "headless-player.log"
 
 def _ensure_windows_media_share() -> None:
@@ -360,15 +361,13 @@ try:
 except Exception as log_err:
     print(f"[LOG] File logging disabilitato: {log_err}", flush=True)
 
-try:
-    media_log_dir = MEDIA_DIR / "_logs"
-    media_log_dir.mkdir(parents=True, exist_ok=True)
-    media_log_path = media_log_dir / "headless-player.log"
-    share_handler = RotatingFileHandler(media_log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    share_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-    _log_handlers.append(share_handler)
-except Exception as log_share_err:
-    print(f"[LOG] Impossibile creare log condiviso: {log_share_err}", flush=True)
+    try:
+        media_log_path = MEDIA_LOG_DIR / "headless-player.log"
+        share_handler = RotatingFileHandler(media_log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+        share_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        _log_handlers.append(share_handler)
+    except Exception as log_share_err:
+        print(f"[LOG] Impossibile creare log condiviso: {log_share_err}", flush=True)
 
 stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
@@ -2908,7 +2907,7 @@ def _ensure_off_config(bin_dir: Path, port: int) -> None:
             try:
                 data["mediaDir"] = str(MEDIA_DIR)
             except Exception:
-                data.setdefault("mediaDir", "media")
+                data["mediaDir"] = str(MEDIA_DIR)
             udp_default = int(data.get("udpPort", 7777))
             if udp_default == int(UDP_PORT):
                 udp_default = 7778
@@ -2955,6 +2954,10 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
     _ensure_off_config(bin_dir, p)
     try:
         env = os.environ.copy()
+        try:
+            env["MEDIA_DIR"] = str(MEDIA_DIR)
+        except Exception:
+            pass
         # Determina il comando di lancio (fallback headless con xvfb se DISPLAY assente)
         cmd = [exe]
         want_egl = False
@@ -2988,13 +2991,19 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
         except Exception:
             pass
         # Avvia OFF-player catturando stdout per inoltro log alla GUI
-        proc = subprocess.Popen(cmd, cwd=str(bin_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+        proc = subprocess.Popen(cmd, cwd=str(bin_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, env=env)
         off_proc.update({"p": proc, "port": p, "path": exe, "reader": None, "requested_stop_ts": None})
         # Thread che inoltra le righe di log verso la GUI (come per CVLC)
         def _reader():
+            log_file = None
             try:
                 import io
                 f = io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="ignore") if proc.stdout else None
+                log_path = MEDIA_LOG_DIR / "off-player.log"
+                try:
+                    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+                except Exception:
+                    log_file = None
                 while proc.poll() is None and f:
                     line = f.readline()
                     if not line:
@@ -3008,6 +3017,11 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
                             off_logs.append(l)
                         except Exception:
                             pass
+                        if log_file:
+                            try:
+                                log_file.write(l + "\n")
+                            except Exception:
+                                pass
                         gui_log("off", level="INFO", kind="framework", data={"line": l})
                     except Exception:
                         pass
@@ -3017,6 +3031,11 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
                 except Exception:
                     pass
             finally:
+                if log_file:
+                    try:
+                        log_file.close()
+                    except Exception:
+                        pass
                 _handle_off_process_exit(proc)
         t = threading.Thread(target=_reader, name="off-log-reader", daemon=True)
         t.start()
@@ -8431,9 +8450,10 @@ def api_overlay_fade_at(target: float | None = Query(None), seconds: float = Que
     return JSONResponse(status_code=410, content={"ok": False, "error": "overlay removed"})
 
 
-def _stop_active_media(timeout: float = 3.0, force: bool = True) -> dict[str, bool]:
+def _stop_active_media(timeout: float = 3.0, force: bool = True, stop_off: bool = True) -> dict[str, bool]:
     """Force playback halt so media files can be safely removed or released.
-    If force=False, only stop OFF-player when idle/failed, otherwise skip."""
+    If force=False, only stop OFF-player when idle/failed, otherwise skip.
+    Set stop_off=False to keep the OFF-player process alive while stopping playback."""
     info = {"playback_stopped": False, "off_player_stopped": False}
     log = logging.getLogger("headless-player.media")
     try:
@@ -8462,7 +8482,7 @@ def _stop_active_media(timeout: float = 3.0, force: bool = True) -> dict[str, bo
         proc = off_proc.get("p") if isinstance(off_proc, dict) else None
     except Exception:
         proc = None
-    if proc is not None and callable(getattr(proc, "poll", None)) and proc.poll() is None:
+    if stop_off and proc is not None and callable(getattr(proc, "poll", None)) and proc.poll() is None:
         # stop OFF only if forced or player not playing
         if force or state not in {"playing", "paused", "preparing"}:
             try:
@@ -8530,7 +8550,7 @@ def media_clear(confirm: int = Query(0)):
     """
     if confirm != 1:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Conferma mancante: usa ?confirm=1"})
-    release_info = _stop_active_media()
+    release_info = _stop_active_media(stop_off=False)
     try:
         time.sleep(0.2)
     except Exception:
@@ -8617,8 +8637,8 @@ def media_clear_get(confirm: int = Query(0)):
 
 @app.post("/media/release")
 def media_release(timeout: float = Query(3.0)):
-    """Ferma riproduzione/off-player e disabilita autoplay per liberare i file senza cancellarli."""
-    release_info = _stop_active_media(timeout=max(0.0, float(timeout or 0.0)), force=True)
+    """Ferma la riproduzione e disabilita autoplay evitando di chiudere OFF-player."""
+    release_info = _stop_active_media(timeout=max(0.0, float(timeout or 0.0)), force=True, stop_off=False)
     try:
         time.sleep(0.2)
     except Exception:
@@ -8652,7 +8672,7 @@ def media_prune_to_playlist(payload: dict = Body(...)):
         except Exception:
             continue
     # Non stoppare se il player sta suonando: limitiamoci a file non in uso
-    release_info = _stop_active_media(force=False)
+    release_info = _stop_active_media(force=True, stop_off=False)
     removed = 0
     errors: list[str] = []
     try:

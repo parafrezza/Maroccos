@@ -7,11 +7,12 @@ import json
 import hashlib
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QTimer, QDateTime, QMimeData, QSize, QTime
+from PySide6.QtCore import Qt, Signal, QTimer, QDateTime, QMimeData, QSize, QTime, QEvent
 import time as _time
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QTimeEdit,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 # Custom DnD MIME for media items dragged from the media list to the playlist
@@ -172,6 +174,11 @@ class CommandsTab(QWidget):
         self._local_playlist_fp: dict[str, Any] | None = None
         self._downloads_in_progress: set[str] = set()
         self._banner_fallback: tuple[str, str] | None = None
+        self._playlist_updates_frozen = False
+        self._playlist_frame_state = "gray"
+        self._playlist_box: QGroupBox | None = None
+        self._freeze_banner_active = False
+        self._playlist_freeze_message = "Playlist in modifica locale: premi 'Aggiorna da player' per riprendere"
         self._playback_buttons: list[QPushButton] = []
         self._upload_started_at: float | None = None
         self._brightness_dirty = False
@@ -265,12 +272,18 @@ class CommandsTab(QWidget):
         playback_layout.addLayout(controls, controls_row, 0, 1, columns)
         # Action badge row (shows short-lived action like NEXT/PREV/PLAY)
         action_row = QHBoxLayout()
-        self._action_badge = QLabel("—")
-        self._action_badge.setVisible(False)
-        # pill style
-        self._action_badge.setStyleSheet(
+        self._action_badge_base_style = (
+            "padding: 2px 8px; border-radius: 9px; background-color: transparent; color: #bdc3c7; font-weight: 600;"
+        )
+        self._action_badge_active_style = (
             "padding: 2px 8px; border-radius: 9px; background-color: #34495e; color: white; font-weight: 600;"
         )
+        self._action_badge = QLabel("")
+        self._action_badge.setStyleSheet(self._action_badge_base_style)
+        self._action_badge.setMinimumHeight(24)
+        self._action_badge.setMinimumWidth(120)
+        self._action_badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._action_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         action_row.addWidget(self._action_badge)
         action_row.addStretch(1)
         playback_layout.addLayout(action_row, controls_row + 1, 0, 1, columns)
@@ -595,8 +608,11 @@ class CommandsTab(QWidget):
         self._device_refresh.clicked.connect(self.deviceMediaRefreshRequested.emit)
         self._device_clear = QPushButton("Svuota media")
         self._device_clear.clicked.connect(lambda _=False: self.miscCommandTriggered.emit("media_clear", {}))
+        self._device_remove = QPushButton("Rimuovi")
+        self._device_remove.clicked.connect(self._remove_selected_device_media)
         self._device_refresh.setEnabled(False)
         self._device_clear.setEnabled(False)
+        self._device_remove.setEnabled(False)
         self._register_control(
             self._device_refresh,
             enabled_tip="Richiede la lista media dal player selezionato",
@@ -607,10 +623,16 @@ class CommandsTab(QWidget):
             enabled_tip="Svuota i media sul player selezionato",
             disabled_tip=self._selection_required_tip,
         )
+        self._register_control(
+            self._device_remove,
+            enabled_tip="Rimuove i media selezionati dal device",
+            disabled_tip="Seleziona almeno un media da rimuovere",
+        )
         self._device_auto = QCheckBox("Auto-refresh")
         self._device_auto.setChecked(True)
         dev_controls.addWidget(self._device_refresh)
         dev_controls.addWidget(self._device_clear)
+        dev_controls.addWidget(self._device_remove)
         dev_controls.addSpacing(8)
         dev_controls.addWidget(self._device_auto)
         dev_controls.addStretch(1)
@@ -619,7 +641,7 @@ class CommandsTab(QWidget):
         self._device_media_list = MediaListWidget()
         # Permetti la selezione singola per scegliere il media per fast-start
         self._device_media_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._device_media_list.itemSelectionChanged.connect(self._update_faststart_enabled)
+        self._device_media_list.itemSelectionChanged.connect(self._on_device_media_selection_changed)
         # Abilita drop: trascinando elementi dalla libreria o file dal filesystem parte l'upload
         self._device_media_list.setAcceptDrops(True)
         self._device_media_list.setToolTip("Trascina qui per caricare media sul device")
@@ -752,10 +774,13 @@ class CommandsTab(QWidget):
         # Auto-hide timer for action badge
         self._action_timer = QTimer(self)
         self._action_timer.setSingleShot(True)
-        self._action_timer.timeout.connect(lambda: self._action_badge.setVisible(False))
+        self._action_timer.timeout.connect(self._clear_action_badge)
 
         # Playlist box
         playlist_box = QGroupBox("Playlist")
+        playlist_box.setObjectName("playlistBox")
+        self._playlist_box = playlist_box
+        self._apply_playlist_frame_style()
         playlist_layout = QVBoxLayout(playlist_box)
         help_row = QHBoxLayout()
         help_row.addWidget(QLabel("Trascina dalla lista media qui sotto; riordina con drag&drop"))
@@ -783,7 +808,7 @@ class CommandsTab(QWidget):
         )
         quick_row.addWidget(self._remove_from_playlist)
         self._refresh_playlist = QPushButton("Aggiorna da player")
-        self._refresh_playlist.clicked.connect(lambda: self.playlistRefreshRequested.emit())
+        self._refresh_playlist.clicked.connect(self._handle_playlist_refresh_clicked)
         self._refresh_playlist.setEnabled(False)
         self._register_control(
             self._refresh_playlist,
@@ -796,12 +821,21 @@ class CommandsTab(QWidget):
 
         # Playlist accepts drops from media list and allows internal reorder
         self._playlist = PlaylistWidget()
+        self._playlist.installEventFilter(self)
         # Riordino interno tramite drag&drop
         self._playlist.setDragDropMode(QAbstractItemView.InternalMove)
         self._playlist.itemsAdded.connect(self._on_playlist_items_added)
         self._playlist.model().rowsMoved.connect(self._emit_playlist_changed)
         self._playlist.itemSelectionChanged.connect(self._update_jump_buttons)
         playlist_layout.addWidget(self._playlist)
+
+        # Delete shortcuts (Delete/Backspace) scoped to this tab and children
+        self._delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self)
+        self._delete_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._delete_shortcut.activated.connect(self._handle_delete_shortcut)
+        self._backspace_shortcut = QShortcut(QKeySequence(Qt.Key_Backspace), self)
+        self._backspace_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._backspace_shortcut.activated.connect(self._handle_delete_shortcut)
 
         controls_section = QVBoxLayout()
         controls_section.setSpacing(6)
@@ -983,8 +1017,13 @@ class CommandsTab(QWidget):
             base = self._normalize_device_basename(name)
             if base:
                 self._device_media_names.add(base)
+        try:
+            self._device_media_list.clearSelection()
+        except Exception:
+            pass
         self._device_media_seen = True
         self._apply_playlist_availability_styles()
+        self._update_device_remove_state()
 
     def wants_device_auto_refresh(self) -> bool:
         try:
@@ -1049,6 +1088,7 @@ class CommandsTab(QWidget):
             enabled,
             disabled_reason=self._selection_required_tip,
         )
+        self._update_device_remove_state()
         self._log_live_lines.setEnabled(enabled)
         self._set_control_enabled(self._log_live_button, enabled, disabled_reason=self._selection_required_tip)
         self._start_delay.setEnabled(enabled)
@@ -1056,6 +1096,48 @@ class CommandsTab(QWidget):
         self._update_brightness_controls_state()
         self._update_brightness_tooltip()
         self._update_start_sync_enabled()
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        if obj is getattr(self, "_playlist", None) and event is not None:
+            evt_type = event.type()
+            if evt_type in {
+                QEvent.FocusIn,
+                QEvent.MouseButtonPress,
+                QEvent.MouseButtonDblClick,
+                QEvent.KeyPress,
+            }:
+                self._freeze_playlist_updates()
+        return super().eventFilter(obj, event)
+
+    def _freeze_playlist_updates(self) -> None:
+        if self._playlist_updates_frozen:
+            return
+        self._playlist_updates_frozen = True
+        if not self._playlist_dirty:
+            self._set_playlist_led_color("red")
+        if not self._playlist_banner_validation:
+            self.set_banner(self._playlist_freeze_message, level="warning")
+            self._freeze_banner_active = True
+        else:
+            self._freeze_banner_active = False
+
+    def _resume_playlist_updates(self) -> None:
+        if not (self._playlist_updates_frozen or self._playlist_dirty):
+            return
+        self._playlist_updates_frozen = False
+        self._playlist_dirty = False
+        if self._freeze_banner_active and not self._playlist_banner_validation:
+            self._freeze_banner_active = False
+            self.set_banner(None)
+        else:
+            self._freeze_banner_active = False
+        self._update_playlist_controls_state()
+
+    def playlist_updates_paused(self) -> bool:
+        return bool(self._playlist_updates_frozen)
+
+    def resume_playlist_updates(self) -> None:
+        self._resume_playlist_updates()
 
     def set_media_items(self, items: list[dict]) -> None:
         self._media_list.clear()
@@ -1100,8 +1182,8 @@ class CommandsTab(QWidget):
         items: lista di path/filename relativi
         current_index: indice corrente nella playlist del player
         """
-        # Se l'utente ha modifiche locali pending, non sovrascrivere
-        if self._playlist_dirty:
+        # Se l'utente ha modifiche locali pending o ha congelato gli update, non sovrascrivere
+        if self._playlist_dirty or self._playlist_updates_frozen:
             return
         try:
             self._playlist.clear()
@@ -1124,11 +1206,18 @@ class CommandsTab(QWidget):
                     except Exception:
                         pass
                 self._playlist.addItem(it)
+            self._normalize_playlist_items()
             # Aggiorna il totale TC
             self._update_total_tc()
             # Stato LED grigio (sincronizzato)
             self._set_playlist_led_color("gray")
             self._playlist_dirty = False
+            self._playlist_updates_frozen = False
+            if self._freeze_banner_active and not self._playlist_banner_validation:
+                self._freeze_banner_active = False
+                self.set_banner(None)
+            else:
+                self._freeze_banner_active = False
             if loop is not None:
                 self.set_playlist_loop(bool(loop))
             # Re-applica eventuali warning su elementi mancanti
@@ -1137,6 +1226,10 @@ class CommandsTab(QWidget):
             self._compute_local_playlist_fingerprint()
         except Exception as exc:
             print(f"[GUI] Errore popolamento playlist: {exc}", flush=True)
+
+    def _handle_playlist_refresh_clicked(self) -> None:
+        self.resume_playlist_updates()
+        self.playlistRefreshRequested.emit()
 
     def set_media_root(self, root: Path | str | None) -> None:
         """Aggiorna il media root locale e mostra un avviso se mancante."""
@@ -1590,6 +1683,61 @@ class CommandsTab(QWidget):
         key = str(value or "")
         return key.replace("\\", "/")
 
+    def _canonicalize_playlist_value(self, raw: str | None) -> tuple[str, Path | None]:
+        """Return a normalized playlist token (POSIX separators) and the resolved path."""
+        text = str(raw or "").strip()
+        if not text:
+            return "", None
+        sanitized = text.replace("\\", "/")
+        resolved: Path | None = None
+        root: Path | None = None
+        if self._media_root is not None:
+            try:
+                root = self._media_root.resolve()
+            except Exception:
+                root = self._media_root
+        candidates: list[Path] = []
+        for candidate_str in (text, sanitized):
+            try:
+                candidate_path = Path(candidate_str)
+            except Exception:
+                continue
+            if not candidate_path.is_absolute():
+                if root is None:
+                    continue
+                candidate_path = root / candidate_path
+            candidates.append(candidate_path)
+        for candidate_path in candidates:
+            try:
+                resolved = candidate_path.resolve()
+            except Exception:
+                resolved = candidate_path
+            if resolved is not None:
+                break
+        normalized = sanitized
+        if resolved is not None and root is not None:
+            try:
+                normalized = resolved.relative_to(root).as_posix()
+            except Exception:
+                normalized = resolved.as_posix()
+        elif resolved is not None:
+            normalized = resolved.as_posix()
+        return normalized, resolved
+
+    def _normalize_playlist_items(self) -> None:
+        updated = False
+        for idx in range(self._playlist.count()):
+            item = self._playlist.item(idx)
+            if item is None:
+                continue
+            raw = item.data(Qt.UserRole) or item.text()
+            normalized, _ = self._canonicalize_playlist_value(str(raw))
+            if normalized and normalized != str(raw):
+                item.setData(Qt.UserRole, normalized)
+                updated = True
+        if updated:
+            self._local_playlist_fp = None
+
     def _build_validation_lookup(self, entries: Sequence[str]) -> set[str]:
         lookup: set[str] = set()
         for raw in entries or []:
@@ -1976,11 +2124,18 @@ class CommandsTab(QWidget):
         # Keep bar visibility in sync with activity
         self.set_upload_activity(f)
 
+    def _clear_action_badge(self) -> None:
+        try:
+            self._action_badge.setText("")
+            self._action_badge.setStyleSheet(self._action_badge_base_style)
+        except Exception:
+            pass
+
     def set_action_badge(self, action: str | None) -> None:
         """Show a short-lived badge for the given action (next/prev/play/faststart_go)."""
         if not action:
-            self._action_badge.setVisible(False)
             self._action_timer.stop()
+            self._clear_action_badge()
             return
         label_map = {
             "next": "NEXT",
@@ -1991,7 +2146,7 @@ class CommandsTab(QWidget):
         text = label_map.get(str(action).lower(), str(action).upper())
         try:
             self._action_badge.setText(text)
-            self._action_badge.setVisible(True)
+            self._action_badge.setStyleSheet(self._action_badge_active_style)
             # Refresh timer (1.6s)
             self._action_timer.start(1600)
         except Exception:
@@ -2090,6 +2245,10 @@ class CommandsTab(QWidget):
         self._update_upload_button(self._targets_enabled)
         self._update_faststart_enabled()
 
+    def _on_device_media_selection_changed(self) -> None:
+        self._update_faststart_enabled()
+        self._update_device_remove_state()
+
     def _update_misc_button(self, enabled: bool) -> None:
         has_command = self._command_selector.currentIndex() > 0
         if not enabled:
@@ -2135,6 +2294,23 @@ class CommandsTab(QWidget):
             pass
             self._fs_source.setStyleSheet("")
 
+    def _update_device_remove_state(self) -> None:
+        try:
+            has_selection = bool(self._device_media_list.selectedIndexes())
+        except Exception:
+            has_selection = False
+        if not self._targets_enabled:
+            reason = self._selection_required_tip
+        elif not has_selection:
+            reason = "Seleziona almeno un media da rimuovere"
+        else:
+            reason = None
+        can_remove = self._targets_enabled and has_selection
+        try:
+            self._set_control_enabled(self._device_remove, can_remove, disabled_reason=reason)
+        except Exception:
+            pass
+
     def _on_playlist_loop_toggled(self, checked: bool) -> None:
         """Dispatch playlist loop command and mirror hidden checkbox without feedback loops."""
         try:
@@ -2171,10 +2347,13 @@ class CommandsTab(QWidget):
             rel = item.data(self._RELATIVE_ROLE) or item.data(Qt.UserRole)
             if not rel:
                 continue
+            normalized, _ = self._canonicalize_playlist_value(str(rel))
+            payload = normalized or str(rel)
             entry = QListWidgetItem(label)
-            entry.setData(Qt.UserRole, rel)
+            entry.setData(Qt.UserRole, payload)
             self._playlist.addItem(entry)
-            added_rel.append(str(rel))
+            added_rel.append(payload)
+        self._normalize_playlist_items()
         if added_rel:
             self._handle_new_playlist_entries(added_rel)
         self._emit_playlist_changed()
@@ -2190,8 +2369,85 @@ class CommandsTab(QWidget):
             except Exception:
                 pass
         self._emit_playlist_changed()
+        self._prune_media_to_playlist()
+
+    def _collect_playlist_items(self) -> list[str]:
+        items: list[str] = []
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            if not it:
+                continue
+            raw = it.data(Qt.UserRole) or it.text()
+            normalized, _ = self._canonicalize_playlist_value(str(raw))
+            if normalized:
+                items.append(normalized)
+            elif raw:
+                items.append(str(raw))
+        return items
+
+    def _prune_media_to_playlist(self) -> None:
+        if not self._targets_enabled:
+            return
+        keep = self._collect_playlist_items()
+        self.miscCommandTriggered.emit("media_prune_to_playlist", {"items": keep})
+
+    def _remove_selected_device_media(self) -> None:
+        try:
+            selected_rows = sorted({idx.row() for idx in self._device_media_list.selectedIndexes()}, reverse=True)
+        except Exception:
+            selected_rows = []
+        if not selected_rows:
+            return
+        keep: list[str] = []
+        removed_any = False
+        for i in range(self._device_media_list.count()):
+            item = self._device_media_list.item(i)
+            try:
+                name = str(item.data(Qt.UserRole) or item.text())
+            except Exception:
+                name = item.text() if item else ""
+            if i in selected_rows:
+                removed_any = True
+            else:
+                if name:
+                    keep.append(name)
+        if not removed_any:
+            return
+        self.miscCommandTriggered.emit("media_prune_to_playlist", {"items": keep})
+        for row in selected_rows:
+            it = self._device_media_list.takeItem(row)
+            if not it:
+                continue
+            try:
+                base = self._normalize_device_basename(str(it.data(Qt.UserRole) or it.text()))
+                if base:
+                    self._device_media_names.discard(base)
+            except Exception:
+                pass
+            try:
+                del it
+            except Exception:
+                pass
+        try:
+            self._device_media_list.clearSelection()
+        except Exception:
+            pass
+        self._update_device_remove_state()
+        self._update_faststart_enabled()
+        self._apply_playlist_availability_styles()
+
+    def _handle_delete_shortcut(self) -> None:
+        focus = QApplication.focusWidget()
+        if focus is None:
+            return
+        if focus is self._playlist or self._playlist.isAncestorOf(focus):
+            self._remove_selected_from_playlist()
+            return
+        if focus is self._device_media_list or self._device_media_list.isAncestorOf(focus):
+            self._remove_selected_device_media()
 
     def _on_playlist_items_added(self, items: list[str]) -> None:
+        self._normalize_playlist_items()
         if items:
             self._handle_new_playlist_entries(items)
         self._emit_playlist_changed()
@@ -2226,41 +2482,37 @@ class CommandsTab(QWidget):
         root = self._media_root if self._media_root and self._media_root.exists() else None
         for i in range(self._playlist.count()):
             it = self._playlist.item(i)
-            rel = str(it.data(Qt.UserRole) or it.text())
-            try:
-                p = Path(rel)
-                if not p.is_absolute():
-                    if root is None:
-                        missing.append(rel)
-                        continue
-                    p = root / p
-                p = p.resolve()
-            except Exception:
-                invalid.append(rel)
+            rel_raw = str(it.data(Qt.UserRole) or it.text())
+            normalized, path_obj = self._canonicalize_playlist_value(rel_raw)
+            target_rel = normalized or rel_raw
+            if root is None and not normalized:
+                normalized = target_rel
+            if path_obj is None:
+                missing.append(target_rel)
                 continue
             try:
-                st = p.stat()
+                st = path_obj.stat()
             except Exception:
-                missing.append(rel)
+                missing.append(target_rel)
                 continue
             try:
                 sha = hashlib.sha256()
-                with open(p, "rb") as fh:
+                with open(path_obj, "rb") as fh:
                     for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                         sha.update(chunk)
                 entry = {
-                    "path": str(p),
-                    "rel": rel,
+                    "path": str(path_obj),
+                    "rel": target_rel,
                     "size": int(st.st_size),
                     "mtime": int(st.st_mtime),
                     "sha256": sha.hexdigest(),
                 }
                 items.append(entry)
-                h.update(rel.encode("utf-8", "ignore"))
+                h.update(target_rel.encode("utf-8", "ignore"))
                 h.update(str(st.st_size).encode())
                 h.update(entry["sha256"].encode())
             except Exception:
-                invalid.append(rel)
+                invalid.append(target_rel)
         fp = {
             "items": items,
             "missing": missing,
@@ -2280,7 +2532,7 @@ class CommandsTab(QWidget):
         return (self._local_playlist_fp or self._compute_local_playlist_fingerprint()).get("hash")
 
     def is_playlist_dirty(self) -> bool:
-        return bool(self._playlist_dirty)
+        return bool(self._playlist_dirty or self._playlist_updates_frozen)
 
     def _handle_new_playlist_entries(self, rel_items: Sequence[str]) -> None:
         """Gestisce i media aggiunti alla playlist lato GUI.
@@ -2410,8 +2662,12 @@ class CommandsTab(QWidget):
         items: list[str] = []
         for i in range(self._playlist.count()):
             it = self._playlist.item(i)
-            rel = it.data(Qt.UserRole) or it.text()
-            items.append(str(rel))
+            raw = it.data(Qt.UserRole) or it.text()
+            normalized, _ = self._canonicalize_playlist_value(str(raw))
+            if normalized:
+                items.append(normalized)
+            elif raw:
+                items.append(str(raw))
         if not items:
             return
         # Reset del flag dirty (stiamo inviando al player)
@@ -2430,6 +2686,33 @@ class CommandsTab(QWidget):
             pl_loop = False
         self.playlistPushRequested.emit(items, self._clear_before_push.isChecked(), pl_loop)
 
+    def _apply_playlist_frame_style(self) -> None:
+        box = getattr(self, "_playlist_box", None)
+        if box is None:
+            return
+        colors = {
+            "red": "#e74c3c",
+            "orange": "#f39c12",
+            "green": "#2ecc71",
+            "gray": "#bdc3c7",
+        }
+        color = colors.get(self._playlist_frame_state, "#bdc3c7")
+        try:
+            box.setStyleSheet(
+                "QGroupBox#playlistBox {"
+                f" border: 2px solid {color};"
+                " border-radius: 6px;"
+                " margin-top: 10px;"
+                "}"
+                "QGroupBox#playlistBox::title {"
+                " subcontrol-origin: margin;"
+                " subcontrol-position: top left;"
+                " padding: 0 6px;"
+                "}"
+            )
+        except Exception:
+            pass
+
     def _set_playlist_led_color(self, state: str) -> None:
         colors = {
             "red": "#e74c3c",
@@ -2438,6 +2721,8 @@ class CommandsTab(QWidget):
             "gray": "#AAAAAA",
         }
         color = colors.get(state, "#AAAAAA")
+        self._playlist_frame_state = state if state in colors else "gray"
+        self._apply_playlist_frame_style()
         try:
             self._playlist_led.setStyleSheet(f"background-color: {color}; border-radius: 7px;")
         except Exception:

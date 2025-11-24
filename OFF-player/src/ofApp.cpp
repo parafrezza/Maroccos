@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <sstream>
 #ifdef _WIN32
@@ -111,11 +113,25 @@ void ofApp::loadConfig(){
     if(j.contains("loopEach")) cfg.loopEach = j["loopEach"].get<bool>();
     if(j.contains("targetFps")) cfg.targetFps = j["targetFps"].get<int>();
     if(j.contains("autoReloadOnChange")) cfg.autoReloadOnChange = j["autoReloadOnChange"].get<bool>();
+    if(const char* envMediaDir = std::getenv("MEDIA_DIR")){
+        if(envMediaDir[0] != '\0'){
+            cfg.mediaDir = envMediaDir;
+        }
+    }
 }
 
 void ofApp::setup(){
     ofSetLogLevel(OF_LOG_NOTICE);
     loadConfig();
+
+    try{
+        std::string logDirPath = ofFilePath::join(cfg.mediaDir, "_logs");
+        std::filesystem::create_directories(logDirPath);
+        std::string logFilePath = ofFilePath::join(logDirPath, "off-player.log");
+        ofLogToFile(logFilePath, true);
+    }catch(const std::exception& e){
+        ofLogWarning() << "Impossibile creare log OFF: " << e.what();
+    }
 
     ofSetFrameRate(cfg.targetFps);
     ofHideCursor();
@@ -1333,7 +1349,8 @@ void ofApp::updateOverlayInfo(bool force){
     oss << ipSummary;
     oss << "\nStatus: " << statusLine;
     oss << "\nHTTP: http://" << displayIp << ":" << cfg.httpPort;
-    oss << "\nUDP: " << displayIp << ":" << cfg.udpPort << " (comandi UDP)";
+    oss << "\nUDP: " << displayIp << ":" << 7777 << " (comandi UDP)";
+    // oss << "\nUDP: " << displayIp << ":" << cfg.udpPort << " (comandi UDP)";
     oss << "\ncartella media: " << cfg.mediaDir;
     DisplayInfo disp = getDisplayInfoCached();
     if(disp.valid){

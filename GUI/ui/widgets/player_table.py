@@ -32,7 +32,14 @@ class PlayerStatusTable(QTableWidget):
         # - Le altre colonne si distribuiscono in proporzione al viewport
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         header = self.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Fixed)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.resizeSection(3, 160)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)
         header.setStretchLastSection(False)
 
     def upsert_record(self, *, name: str, ip: str, state: str, last_seen: str, version: str, status_text: str | None = None, playlist_state: str | None = None, playlist_tip: str | None = None) -> None:
@@ -209,16 +216,15 @@ class PlayerStatusTable(QTableWidget):
         if self.columnCount() != len(_COLUMNS):
             return
         viewport_w = max(0, self.viewport().width())
-        # Colonne LED (state=2, playlist=3): fisse
+        # Colonna LED (state=2) è fissa; playlist (colonna 3) resta interattiva
         led_w = 28
         self.setColumnWidth(2, led_w)
-        self.setColumnWidth(3, led_w)
         # Spazio residuo
-        avail = max(0, viewport_w - (led_w * 2))
+        avail = max(0, viewport_w - led_w)
         if avail <= 0:
             return
-        # Pesi: Name(0)=2, IP(1)=1, Last Seen(4)=1, Version(5)=1, Status(6)=2
-        weights = {0: 2, 1: 1, 4: 1, 5: 1, 6: 2}
+        # Pesi: Name(0)=2, IP(1)=1, Last Seen(4)=1, Version(5)=1, Status(6)=3
+        weights = {0: 2, 1: 1, 4: 1, 5: 1, 6: 3}
         total = sum(weights.values())
         # Calcola larghezze proporzionali
         widths = {i: int(avail * weights[i] / total) for i in weights}

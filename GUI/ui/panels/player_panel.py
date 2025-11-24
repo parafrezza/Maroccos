@@ -89,6 +89,7 @@ class PlayerPanel(QWidget):
         layout.addWidget(self._table, 1)
 
         self.set_collapsed(False)
+        self.set_detach_state(False)
         self._records: dict[str, PlayerRecord] = {}
 
     def update_player(self, record: PlayerRecord) -> None:
@@ -177,10 +178,11 @@ class PlayerPanel(QWidget):
         try:
             if record.state not in {"online"}:
                 return "offline"
-            if record.playlist_ready and record.expected_playlist_hash and record.playlist_hash == record.expected_playlist_hash:
-                return "ready"
             if record.playlist_ready:
-                return "partial"
+                expected = getattr(record, "expected_playlist_hash", None)
+                if expected and record.playlist_hash and expected != record.playlist_hash:
+                    return "partial"
+                return "ready"
             return "dirty"
         except Exception:
             return "unknown"
@@ -280,6 +282,23 @@ class PlayerPanel(QWidget):
         if not ips:
             return
         self.vncRequested.emit(ips[0])
+
+    def set_detach_state(self, detached: bool) -> None:
+        icon = "↙" if detached else "↗"
+        tooltip = (
+            "Riaggancia elenco nella finestra principale"
+            if detached
+            else "Stacca elenco in finestra separata"
+        )
+        try:
+            self._detach_button.setText(icon)
+            self._detach_button.setToolTip(tooltip)
+        except Exception:
+            pass
+        try:
+            self._collapse_button.setVisible(not detached)
+        except Exception:
+            pass
 
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = bool(collapsed)

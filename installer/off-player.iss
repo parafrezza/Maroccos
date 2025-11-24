@@ -76,13 +76,13 @@ AppId={{E4C5E5A0-9D53-4F7F-9D84-3C82A1C6F0C2}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={pf64}\{#AppName}
+DefaultDirName={commonpf64}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir={#SourcePath}\\dist
 OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 DisableWelcomePage={#DisableWelcomePageValue}
 DisableDirPage={#DisableDirPageValue}
 DisableReadyPage={#DisableReadyPageValue}
@@ -115,11 +115,9 @@ Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso
 #endif
 Name: "set_off_autostart"; Description: "Abilita avvio scaletta OFF all'avvio del player (OFF_AUTOSTART=1)"
 #if SilentBuild = 1
-Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
+Name: "provision_run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"
 #else
-Name: "provision\run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive unchecked
-Name: "provision\schedule"; Description: "Pianifica ottimizzazioni al prossimo avvio"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive unchecked
-Name: "provision\skip"; Description: "Non applicare ottimizzazioni ora"; GroupDescription: "Ottimizzazioni post-installazione"; Flags: exclusive
+Name: "provision_run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"; Flags: unchecked
 #endif
 #if SilentBuild = 1
 Name: "auto_logon_extra"; Description: "Configura auto logon con l'utente '{#ExtraUserName}' (password '{#ExtraPassword}')"
@@ -175,9 +173,9 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 ; POI: Esegui provisioning (ora l'utente extra esiste già)
 #if SilentBuild = 1
 ; SilentBuild: mostra una finestra console per monitorare l'avanzamento del provisioning
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -NoLogo -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile)..."; Tasks: provision\run_now
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -NoLogo -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile)..."; Tasks: provision_run_now
 #else
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile per avanzamento)..."; Tasks: provision\run_now
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\provision_player.ps1"" -NonInteractive -InstallRoot ""{app}"" -Verbose"; Flags: waituntilterminated; StatusMsg: "Esecuzione ottimizzazioni Player (console visibile per avanzamento)..."; Tasks: provision_run_now
 #endif
 
 ; Pulisci eventuale vecchia attività di boot (ignora errori se non presente)
@@ -214,12 +212,12 @@ Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "OFF_AUTOSTART"
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MaroccosUserSettings"; ValueData: "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\tools\windows\apply_user_settings.ps1"""; Flags: uninsdeletevalue
 
 [UninstallRun]
-; Rimuovi l'attività pianificata in uninstall
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessTaskName}"" /F"; Flags: runhidden
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ProvisionTaskName}"" /F"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "ADD ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v AutoAdminLogon /t REG_SZ /d 0 /f"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v DefaultPassword /f"; Flags: runhidden
-Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v ForceAutoLogon /f"; Flags: runhidden
+; Rimuovi l'attività pianificata in uninstall (eseguite solo una volta)
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#HeadlessTaskName}"" /F"; Flags: runhidden; RunOnceId: HeadlessTaskCleanup
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ProvisionTaskName}"" /F"; Flags: runhidden; RunOnceId: ProvisionTaskCleanup
+Filename: "reg.exe"; Parameters: "ADD ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v AutoAdminLogon /t REG_SZ /d 0 /f"; Flags: runhidden; RunOnceId: AutoLogonDisable
+Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v DefaultPassword /f"; Flags: runhidden; RunOnceId: AutoLogonCleanupPassword
+Filename: "reg.exe"; Parameters: "DELETE ""HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"" /v ForceAutoLogon /f"; Flags: runhidden; RunOnceId: AutoLogonCleanupForce
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

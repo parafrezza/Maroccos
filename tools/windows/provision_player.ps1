@@ -32,7 +32,7 @@ param(
     [string]$HeadlessTaskName = 'MaroccosHeadless',
     [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
-    [switch]$SkipMediaShare = $true,
+    [switch]$SkipMediaShare = $false,
     [switch]$SkipHostnameSync
 )
 
@@ -40,16 +40,13 @@ $ErrorActionPreference = 'Stop'
 $script:RebootRequired = $false
 $script:ScriptPath = $MyInvocation.MyCommand.Path
 $script:ScriptPathLog = if ([string]::IsNullOrWhiteSpace($script:ScriptPath)) { '<unknown>' } else { $script:ScriptPath }
-$script:ScriptDirectory = if ([string]::IsNullOrWhiteSpace($script:ScriptPath)) { $null } else { Split-Path -Parent $script:ScriptPath }
 
-# Logging helpers
-if ($script:ScriptDirectory) {
-    $LogDir = $script:ScriptDirectory
-    $script:LogAclRequiresGrant = $false
-} else {
-    $LogDir = Join-Path $InstallRoot 'logs'
-    $script:LogAclRequiresGrant = $true
-}
+$desktopMedia = Join-Path ([Environment]::GetFolderPath('Desktop')) 'media'
+$LogDir = Join-Path $desktopMedia '_logs'
+$script:LogAclRequiresGrant = $false
+try {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+} catch {}
 
 $ProvisionLogFile = Join-Path $LogDir 'provision.log'
 $script:LogAclReady = $false
@@ -112,6 +109,26 @@ function Write-Warn([string]$Message) {
 function Write-Fail([string]$Message) {
     Write-Host "[FAIL] $Message" -ForegroundColor Red
     Write-ProvisionLog 'FAIL' $Message
+}
+
+function Mark-ProvisionComplete {
+    param(
+        [string]$InstallRoot = 'C:\Program Files\marocco-player'
+    )
+
+    $flagPath = Join-Path $InstallRoot 'provisioned.ok'
+    try {
+        $payload = @"
+ProvisionedAt=$(Get-Date -Format 'o')
+Script=$script:ScriptPathLog
+"@
+        Set-Content -Path $flagPath -Value $payload -Encoding utf8 -Force
+        Write-Ok ("Flag provisioning salvato: {0}" -f $flagPath)
+        return $flagPath
+    } catch {
+        Write-Warn ("Impossibile scrivere flag provisioning {0}: {1}" -f $flagPath, $_.Exception.Message)
+        return $null
+    }
 }
 
 # Log script origin now that logging helpers are defined
@@ -997,6 +1014,37 @@ function Ensure-ServiceRecovery {
     }
 }
 
+function Ensure-HeadlessPermissions {
+    param(
+        [string]$InstallRoot = 'C:\Program Files\marocco-player',
+        [string]$RunAsUser = 'extra'
+    )
+
+    Write-Step 'Garantisco permessi completi su headless-player e contenuti _internal'
+    $targets = @(
+        "$InstallRoot\headless-player",
+        "$InstallRoot\_internal"
+    )
+    $principals = @('Users', 'Administrators')
+    try {
+        if ($RunAsUser -and (Get-LocalUser -Name $RunAsUser -ErrorAction SilentlyContinue)) {
+            $principals += $RunAsUser
+        }
+    } catch {}
+
+    foreach ($target in $targets) {
+        if (-not (Test-Path $target)) { continue }
+        foreach ($principal in $principals | Select-Object -Unique) {
+            try {
+                $grant = "${principal}:(OI)(CI)F"
+                icacls $target /grant $grant /t /c | Out-Null
+            } catch {
+                Write-Warn ("icacls fallito su {0} per {1}: {2}" -f $target, $principal, $_.Exception.Message)
+            }
+        }
+    }
+}
+
 function Ensure-HeadlessScheduledTask {
     param(
         [string]$InstallRoot = 'C:\Program Files\marocco-player',
@@ -1739,8 +1787,10 @@ function Main {
     Configure-MediaShare
     Apply-PreferredResolution
     Rename-ComputerFromConfig
+    Ensure-HeadlessPermissions -InstallRoot $InstallRoot -RunAsUser $HeadlessTaskUser
     Ensure-RunOnLogin -InstallRoot $InstallRoot
     Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser -Trigger 'Logon'
+    Mark-ProvisionComplete -InstallRoot $InstallRoot
 
     # Applica impostazioni utente anche all'account extra se esiste
     $applyUserSettings = Join-Path $InstallRoot 'tools\windows\apply_user_settings.ps1'

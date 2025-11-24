@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QTimer, Qt, QFileSystemWatcher
+from PySide6.QtCore import QSize, QTimer, Qt, QFileSystemWatcher, QByteArray
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
 from PySide6.QtGui import QTextCursor, QIcon
 from PySide6.QtWidgets import (
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDialog,
+    QSizePolicy,
 )
 
 from GUI.core.controller import ApplicationController
@@ -74,6 +76,11 @@ class MainWindow(QMainWindow):
         self._splitter = splitter
         self._player_panel_last_size = 400
         self._panel_collapsed = False
+        self._player_detach_restore_collapse = False
+        try:
+            self._splitter_total_hint = sum(self._splitter.sizes()) or 1200
+        except Exception:
+            self._splitter_total_hint = 1200
 
         self._log_label = QLabel("Event Log — tutti i device")
         self._log_view = QTextEdit()
@@ -89,6 +96,7 @@ class MainWindow(QMainWindow):
         self._log_toggle_btn.clicked.connect(self._toggle_log_panel)
         self._log_collapsed = False
         self._log_panel_last_size = 220
+        self._log_detach_restore_collapse = False
 
         self._log_container = QWidget()
         log_layout = QVBoxLayout(self._log_container)
@@ -104,11 +112,9 @@ class MainWindow(QMainWindow):
         self._clear_log_button.clicked.connect(self._clear_log_view)
         header_layout.addWidget(self._clear_log_button)
         self._detach_log_button = QToolButton()
-        self._detach_log_button.setText("↗")
-        self._detach_log_button.setToolTip("Stacca Event Log in finestra separata")
         self._detach_log_button.setCursor(Qt.PointingHandCursor)
         self._detach_log_button.setAutoRaise(True)
-        self._detach_log_button.clicked.connect(self._detach_log_panel)
+        self._detach_log_button.clicked.connect(self._toggle_log_panel_detach)
         self._detach_log_button.setFixedSize(24, 24)
         header_layout.addWidget(self._detach_log_button)
         header_layout.addStretch(1)
@@ -119,6 +125,7 @@ class MainWindow(QMainWindow):
         self._log_container_default_max = self._log_container.maximumHeight()
         self._log_placeholder: QWidget | None = None
         self._log_window: QDialog | None = None
+        self._set_log_detach_state(False)
 
         self._main_splitter = QSplitter(Qt.Vertical)
         self._main_splitter.setHandleWidth(10)
@@ -127,6 +134,10 @@ class MainWindow(QMainWindow):
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
         self._main_splitter.setSizes([620, 220])
+        try:
+            self._main_splitter_total_hint = sum(self._main_splitter.sizes()) or 840
+        except Exception:
+            self._main_splitter_total_hint = 840
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -135,8 +146,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._main_splitter)
         self.setCentralWidget(container)
 
+        self._ui_state_path = self._resolve_ui_state_path()
+        self._load_ui_state()
+
         self._setup_connections()
-        self._player_panel.detachRequested.connect(self._detach_player_panel)
         # Watcher per la cartella media locale (auto-refresh libreria)
         self._media_watcher = QFileSystemWatcher(self)
         try:
@@ -237,7 +250,7 @@ class MainWindow(QMainWindow):
         self._player_panel.syncMediaRequested.connect(self._handle_sync_media_request)
         self._player_panel.purgeRequested.connect(self._handle_purge_offline)
         self._player_panel.vncRequested.connect(self._handle_open_vnc)
-        self._player_panel.detachRequested.connect(self._detach_player_panel)
+        self._player_panel.detachRequested.connect(self._toggle_player_panel_detach)
 
         self._commands_tab.playbackTriggered.connect(self._handle_playback)
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
@@ -272,6 +285,7 @@ class MainWindow(QMainWindow):
             self._update_tab.pingDurationChanged.connect(self._handle_ping_duration_changed)
         except Exception:
             pass
+        self._update_tab.bundleSelected.connect(self._handle_bundle_selected)
         ctrl.autoplayStatusReceived.connect(self._handle_autoplay_status)
         ctrl.bundleBuildStateChanged.connect(self._handle_bundle_state)
         ctrl.startupMacsUpdated.connect(lambda entries: self._update_tab.set_startup_mac_summary(len(entries)))
@@ -300,6 +314,199 @@ class MainWindow(QMainWindow):
         self._update_tab.set_startup_mac_summary(len(ctrl.known_startup_macs()))
 
     # ------------------------------------------------------------------
+    # UI state persistence
+    # ------------------------------------------------------------------
+    def _resolve_ui_state_path(self) -> Path:
+        try:
+            base = self._controller.settings_path
+        except Exception:
+            try:
+                return Path.home() / ".maroccos_ui_state.json"
+            except Exception:
+                return Path("ui_state.json")
+        try:
+            return base.with_name("ui_state.json")
+        except Exception:
+            return base.parent / "ui_state.json"
+
+    def _encode_state_bytes(self, payload) -> str | None:
+        if payload is None:
+            return None
+        try:
+            arr = QByteArray(payload)
+            encoded = arr.toBase64()
+            return bytes(encoded).decode("ascii")
+        except Exception:
+            return None
+
+    def _decode_state_bytes(self, encoded: str | None) -> QByteArray | None:
+        if not encoded:
+            return None
+        try:
+            arr = QByteArray.fromBase64(encoded.encode("ascii"))
+            return arr if not arr.isEmpty() else None
+        except Exception:
+            return None
+
+    def _load_ui_state(self) -> None:
+        path = getattr(self, "_ui_state_path", None)
+        if not isinstance(path, Path) or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        player_detached = bool(payload.get("player_detached"))
+        log_detached = bool(payload.get("log_detached"))
+        geometry = self._decode_state_bytes(payload.get("geometry"))
+        if geometry is not None:
+            try:
+                self.restoreGeometry(geometry)
+            except Exception:
+                pass
+        if bool(payload.get("maximized")):
+            try:
+                self.setWindowState(self.windowState() | Qt.WindowMaximized)
+            except Exception:
+                pass
+        try:
+            hint = int(payload.get("player_panel_width", self._player_panel_last_size))
+            if hint > 0:
+                self._player_panel_last_size = hint
+        except Exception:
+            pass
+        try:
+            hint = int(payload.get("log_panel_height", self._log_panel_last_size))
+            if hint > 0:
+                self._log_panel_last_size = hint
+        except Exception:
+            pass
+        if not player_detached:
+            state = self._decode_state_bytes(payload.get("splitter_state"))
+            if state is not None:
+                try:
+                    self._splitter.restoreState(state)
+                except Exception:
+                    pass
+            else:
+                sizes = payload.get("splitter_sizes")
+                if isinstance(sizes, list) and len(sizes) >= 2:
+                    try:
+                        left = max(120, int(sizes[0]))
+                        right = max(200, int(sizes[1]))
+                        self._splitter.setSizes([left, right])
+                    except Exception:
+                        pass
+        else:
+            sizes = payload.get("splitter_sizes")
+            if isinstance(sizes, list) and len(sizes) >= 2:
+                try:
+                    total = int(sizes[0]) + int(sizes[1])
+                    if total > 0:
+                        self._splitter_total_hint = total
+                except Exception:
+                    pass
+        try:
+            self._splitter_total_hint = sum(self._splitter.sizes()) or self._splitter_total_hint
+        except Exception:
+            pass
+        if not log_detached:
+            state = self._decode_state_bytes(payload.get("main_splitter_state"))
+            if state is not None:
+                try:
+                    self._main_splitter.restoreState(state)
+                except Exception:
+                    pass
+            else:
+                sizes = payload.get("main_splitter_sizes")
+                if isinstance(sizes, list) and len(sizes) >= 2:
+                    try:
+                        top = max(200, int(sizes[0]))
+                        bottom = max(120, int(sizes[1]))
+                        self._main_splitter.setSizes([top, bottom])
+                    except Exception:
+                        pass
+        else:
+            sizes = payload.get("main_splitter_sizes")
+            if isinstance(sizes, list) and len(sizes) >= 2:
+                try:
+                    total = int(sizes[0]) + int(sizes[1])
+                    if total > 0:
+                        self._main_splitter_total_hint = total
+                except Exception:
+                    pass
+        try:
+            self._main_splitter_total_hint = sum(self._main_splitter.sizes()) or self._main_splitter_total_hint
+        except Exception:
+            pass
+        desired_panel_collapsed = bool(payload.get("player_collapsed"))
+        if not player_detached and desired_panel_collapsed != self._panel_collapsed:
+            self._toggle_player_panel()
+        desired_log_collapsed = bool(payload.get("log_collapsed"))
+        if not log_detached and desired_log_collapsed != self._log_collapsed:
+            self._toggle_log_panel()
+        if player_detached:
+            self._detach_player_panel()
+            geom = self._decode_state_bytes(payload.get("player_window_geometry"))
+            if geom is not None and self._player_panel_window:
+                try:
+                    self._player_panel_window.restoreGeometry(geom)
+                except Exception:
+                    pass
+        if log_detached:
+            self._detach_log_panel()
+            geom = self._decode_state_bytes(payload.get("log_window_geometry"))
+            if geom is not None and self._log_window:
+                try:
+                    self._log_window.restoreGeometry(geom)
+                except Exception:
+                    pass
+
+    def _save_ui_state(self) -> None:
+        path = getattr(self, "_ui_state_path", None)
+        if not isinstance(path, Path):
+            return
+        payload: dict[str, object] = {}
+        geometry = self._encode_state_bytes(self.saveGeometry())
+        if geometry:
+            payload["geometry"] = geometry
+        payload["maximized"] = bool(self.isMaximized())
+        payload["player_collapsed"] = bool(self._panel_collapsed)
+        payload["log_collapsed"] = bool(self._log_collapsed)
+        payload["player_panel_width"] = int(self._player_panel_last_size)
+        payload["log_panel_height"] = int(self._log_panel_last_size)
+        payload["splitter_sizes"] = [int(x) for x in self._splitter.sizes()]
+        payload["main_splitter_sizes"] = [int(x) for x in self._main_splitter.sizes()]
+        split_state = self._encode_state_bytes(self._splitter.saveState())
+        if split_state:
+            payload["splitter_state"] = split_state
+        main_state = self._encode_state_bytes(self._main_splitter.saveState())
+        if main_state:
+            payload["main_splitter_state"] = main_state
+        payload["player_detached"] = bool(self._player_panel_window)
+        payload["log_detached"] = bool(self._log_window)
+        if self._player_panel_window:
+            geom = self._encode_state_bytes(self._player_panel_window.saveGeometry())
+            if geom:
+                payload["player_window_geometry"] = geom
+        if self._log_window:
+            geom = self._encode_state_bytes(self._log_window.saveGeometry())
+            if geom:
+                payload["log_window_geometry"] = geom
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
     # Floating detach helpers
     # ------------------------------------------------------------------
     def _create_floating_window(self, title: str, on_close) -> QDialog:
@@ -321,6 +528,39 @@ class MainWindow(QMainWindow):
         dlg.closeEvent = _close  # type: ignore[assignment]
         return dlg
 
+    def _toggle_player_panel_detach(self) -> None:
+        if self._player_panel_window:
+            self._reattach_player_panel()
+        else:
+            self._detach_player_panel()
+
+    def _toggle_log_panel_detach(self) -> None:
+        if self._log_window:
+            self._reattach_log_panel()
+        else:
+            self._detach_log_panel()
+
+    def _set_player_detach_state(self, detached: bool) -> None:
+        try:
+            self._player_panel.set_detach_state(detached)
+        except Exception:
+            pass
+
+    def _set_log_detach_state(self, detached: bool) -> None:
+        try:
+            self._detach_log_button.setText("↙" if detached else "↗")
+            if detached:
+                tip = "Riaggancia Event Log nella finestra principale"
+            else:
+                tip = "Stacca Event Log in finestra separata"
+            self._detach_log_button.setToolTip(tip)
+        except Exception:
+            pass
+        try:
+            self._log_toggle_btn.setVisible(not detached)
+        except Exception:
+            pass
+
     def _detach_player_panel(self) -> None:
         if self._player_panel_window:
             try:
@@ -329,8 +569,33 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             return
+        self._player_detach_restore_collapse = bool(self._panel_collapsed)
+        if self._panel_collapsed:
+            self._toggle_player_panel()
+        try:
+            sizes = self._splitter.sizes()
+        except Exception:
+            sizes = []
+        total = 0
+        if sizes:
+            try:
+                if sizes[0] > 0:
+                    self._player_panel_last_size = sizes[0]
+            except Exception:
+                pass
+            try:
+                total = sum(sizes)
+            except Exception:
+                total = 0
+        if total <= 0:
+            try:
+                total = int(self._splitter_total_hint)
+            except Exception:
+                total = 1200
         placeholder = QWidget()
-        placeholder.setMinimumWidth(1)
+        placeholder.setMinimumWidth(0)
+        placeholder.setMaximumWidth(0)
+        placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         idx = self._splitter.indexOf(self._player_panel)
         if idx < 0:
             idx = 0
@@ -342,6 +607,12 @@ class MainWindow(QMainWindow):
         self._player_panel_window = dlg
         dlg.resize(420, 700)
         dlg.show()
+        self._set_player_detach_state(True)
+        try:
+            self._splitter.setSizes([0, max(1, int(total))])
+            self._splitter_total_hint = sum(self._splitter.sizes()) or int(total)
+        except Exception:
+            pass
 
     def _reattach_player_panel(self) -> None:
         if not self._player_panel_window:
@@ -359,6 +630,38 @@ class MainWindow(QMainWindow):
             self._player_panel_placeholder.deleteLater()
             self._player_panel_placeholder = None
         self._player_panel_window = None
+        self._set_player_detach_state(False)
+        restore_collapse = getattr(self, "_player_detach_restore_collapse", False)
+        self._player_detach_restore_collapse = False
+        try:
+            total = sum(self._splitter.sizes())
+        except Exception:
+            total = 0
+        if total <= 0:
+            try:
+                total = int(self._splitter_total_hint)
+            except Exception:
+                total = 1200
+        if self._panel_collapsed:
+            collapsed_width = max(60, self._player_panel.collapsed_width_hint())
+            total = max(total, collapsed_width + 200)
+            try:
+                self._splitter.setSizes([collapsed_width, max(200, total - collapsed_width)])
+            except Exception:
+                pass
+        else:
+            left = max(220, int(self._player_panel_last_size))
+            total = max(total, left + 200)
+            try:
+                self._splitter.setSizes([left, max(200, total - left)])
+            except Exception:
+                pass
+        try:
+            self._splitter_total_hint = sum(self._splitter.sizes()) or self._splitter_total_hint
+        except Exception:
+            pass
+        if restore_collapse and not self._panel_collapsed:
+            self._toggle_player_panel()
 
     def _detach_log_panel(self) -> None:
         if self._log_window:
@@ -368,8 +671,33 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             return
+        self._log_detach_restore_collapse = bool(self._log_collapsed)
+        if self._log_collapsed:
+            self._toggle_log_panel()
+        try:
+            sizes = self._main_splitter.sizes()
+        except Exception:
+            sizes = []
+        total = 0
+        if sizes:
+            try:
+                if len(sizes) >= 2 and sizes[1] > 0:
+                    self._log_panel_last_size = sizes[1]
+            except Exception:
+                pass
+            try:
+                total = sum(sizes)
+            except Exception:
+                total = 0
+        if total <= 0:
+            try:
+                total = int(self._main_splitter_total_hint)
+            except Exception:
+                total = 840
         placeholder = QWidget()
-        placeholder.setMinimumHeight(1)
+        placeholder.setMinimumHeight(0)
+        placeholder.setMaximumHeight(0)
+        placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         idx = self._main_splitter.indexOf(self._log_container)
         if idx < 0:
             idx = 1
@@ -381,6 +709,12 @@ class MainWindow(QMainWindow):
         self._log_window = dlg
         dlg.resize(900, 260)
         dlg.show()
+        self._set_log_detach_state(True)
+        try:
+            self._main_splitter.setSizes([max(1, int(total)), 0])
+            self._main_splitter_total_hint = sum(self._main_splitter.sizes()) or int(total)
+        except Exception:
+            pass
 
     def _reattach_log_panel(self) -> None:
         if not self._log_window:
@@ -398,6 +732,38 @@ class MainWindow(QMainWindow):
             self._log_placeholder.deleteLater()
             self._log_placeholder = None
         self._log_window = None
+        self._set_log_detach_state(False)
+        restore_collapse = getattr(self, "_log_detach_restore_collapse", False)
+        self._log_detach_restore_collapse = False
+        try:
+            total = sum(self._main_splitter.sizes())
+        except Exception:
+            total = 0
+        if total <= 0:
+            try:
+                total = int(self._main_splitter_total_hint)
+            except Exception:
+                total = 840
+        if self._log_collapsed:
+            collapsed_height = self._log_collapsed_height_hint()
+            total = max(total, collapsed_height + 200)
+            try:
+                self._main_splitter.setSizes([max(200, total - collapsed_height), collapsed_height])
+            except Exception:
+                pass
+        else:
+            bottom = max(180, int(self._log_panel_last_size))
+            total = max(total, bottom + 200)
+            try:
+                self._main_splitter.setSizes([max(200, total - bottom), bottom])
+            except Exception:
+                pass
+        try:
+            self._main_splitter_total_hint = sum(self._main_splitter.sizes()) or self._main_splitter_total_hint
+        except Exception:
+            pass
+        if restore_collapse and not self._log_collapsed:
+            self._toggle_log_panel()
 
     # ------------------------------------------------------------------
     # Handlers
@@ -559,6 +925,8 @@ class MainWindow(QMainWindow):
         self._controller.sync_media_to_player(ip, port, url.strip())
 
     def _toggle_player_panel(self) -> None:
+        if self._player_panel_window:
+            return
         try:
             if not self._panel_collapsed:
                 # Remember current width and collapse
@@ -585,10 +953,16 @@ class MainWindow(QMainWindow):
                 self._splitter.setSizes([left, right])
                 self._player_panel.set_collapsed(False)
                 self._panel_collapsed = False
+            try:
+                self._splitter_total_hint = sum(self._splitter.sizes()) or self._splitter_total_hint
+            except Exception:
+                pass
         except Exception:
             pass
 
     def _toggle_log_panel(self) -> None:
+        if self._log_window:
+            return
         try:
             if not self._log_collapsed:
                 try:
@@ -618,6 +992,10 @@ class MainWindow(QMainWindow):
                 self._log_toggle_btn.setArrowType(Qt.DownArrow)
                 self._log_toggle_btn.setToolTip("Comprimi Event Log")
                 self._log_collapsed = False
+            try:
+                self._main_splitter_total_hint = sum(self._main_splitter.sizes()) or self._main_splitter_total_hint
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -718,6 +1096,29 @@ class MainWindow(QMainWindow):
         if not self._selected_players:
             return
         self._controller.set_autoplay(enabled=enabled, targets=self._selected_players)
+
+    def _handle_bundle_selected(self, path: str) -> None:
+        if not path:
+            return
+        try:
+            info = self._controller.set_active_bundle_from_file(path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Bundle non valido",
+                f"Impossibile utilizzare il bundle selezionato:\n{exc}",
+            )
+            return
+        bundle_path = info.get("bundle", path)
+        version_value = info.get("version") or bundle_path
+        label = self._normalize_version_label(str(version_value))
+        self._update_tab.set_bundle_available(True)
+        self._update_tab.set_bundle_version(label)
+        try:
+            self._update_tab.clear_update_summary()
+        except Exception:
+            pass
+        self._append_log(f"Bundle selezionato manualmente: {label} — {bundle_path}")
 
     def _handle_autoplay_status(self, ip: str, payload: dict) -> None:
         if not self._selected_players:
@@ -992,6 +1393,11 @@ class MainWindow(QMainWindow):
     def _playlist_tick(self) -> None:
         if not self._selected_players or not self._status_primary:
             return
+        try:
+            if self._commands_tab.playlist_updates_paused():
+                return
+        except Exception:
+            pass
         self._controller.refresh_playlist_status(self._selected_players[0])
 
     def _handle_playlist_status(self, ip: str, payload: dict) -> None:
@@ -1003,6 +1409,11 @@ class MainWindow(QMainWindow):
         if not payload.get("ok"):
             # Errore o endpoint non disponibile: non fare nulla
             return
+        try:
+            if self._commands_tab.playlist_updates_paused():
+                return
+        except Exception:
+            pass
         try:
             items = payload.get("items") or []
             current_index = int(payload.get("index", 0))
@@ -1075,8 +1486,9 @@ class MainWindow(QMainWindow):
                         # Prova a costruire un messaggio di errore leggibile
                         msg = None
                         try:
+                            msg = r.get("error")
                             resp = r.get("response") or {}
-                            if isinstance(resp, dict):
+                            if not msg and isinstance(resp, dict):
                                 msg = resp.get("error") or resp.get("message")
                             if not msg and r.get("status_code") not in (None, 200):
                                 msg = f"HTTP {r.get('status_code')}"
@@ -1098,8 +1510,9 @@ class MainWindow(QMainWindow):
                     ip = first.get("ip") or "?"
                     err = None
                     try:
+                        err = first.get("error")
                         resp = first.get("response") or {}
-                        if isinstance(resp, dict):
+                        if not err and isinstance(resp, dict):
                             err = resp.get("error") or resp.get("message")
                         if not err and first.get("status_code") not in (None, 200):
                             err = f"HTTP {first.get('status_code')}"
@@ -1372,6 +1785,10 @@ class MainWindow(QMainWindow):
     def _handle_playlist_refresh(self) -> None:
         if not self._selected_players:
             return
+        try:
+            self._commands_tab.resume_playlist_updates()
+        except Exception:
+            pass
         self._controller.refresh_playlist_status(self._selected_players[0])
 
     def _handle_push_playlist(self, items: list[str], clear_before: bool, loop_enabled: bool) -> None:

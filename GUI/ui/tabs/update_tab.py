@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QFileDialog,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -33,6 +34,7 @@ class UpdateTab(QWidget):
     startupListRequested = Signal()
     startupRequested = Signal()
     startupListRequested = Signal()
+    bundleSelected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,11 +53,14 @@ class UpdateTab(QWidget):
         self._build_button = QPushButton("Build Bundle")
         self._build_button_default = self._build_button.text()
         self._build_button.clicked.connect(self.buildRequested.emit)
+        self._load_bundle_button = QPushButton("Carica nuova versione")
+        self._load_bundle_button.clicked.connect(self._choose_bundle)
         self._deploy_button = QPushButton("Distribuisci")
         self._deploy_button.clicked.connect(self.deployRequested.emit)
         self._ssh_deploy_button = QPushButton("Distribuisci via SSH (fallback)")
         self._ssh_deploy_button.clicked.connect(self.sshDeployRequested.emit)
         update_layout.addWidget(self._build_button)
+        update_layout.addWidget(self._load_bundle_button)
         update_layout.addWidget(self._deploy_button)
         update_layout.addWidget(self._ssh_deploy_button)
         self._build_progress = QProgressBar()
@@ -144,6 +149,11 @@ class UpdateTab(QWidget):
         self._selection_actions_enabled = False
         self._bundle_version = None
 
+    def _choose_bundle(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Seleziona bundle", "", "Bundle Zip (*.zip);;Tutti i file (*)")
+        if path:
+            self.bundleSelected.emit(path)
+
     def set_players(self, players: list[dict]) -> None:
         count = len(players)
         sample = ", ".join(sorted({str(p.get("version", "?")) for p in players}))
@@ -184,6 +194,7 @@ class UpdateTab(QWidget):
         self._autoplay_apply.setEnabled(enabled)
         self._framework_actions_enabled = enabled
         self._update_framework_enabled()
+
     def set_build_state(self, running: bool, message: str | None = None) -> None:
         self._build_button.setEnabled(not running)
         self._build_button.setText("Costruzione..." if running else self._build_button_default)

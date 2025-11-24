@@ -416,11 +416,13 @@ def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str]
             apply_ok = False
             apply_response_json = None
             r2 = None
+            apply_timeout = max(timeout * 5, 30.0)
+            last_apply_error = None
             while apply_attempt < max_apply_attempts and not apply_ok:
                 apply_attempt += 1
                 try:
-                    # L'apply può richiedere più tempo (copia file + riavvio). Aumenta timeout minimo a 10s.
-                    r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=max(timeout, 10.0))
+                    # L'apply può richiedere più tempo (copia file + riavvio). Usa timeout generoso.
+                    r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=apply_timeout)
                     try:
                         apply_response_json = r2.json() if r2.content else None
                     except Exception:
@@ -511,13 +513,21 @@ def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str]
 
                     # altri errori: non vale la pena ritentare
                     break
+                except requests.exceptions.Timeout as exc:
+                    last_apply_error = f"timeout after {apply_timeout:.0f}s: {exc}"
+                    if verbose:
+                        log(f"DEBUG UPDATE: {ip} apply timeout ({apply_timeout:.0f}s): {exc}")
+                    time.sleep(1.0)
+                    continue
                 except requests.exceptions.ConnectionError:
                     # Probabile riavvio in corso -> consideriamo apply riuscita
                     apply_ok = True
                     apply_response_json = {'ok': True, 'restarting': True}
                     break
-                except Exception:
+                except Exception as exc:
+                    last_apply_error = str(exc)
                     time.sleep(1.0)
+                    continue
 
             if apply_ok:
                 log(f"✓ Update {ip}: OK - Player si sta riavviando")
@@ -527,8 +537,18 @@ def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str]
                 if apply_response_json:
                     error_msg = apply_response_json.get('error') or apply_response_json.get('message') or 'apply fallito'
                     status_msg += f" - {error_msg}"
+                elif last_apply_error:
+                    status_msg += f" - {last_apply_error}"
                 log(f"✗ Apply {ip}: FAIL ({status_msg})")
-                results.append({'ip': ip, 'port': port, 'response': apply_response_json, 'ok': False, 'status_code': (r2.status_code if r2 else -1), 'phase': 'apply'})
+                results.append({
+                    'ip': ip,
+                    'port': port,
+                    'response': apply_response_json,
+                    'ok': False,
+                    'status_code': (r2.status_code if r2 else -1),
+                    'phase': 'apply',
+                    'error': last_apply_error,
+                })
                 
         except requests.exceptions.ConnectTimeout:
             error_msg = f"connection timeout ({timeout}s)"

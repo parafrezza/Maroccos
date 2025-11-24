@@ -3,9 +3,9 @@
 
 a = Analysis(
     ['app.py'],
-    pathex=['C:\\Users\\ricca\\Desktop\\my_repos\\Maroccos\\headless-player'],
+    pathex=['C:\\Users\\Riccardo\\Desktop\\my_repos\\Maroccos\\headless-player'],
     binaries=[],
-    datas=[('C:\\Users\\ricca\\Desktop\\my_repos\\Maroccos\\headless-player\\VERSION', '.'), ('C:\\Users\\ricca\\Desktop\\my_repos\\Maroccos\\headless-player\\media', 'media')],
+    datas=[('C:\\Users\\Riccardo\\Desktop\\my_repos\\Maroccos\\headless-player\\VERSION', '.'), ('C:\\Users\\Riccardo\\Desktop\\my_repos\\Maroccos\\headless-player\\media', 'media')],
     hiddenimports=['uvicorn'],
     hookspath=[],
     hooksconfig={},

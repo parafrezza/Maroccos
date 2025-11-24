@@ -17,6 +17,7 @@ from typing import Any, Iterable, Optional
 
 import requests
 import time
+import zipfile
 from urllib.parse import quote
 
 
@@ -127,6 +128,10 @@ class ApplicationController(QObject):
         # Cached /status payloads keyed by player IP to avoid redundant fetches
         self._status_cache: dict[str, dict[str, Any]] = {}
         self._status_cache_lock = threading.Lock()
+
+    @property
+    def settings_path(self) -> Path:
+        return self._settings_store.path
 
     # ------------------------------------------------------------------
     # Snapshots (GUI helpers)
@@ -1775,11 +1780,14 @@ class ApplicationController(QObject):
             force = bool(payload.get("force", False))
             return client.request("post", "/maintenance/run_setup", json={"force": force}, timeout=120)
         if cmd == "media_clear":
-            try:
-                client.request("post", "/media/release", timeout=10)
-            except Exception as exc:
-                self.logMessage.emit(f"Release media su {player.ip} fallito (proseguo comunque): {exc}")
             return client.request("post", "/media/prune_to_playlist", json={"items": []}, timeout=120)
+        if cmd == "media_prune_to_playlist":
+            items_payload = []
+            if isinstance(payload, dict):
+                raw_items = payload.get("items")
+                if isinstance(raw_items, list):
+                    items_payload = [str(item) for item in raw_items if item is not None]
+            return client.request("post", "/media/prune_to_playlist", json={"items": items_payload}, timeout=120)
         if cmd == "playlist_build":
             loop = bool(payload.get("loop", True))
             return client.request("post", "/media/playlist", json={"loop": loop}, timeout=30)
@@ -1973,6 +1981,41 @@ class ApplicationController(QObject):
             )
         self.updateCompleted.emit(payload)
 
+    def set_active_bundle_from_file(self, bundle_path: str | Path) -> dict:
+        path = Path(bundle_path).expanduser()
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if not resolved.exists():
+            raise FileNotFoundError(f"Bundle non trovato: {resolved}")
+        if not resolved.is_file():
+            raise ValueError("Seleziona un file bundle valido (atteso file .zip)")
+        if resolved.suffix.lower() != ".zip":
+            raise ValueError("Il bundle deve essere un file .zip")
+        try:
+            with zipfile.ZipFile(resolved, "r"):
+                pass
+        except Exception as exc:
+            raise ValueError("Il file selezionato non è uno zip valido") from exc
+        version = self._format_version_label(resolved.name)
+        if not version:
+            version = resolved.name
+        self._active_bundle = resolved
+        self._active_bundle_version = version
+        sha_value = None
+        if updater and hasattr(updater, "sha256_of"):
+            try:
+                sha_value = updater.sha256_of(resolved)
+            except Exception:
+                sha_value = None
+        self.logMessage.emit(f"Bundle manuale impostato: {version} — {resolved}")
+        return {"bundle": str(resolved), "version": version, "sha": sha_value}
+
+    # Compatibilità con eventuali build precedenti in cui il nome è stato digitato male
+    def set_active_bundle_from_filr(self, bundle_path: str | Path) -> dict:  # pragma: no cover - alias
+        return self.set_active_bundle_from_file(bundle_path)
+
     # --------------------------------------------------------------
     # Helpers: normalizzazione versione per messaggi di stato
     # --------------------------------------------------------------
@@ -2082,7 +2125,7 @@ class ApplicationController(QObject):
                 self.logMessage.emit(f"[SSH:{host}] Connesso")
                 sftp = client.open_sftp()
                 remote_home = f"/home/{username}"
-                remote_bundle = f"{remote_home}/{os.path.basename(str(bundle))}"
+                remote_bundle = f"/tmp/{os.path.basename(str(bundle))}"
                 total_size = os.path.getsize(str(bundle))
                 last_pct_logged = -1
 
