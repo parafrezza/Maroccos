@@ -70,7 +70,7 @@
 				"detail": "Compila il gestore GUI con PyInstaller"
 			},
 			{
-				"label": "build inno installer",
+				"label": "build inno interactive",
 				"type": "shell",
 				"command": "powershell",
 				"args": [
@@ -78,7 +78,8 @@
 					"-ExecutionPolicy",
 					"Bypass",
 					"-File",
-					"${workspaceFolder}/tools/build_installer.ps1"
+					"${workspaceFolder}/tools/build_installer.ps1",
+					"-InteractiveOnly"
 				],
 				"options": {
 					"cwd": "${workspaceFolder}"
@@ -88,7 +89,7 @@
 					"isDefault": false
 				},
 				"problemMatcher": [],
-				"detail": "Genera l'installer Windows con Inno Setup"
+				"detail": "Genera solo l'installer interattivo con Inno Setup"
 			},
 			{
 				"label": "build inno installer silent",

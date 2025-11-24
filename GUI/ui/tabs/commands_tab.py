@@ -2166,7 +2166,7 @@ class CommandsTab(QWidget):
     # ------------------------------------------------------------------
     # HUD visible (OFF-player)
     # ------------------------------------------------------------------
-    def set_hud_state(self, mode: int | None, multi_count: int | None = None) -> None:
+    def set_hud_state(self, mode: int | None, multi_count: int | None = None, *, supported: bool | None = None) -> None:
         """Reflect HUD mode selection and multi-target hint.
         - mode: 0 hidden, 1 minimal, 2 full; None keeps current selection.
         - multi_count: if >1, highlight combo to indicate multi-apply.
@@ -2175,6 +2175,15 @@ class CommandsTab(QWidget):
             combo = getattr(self, "_hud_mode_combo", None)
             if combo is None:
                 return
+            if supported is not None:
+                if not supported:
+                    self._set_control_enabled(
+                        combo,
+                        False,
+                        disabled_reason="HUD disponibile solo con OFF-player",
+                    )
+                else:
+                    self._set_control_enabled(combo, self._targets_enabled, disabled_reason=self._selection_required_tip)
             if isinstance(mode, (int, float)):
                 idx = int(mode)
                 if idx < 0:

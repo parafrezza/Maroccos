@@ -530,13 +530,19 @@ class MainWindow(QMainWindow):
 
     def _toggle_player_panel_detach(self) -> None:
         if self._player_panel_window:
-            self._reattach_player_panel()
+            try:
+                self._player_panel_window.close()
+            except Exception:
+                self._reattach_player_panel()
         else:
             self._detach_player_panel()
 
     def _toggle_log_panel_detach(self) -> None:
         if self._log_window:
-            self._reattach_log_panel()
+            try:
+                self._log_window.close()
+            except Exception:
+                self._reattach_log_panel()
         else:
             self._detach_log_panel()
 
@@ -1015,6 +1021,9 @@ class MainWindow(QMainWindow):
         if not self._selected_players:
             return
         self._controller.send_misc_command(command, payload or {}, self._selected_players)
+        if command == "hud_visible":
+            for player in self._selected_players:
+                self._controller.refresh_status(player)
 
     def _handle_upload(self, path: str) -> None:
         if not self._selected_players:
@@ -1216,7 +1225,12 @@ class MainWindow(QMainWindow):
         try:
             hud = payload.get("hud") or {}
             mode = None
+            supported_flag: bool | None = None
             if isinstance(hud, dict):
+                if "supported" in hud:
+                    supported_val = hud.get("supported")
+                    if isinstance(supported_val, bool):
+                        supported_flag = supported_val
                 if "mode" in hud:
                     try:
                         mode_val = hud.get("mode")
@@ -1236,7 +1250,7 @@ class MainWindow(QMainWindow):
                     if mode > 2:
                         mode = 2
             count = len(self._selected_players)
-            self._commands_tab.set_hud_state(mode, count)
+            self._commands_tab.set_hud_state(mode, count, supported=supported_flag)
         except Exception:
             pass
 
@@ -1373,6 +1387,17 @@ class MainWindow(QMainWindow):
                     self._commands_tab.set_playlist_led("green")
                 except Exception:
                     pass
+        if "mode" in response and "visible" in response:
+            try:
+                mode_val = response.get("mode")
+                mode = int(mode_val)
+            except Exception:
+                mode = None
+            count = len(self._selected_players)
+            if mode is not None:
+                self._commands_tab.set_hud_state(mode, count)
+            if self._selected_players:
+                self._controller.refresh_status(self._selected_players[0])
 
     def _handle_device_media_refresh(self) -> None:
         if not self._selected_players:

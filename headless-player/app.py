@@ -2494,7 +2494,13 @@ def _collect_off_pids_windows() -> list[int]:
     except Exception:
         return []
     pids: list[int] = []
-    for raw_line in result.stdout.splitlines():
+    stdout = result.stdout or ""
+    if not stdout.strip():
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            off_logger.warning("[OFF-WATCHDOG] tasklist returned no stdout; stderr=%s", stderr)
+        return []
+    for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
             continue
@@ -7443,7 +7449,7 @@ def hud_visible(on: Optional[int] = Query(None), mode: Optional[int] = Query(Non
     try:
         if current_framework.get("name") != "off":
             return JSONResponse(status_code=404, content={"ok": False, "error": "hud/visible disponibile solo con framework 'off'"})
-        import urllib.request, json as _json
+        import urllib.request, urllib.error, json as _json  # type: ignore
         port = int(globals().get('OFF_PORT', 8082))
         selected_mode: int
         if mode is not None:
@@ -7462,8 +7468,16 @@ def hud_visible(on: Optional[int] = Query(None), mode: Optional[int] = Query(Non
         on_value = 1 if selected_mode > 0 else 0
         print(f"[HUD_PROXY] dispatch mode={selected_mode} on={on_value} (query mode={mode} on={on})", flush=True)
         url = f"http://{OFF_HOST}:{port}/hud/visible?mode={selected_mode}&on={on_value}"
-        with urllib.request.urlopen(url, timeout=0.8) as r:
-            body = r.read().decode("utf-8", errors="ignore")
+        try:
+            with urllib.request.urlopen(url, timeout=0.8) as r:
+                body = r.read().decode("utf-8", errors="ignore")
+        except urllib.error.URLError as net_err:  # type: ignore[attr-defined]
+            reason = getattr(net_err, "reason", None)
+            if isinstance(reason, ConnectionRefusedError):
+                msg = "OFF-player non in esecuzione (connessione rifiutata)"
+                print(f"[HUD_PROXY] ERROR: {msg}", flush=True)
+                return JSONResponse(status_code=503, content={"ok": False, "error": msg})
+            raise
         response_mode = selected_mode
         try:
             res = _json.loads(body)

@@ -8,6 +8,7 @@ param(
     [string]$Version,
     [string]$AppBaseName = 'marocco-player',
     [switch]$SilentOnly,
+    [switch]$InteractiveOnly,
     [string]$IconSource = 'icon-maker/icon.png',
     [string]$IconName = 'marocco-player'
 )
@@ -67,6 +68,10 @@ function Increment-VersionCore {
 
 if ($Debug) {
     throw "L'opzione -Debug non è più supportata: OFF-player viene distribuito solo in Release."
+}
+
+if ($SilentOnly -and $InteractiveOnly) {
+    throw "Specificare contemporaneamente -SilentOnly e -InteractiveOnly non è consentito."
 }
 
 function Resolve-InstallerScriptPath {
@@ -226,40 +231,120 @@ function Invoke-SetResolutionAsset {
     Remove-Item -LiteralPath $publishTemp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+function Get-HeadlessSourceHash {
+    param([string]$RepoRoot)
+
+    $headlessRoot = Join-Path $RepoRoot 'headless-player'
+    if (-not (Test-Path -LiteralPath $headlessRoot)) {
+        return $null
+    }
+
+    $excludedRoots = @('dist', 'build', 'build_debug', 'releases', 'media', 'systemd', 'tools', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.venv')
+
+    $files = Get-ChildItem -LiteralPath $headlessRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            $relative = $_.FullName.Substring($headlessRoot.Length).TrimStart("/\\".ToCharArray())
+            if (-not $relative) { return $false }
+            if ($relative -ieq 'VERSION') { return $false }
+            $parts = $relative.Split("/\\".ToCharArray())
+            if ($parts.Length -gt 0 -and ($excludedRoots -contains $parts[0])) { return $false }
+            if ($parts -contains '__pycache__') { return $false }
+            return $true
+        } |
+        Sort-Object FullName
+
+    if (-not $files) {
+        return $null
+    }
+
+    $sb = [System.Text.StringBuilder]::new()
+    foreach ($file in $files) {
+    $rel = $file.FullName.Substring($headlessRoot.Length).TrimStart("/\\".ToCharArray())
+        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        [void]$sb.AppendLine($rel)
+        [void]$sb.AppendLine($hash)
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+
+    return ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+}
+
 function Ensure-HeadlessBinary {
     param(
-        [string]$ExpectedVersion
+        [string]$ExpectedVersion,
+        [string]$CurrentSourceHash
     )
 
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $distDir = Join-Path $repoRoot 'headless-player\dist'
     $bundleDir = Join-Path $distDir 'headless-player'
     $exePath = Join-Path $bundleDir 'headless-player.exe'
+    $embeddedVersionPath = Join-Path $bundleDir '_internal\VERSION'
+    $hashFile = Join-Path $bundleDir '_internal\SOURCE_HASH'
+
+    $existingHash = $null
+    if (Test-Path -LiteralPath $hashFile) {
+        try {
+            $existingHash = (Get-Content -LiteralPath $hashFile -Raw).Trim()
+        } catch {
+            $existingHash = $null
+        }
+    }
+
+    $currentVersion = $null
+    if (Test-Path -LiteralPath $embeddedVersionPath) {
+        try {
+            $currentVersion = (Get-Content -LiteralPath $embeddedVersionPath -Raw).Trim()
+        } catch {
+            $currentVersion = $null
+        }
+    }
+
+    $hashMatches = $false
+    if ($CurrentSourceHash -and $existingHash) {
+        $hashMatches = ($CurrentSourceHash -eq $existingHash)
+    }
 
     $needsBuild = $false
     if (-not (Test-Path -LiteralPath $exePath)) {
         $needsBuild = $true
         Write-Host 'headless-player.exe mancante: genero la build Windows' -ForegroundColor Yellow
     } elseif ($ExpectedVersion) {
-        $embeddedVersionPath = Join-Path $bundleDir '_internal\VERSION'
-        $currentVersion = $null
-        if (Test-Path -LiteralPath $embeddedVersionPath) {
-            try {
-                $currentVersion = (Get-Content -LiteralPath $embeddedVersionPath -Raw).Trim()
-            } catch {
-                $currentVersion = $null
-            }
-        }
-
         if (-not $currentVersion) {
             Write-Warning 'Impossibile determinare la versione incorporata nel player headless: rigenero eseguibile'
             $needsBuild = $true
         } elseif ($currentVersion -ne $ExpectedVersion) {
-            Write-Host (
-                "Versione headless corrente ({0}) diversa da quella attesa ({1}): rigenero eseguibile" -f `
-                    $currentVersion, $ExpectedVersion
-            ) -ForegroundColor Yellow
-            $needsBuild = $true
+            if ($hashMatches) {
+                Write-Host (
+                    "Versione headless già compattata con sorgenti invariati (hash corrispondente). Aggiorno VERSION a {0} senza ricostruire." -f `
+                        $ExpectedVersion
+                ) -ForegroundColor DarkGray
+                try {
+                    Set-Content -LiteralPath $embeddedVersionPath -Value $ExpectedVersion -Encoding ascii
+                } catch {
+                    Write-Warning "Impossibile aggiornare il file VERSION interno: $($_.Exception.Message)"
+                }
+                if ($CurrentSourceHash) {
+                    try {
+                        Set-Content -LiteralPath $hashFile -Value $CurrentSourceHash -Encoding ascii
+                    } catch {
+                        Write-Warning "Impossibile aggiornare SOURCE_HASH: $($_.Exception.Message)"
+                    }
+                }
+            } else {
+                Write-Host (
+                    "Versione headless corrente ({0}) diversa da quella attesa ({1}): rigenero eseguibile" -f `
+                        $currentVersion, $ExpectedVersion
+                ) -ForegroundColor Yellow
+                $needsBuild = $true
+            }
         } else {
             Write-Host (
                 "headless-player.exe trovato ({0}) con versione {1}" -f $exePath, $ExpectedVersion
@@ -267,6 +352,16 @@ function Ensure-HeadlessBinary {
         }
     } else {
         Write-Host ("headless-player.exe trovato: {0}" -f $exePath) -ForegroundColor DarkGray
+    }
+
+    if (-not $needsBuild -and $CurrentSourceHash) {
+        if (-not $existingHash) {
+            Write-Host 'Hash sorgente headless assente: rigenero eseguibile' -ForegroundColor Yellow
+            $needsBuild = $true
+        } elseif (-not $hashMatches) {
+            Write-Host 'Sorgenti headless modificati rispetto all’ultima build: rigenero eseguibile' -ForegroundColor Yellow
+            $needsBuild = $true
+        }
     }
 
     if (-not $needsBuild) {
@@ -300,11 +395,26 @@ function Ensure-HeadlessBinary {
     }
 
     Write-Host ("headless-player.exe creato: {0}" -f $exePath) -ForegroundColor Green
-    if ($ExpectedVersion -and $postVersion -and $postVersion -ne $ExpectedVersion) {
-        Write-Warning (
-            "La versione incorporata nel player headless ({0}) non corrisponde a {1}" -f `
-                $postVersion, $ExpectedVersion
-        )
+    if ($ExpectedVersion) {
+        if ($postVersion -and $postVersion -ne $ExpectedVersion) {
+            Write-Warning (
+                "La versione incorporata nel player headless ({0}) non corrisponde a {1}" -f `
+                    $postVersion, $ExpectedVersion
+            )
+        }
+        try {
+            Set-Content -LiteralPath $embeddedVersionPath -Value $ExpectedVersion -Encoding ascii
+        } catch {
+            Write-Warning "Impossibile aggiornare il file VERSION interno: $($_.Exception.Message)"
+        }
+    }
+
+    if ($CurrentSourceHash) {
+        try {
+            Set-Content -LiteralPath $hashFile -Value $CurrentSourceHash -Encoding ascii
+        } catch {
+            Write-Warning "Impossibile scrivere SOURCE_HASH: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -586,7 +696,8 @@ try {
         Write-Host ("File VERSION già impostato a {0}" -f $versionDisplay) -ForegroundColor DarkGray
     }
 
-    Ensure-HeadlessBinary -ExpectedVersion $versionDisplay
+    $headlessSourceHash = Get-HeadlessSourceHash -RepoRoot $repoRoot
+    Ensure-HeadlessBinary -ExpectedVersion $versionDisplay -CurrentSourceHash $headlessSourceHash
 
     Update-AssetsManifest -AssetsDir $assetsDir
 
@@ -601,18 +712,22 @@ try {
         }
     }
 
-    $outBaseSilent = "${appName}-installer_${versionTag}_silent"
-    $silentDefines = $defines.Clone()
-    for ($i = 0; $i -lt $silentDefines.Length; $i++) {
-        if ($silentDefines[$i] -like '/DOutputBaseFilename=*') {
-            $silentDefines[$i] = "/DOutputBaseFilename=$outBaseSilent"
+    if (-not $InteractiveOnly) {
+        $outBaseSilent = "${appName}-installer_${versionTag}_silent"
+        $silentDefines = $defines.Clone()
+        for ($i = 0; $i -lt $silentDefines.Length; $i++) {
+            if ($silentDefines[$i] -like '/DOutputBaseFilename=*') {
+                $silentDefines[$i] = "/DOutputBaseFilename=$outBaseSilent"
+            }
         }
+        $silentDefines += '/DSilentInstall=1'
+        $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'silent'
     }
-    $silentDefines += '/DSilentInstall=1'
-    $results += Invoke-IsccBuild -IsccPath $iscc -IssPath $iss -Defines $silentDefines -LogsDir $logsDir -Version $Version -OutputBaseFilename $outBaseSilent -RepoRoot $repoRoot -Label 'silent'
 
     if ($SilentOnly) {
         Write-Host "Installer silent creato con successo." -ForegroundColor Green
+    } elseif ($InteractiveOnly) {
+        Write-Host "Installer interattivo creato con successo." -ForegroundColor Green
     } else {
         Write-Host "Installer interattivo e silent creati con successo." -ForegroundColor Green
     }
