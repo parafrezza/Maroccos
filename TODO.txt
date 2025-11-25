@@ -1,9 +1,9 @@
 TODO
 
-- update
-- video 0,0
+- update_
+- video 0,0_
 - png tra due video -> durata?_
-- nascosto HUD non corrisponde allo stato reale sul player_
+ 
 - riavvio servizio player funziona?_
 - status monitor non si aggiorna_
-- allargare il default colonna status_
+-synch media

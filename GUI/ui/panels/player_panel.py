@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, Qt, Signal
@@ -70,7 +71,8 @@ class PlayerPanel(QWidget):
         self._purge_button.clicked.connect(self.purgeRequested.emit)
         controls_row.addWidget(self._purge_button)
         self._sync_button = QPushButton("Sync media")
-        self._sync_button.setToolTip("Scarica media per il player selezionato")
+        self._sync_button_base_tip = "Clona i media del player selezionato verso tutti gli altri"
+        self._sync_button.setToolTip(self._sync_button_base_tip)
         self._sync_button.setEnabled(False)
         self._sync_button.clicked.connect(self._request_sync_media)
         controls_row.addWidget(self._sync_button)
@@ -91,6 +93,8 @@ class PlayerPanel(QWidget):
         self.set_collapsed(False)
         self.set_detach_state(False)
         self._records: dict[str, PlayerRecord] = {}
+        self._sync_lock_reason: str | None = None
+        self._sync_status_tip: str | None = None
 
     def update_player(self, record: PlayerRecord) -> None:
         """Insert or refresh a player's row."""
@@ -106,6 +110,17 @@ class PlayerPanel(QWidget):
             playlist_tip=self._playlist_tip_for(record),
         )
         self._records[record.ip] = record
+        try:
+            row = self._table._find_row(record.ip)
+        except Exception:
+            row = None
+        if row is not None:
+            try:
+                indicator = self._table.cellWidget(row, 2)
+                if indicator is not None:
+                    indicator.setToolTip(self._state_tip_for(record) or "")
+            except Exception:
+                pass
         # Tooltip con identificativi sul nome
         try:
             parts: list[str] = []
@@ -199,6 +214,45 @@ class PlayerPanel(QWidget):
         except Exception:
             return None
 
+    def _state_tip_for(self, record: PlayerRecord) -> str | None:
+        try:
+            last_seen_dt = datetime.fromtimestamp(record.last_seen)
+            last_seen_str = last_seen_dt.strftime("%d/%m %H:%M:%S")
+        except Exception:
+            last_seen_dt = None
+            last_seen_str = None
+        state = (record.state or "unknown").lower()
+        base_framework = f"backend {record.framework}" if getattr(record, "framework", None) else None
+        if state == "online":
+            parts = ["Player online"]
+            if last_seen_str:
+                parts.append(f"ping {last_seen_str}")
+            if base_framework:
+                parts.append(base_framework)
+            return " • ".join(parts)
+        age_seconds = None
+        try:
+            if last_seen_dt:
+                age_seconds = max(0, int(time.time() - record.last_seen))
+        except Exception:
+            age_seconds = None
+        if state == "warning":
+            tip = "Segnale in ritardo"
+            if age_seconds is not None:
+                tip += f" • ultimo ping {age_seconds}s fa"
+            elif last_seen_str:
+                tip += f" • ultimo ping {last_seen_str}"
+            return tip
+        if state == "offline":
+            reason = getattr(record, "last_error", None)
+            tip = "Nessuna risposta dal player"
+            if reason:
+                tip += f" • {reason}"
+            if last_seen_str:
+                tip += f" • ultimo ping {last_seen_str}"
+            return tip
+        return None
+
     def set_busy(self, busy: bool) -> None:
         self._refresh_button.setEnabled(not busy)
         if busy:
@@ -260,9 +314,26 @@ class PlayerPanel(QWidget):
         enabled = False
         if len(ips) == 1:
             record = self._records.get(ips[0])
-            if record and not getattr(record, "media_available", True):
+            if record and getattr(record, "media_available", False):
                 enabled = True
+        tip = self._sync_lock_reason or self._sync_status_tip or self._sync_button_base_tip
+        self._sync_button.setToolTip(tip)
+        if self._sync_lock_reason:
+            self._sync_button.setEnabled(False)
+            return
         self._sync_button.setEnabled(enabled)
+
+    def set_sync_lock(self, reason: str | None) -> None:
+        """Blocca il pulsante Sync media durante operazioni lunghe, mostrando il motivo."""
+        self._sync_lock_reason = reason.strip() if reason else None
+        self._update_sync_button_state()
+
+    def set_sync_status_tip(self, text: str | None) -> None:
+        """Definisce un tooltip contestuale per il pulsante Sync media."""
+        self._sync_status_tip = text.strip() if text else None
+        if not self._sync_lock_reason:
+            tip = self._sync_status_tip or self._sync_button_base_tip
+            self._sync_button.setToolTip(tip)
 
     def _request_sync_media(self) -> None:
         ips = self.selected_ips()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Sequence
+from collections import Counter
 import json
 import hashlib
 from pathlib import Path
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QSlider,
@@ -144,6 +146,7 @@ class CommandsTab(QWidget):
     # Playlist signals
     playlistChanged = Signal(list)
     playlistPushRequested = Signal(list, bool, bool)
+    playlistAutoApplyRequested = Signal(list, bool)
     playlistRefreshRequested = Signal()
     startShowRequested = Signal(object)
     jumpToTrackRequested = Signal(int)
@@ -153,6 +156,7 @@ class CommandsTab(QWidget):
     startSyncRequested = Signal()
 
     _RELATIVE_ROLE = Qt.UserRole + 1
+    _PLAYLIST_LABEL_ROLE = Qt.UserRole + 11
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -173,6 +177,7 @@ class CommandsTab(QWidget):
         self._device_media_seen: bool = False
         self._local_playlist_fp: dict[str, Any] | None = None
         self._downloads_in_progress: set[str] = set()
+        self._playlist_asset_cache: dict[str, Path] = {}
         self._banner_fallback: tuple[str, str] | None = None
         self._playlist_updates_frozen = False
         self._playlist_frame_state = "gray"
@@ -189,6 +194,15 @@ class CommandsTab(QWidget):
         self._brightness_apply_base_style = ""
         self._brightness_updating = False
         self._timing_syncing = False
+        self._loop_pending: tuple[bool, float] | None = None
+        self._playlist_loop_pending: tuple[bool, float] | None = None
+        self._loop_pending_timeout = 2.5  # seconds window to wait for device ACK
+        self._last_synced_playlist_items: list[str] = []
+        self._auto_apply_pending: tuple[list[str], bool] | None = None
+        self._auto_apply_timer = QTimer(self)
+        self._auto_apply_timer.setSingleShot(True)
+        self._auto_apply_timer.setInterval(800)
+        self._auto_apply_timer.timeout.connect(self._on_auto_apply_timeout)
 
         playback_box = QGroupBox("Playback")
         playback_layout = QGridLayout(playback_box)
@@ -197,7 +211,7 @@ class CommandsTab(QWidget):
         self._loop_checkbox.setStyleSheet("font-weight: 600;")
         # Toggle immediate command dispatch
         try:
-            self._loop_checkbox.toggled.connect(lambda checked: self.miscCommandTriggered.emit("loop_on" if checked else "loop_off", {}))
+            self._loop_checkbox.toggled.connect(self._on_playback_loop_toggled)
         except Exception:
             pass
         self._fade_seconds = QDoubleSpinBox()
@@ -376,9 +390,23 @@ class CommandsTab(QWidget):
         display_row = QHBoxLayout()
         display_row.addWidget(QLabel("Display:"))
         self._display_label = QLabel("—")
-        self._display_label.setStyleSheet("color: #7f8c8d; font-style: italic; padding: 1px 4px;")
+        self._display_label.setStyleSheet("color: #f5f7fa; font-style: italic; padding: 1px 4px;")
         self._display_label.setToolTip("Risoluzione corrente non disponibile")
         display_row.addWidget(self._display_label)
+        display_row.addSpacing(12)
+        self._display_center_checkbox = QCheckBox("Centra video")
+        self._display_center_checkbox.setEnabled(False)
+        self._display_center_checkbox.setStyleSheet("font-weight: 500;")
+        self._display_center_checkbox.setToolTip("Posiziona i video al centro dello schermo")
+        display_center_handler = getattr(self, "_on_display_center_toggled", None)
+        if callable(display_center_handler):
+            self._display_center_checkbox.toggled.connect(display_center_handler)
+        self._register_control(
+            self._display_center_checkbox,
+            enabled_tip="Abilita o disabilita il centraggio del video",
+            disabled_tip=self._selection_required_tip,
+        )
+        display_row.addWidget(self._display_center_checkbox)
         display_row.addStretch(1)
         aux_layout.addLayout(display_row)
 
@@ -432,6 +460,53 @@ class CommandsTab(QWidget):
         aux_layout.addLayout(brightness_row)
         self._update_brightness_controls_state()
         self._update_brightness_tooltip()
+
+        # Image duration controls
+        image_row = QHBoxLayout()
+        image_row.addWidget(QLabel("Durata immagini:"))
+        self._image_duration_spin = QDoubleSpinBox()
+        self._image_duration_spin.setDecimals(1)
+        self._image_duration_spin.setRange(1.0, 600.0)
+        self._image_duration_spin.setSingleStep(1.0)
+        self._image_duration_spin.setValue(10.0)
+        self._image_duration_spin.setEnabled(False)
+        self._image_duration_spin.valueChanged.connect(self._on_image_duration_value_changed)
+        self._register_control(
+            self._image_duration_spin,
+            enabled_tip="Durata massima (s) prima del passaggio automatico all'elemento successivo",
+            disabled_tip=self._selection_required_tip,
+        )
+        image_row.addWidget(self._image_duration_spin)
+        image_row.addWidget(QLabel("s"))
+        image_row.addSpacing(12)
+        self._image_duration_apply = QPushButton("Applica")
+        self._image_duration_apply.setEnabled(False)
+        self._image_duration_apply.clicked.connect(self._emit_image_duration_apply)
+        self._image_duration_apply_base_style = self._image_duration_apply.styleSheet() or ""
+        self._register_control(
+            self._image_duration_apply,
+            enabled_tip="Imposta la durata immagini sui player selezionati",
+            disabled_tip=self._selection_required_tip,
+        )
+        image_row.addWidget(self._image_duration_apply)
+        self._image_duration_refresh = QPushButton("Aggiorna")
+        self._image_duration_refresh.setEnabled(False)
+        self._image_duration_refresh.clicked.connect(self._emit_image_duration_refresh)
+        self._register_control(
+            self._image_duration_refresh,
+            enabled_tip="Leggi il timeout immagini dal player",
+            disabled_tip=self._selection_required_tip,
+        )
+        image_row.addWidget(self._image_duration_refresh)
+        image_row.addSpacing(12)
+        self._image_duration_status = QLabel("—")
+        self._image_duration_status.setStyleSheet("color: #f5f7fa; font-style: italic;")
+        image_row.addWidget(self._image_duration_status, 1)
+        aux_layout.addLayout(image_row)
+        self._image_duration_remote: float | None = None
+        self._image_duration_limits: tuple[float, float] = (1.0, 600.0)
+        self._image_duration_dirty = False
+        self._update_image_duration_controls()
 
         # Overlay diagnostics row (rimosso su richiesta)
 
@@ -764,6 +839,32 @@ class CommandsTab(QWidget):
         device_layout.addWidget(self._device_media_list)
         layout.addWidget(device_box, 1, 1)
 
+        clone_box = QGroupBox("Clonazione media")
+        clone_layout = QVBoxLayout(clone_box)
+        self._clone_stage_label = QLabel("In attesa di una clonazione media…")
+        self._clone_stage_label.setStyleSheet("color: #95a5a6;")
+        clone_layout.addWidget(self._clone_stage_label)
+        progress_row = QHBoxLayout()
+        self._clone_progress = QProgressBar()
+        self._clone_progress.setRange(0, 100)
+        self._clone_progress.setValue(0)
+        self._clone_progress.setTextVisible(False)
+        self._clone_progress.setVisible(False)
+        progress_row.addWidget(self._clone_progress, 1)
+        self._clone_progress_hint = QLabel("")
+        self._clone_progress_hint.setStyleSheet("color: #7f8c8d;")
+        progress_row.addWidget(self._clone_progress_hint)
+        clone_layout.addLayout(progress_row)
+        self._clone_log = QPlainTextEdit()
+        self._clone_log.setReadOnly(True)
+        self._clone_log.setMaximumBlockCount(400)
+        self._clone_log.setPlaceholderText("I log della clonazione media appariranno qui")
+        self._clone_log.setFixedHeight(140)
+        clone_layout.addWidget(self._clone_log)
+        layout.addWidget(clone_box, 3, 1)
+        self._clone_job_active = False
+        self._reset_clone_panel()
+
         layout.setColumnStretch(1, 1)
         # Blink timer for timing LED (off by default)
         self._blink_timer = QTimer(self)
@@ -1076,6 +1177,20 @@ class CommandsTab(QWidget):
             self._set_control_enabled(btn, enabled, disabled_reason=self._selection_required_tip)
         for spin in (self._test_width, self._test_height, self._test_offset_x, self._test_offset_y):
             spin.setEnabled(enabled)
+        for extra in (
+            getattr(self, "_display_center_checkbox", None),
+            getattr(self, "_image_duration_spin", None),
+            getattr(self, "_image_duration_apply", None),
+            getattr(self, "_image_duration_refresh", None),
+        ):
+            if extra is None:
+                continue
+            reason = None if enabled else self._selection_required_tip
+            self._set_control_enabled(extra, enabled, disabled_reason=reason)
+        try:
+            self._update_image_duration_controls()
+        except Exception:
+            pass
         # Jump controls depend on selection and target availability
         self._update_jump_buttons()
         self._set_control_enabled(
@@ -1114,7 +1229,7 @@ class CommandsTab(QWidget):
             return
         self._playlist_updates_frozen = True
         if not self._playlist_dirty:
-            self._set_playlist_led_color("red")
+            self._set_playlist_led_color("red", "Playlist congelata: modifica in corso")
         if not self._playlist_banner_validation:
             self.set_banner(self._playlist_freeze_message, level="warning")
             self._freeze_banner_active = True
@@ -1188,6 +1303,7 @@ class CommandsTab(QWidget):
         try:
             self._playlist.clear()
             self._downloads_in_progress.clear()
+            normalized_payload: list[str] = []
             for idx, item_path in enumerate(items):
                 try:
                     # Usa solo il basename per il label
@@ -1197,6 +1313,9 @@ class CommandsTab(QWidget):
                     label = str(item_path)
                 it = QListWidgetItem(label)
                 it.setData(Qt.UserRole, str(item_path))
+                it.setData(self._PLAYLIST_LABEL_ROLE, label)
+                canonical, _ = self._canonicalize_playlist_value(str(item_path))
+                normalized_payload.append(canonical or str(item_path))
                 # Evidenzia l'item corrente
                 if idx == current_index:
                     try:
@@ -1207,10 +1326,11 @@ class CommandsTab(QWidget):
                         pass
                 self._playlist.addItem(it)
             self._normalize_playlist_items()
+            self._apply_playlist_numbering()
             # Aggiorna il totale TC
             self._update_total_tc()
             # Stato LED grigio (sincronizzato)
-            self._set_playlist_led_color("gray")
+            self._set_playlist_led_color("gray", "Ultimo aggiornamento importato dal player")
             self._playlist_dirty = False
             self._playlist_updates_frozen = False
             if self._freeze_banner_active and not self._playlist_banner_validation:
@@ -1224,6 +1344,7 @@ class CommandsTab(QWidget):
             self._apply_playlist_validation()
             self._update_playlist_controls_state()
             self._compute_local_playlist_fingerprint()
+            self._update_synced_playlist_snapshot(normalized_payload)
         except Exception as exc:
             print(f"[GUI] Errore popolamento playlist: {exc}", flush=True)
 
@@ -1268,7 +1389,7 @@ class CommandsTab(QWidget):
         self._compute_local_playlist_fingerprint()
 
     def set_playback_loop(self, loop: bool | None, multi_count: int | None = None) -> None:
-        if loop is not None:
+        if loop is not None and self._should_apply_loop_update("playback", bool(loop)):
             self._loop_checkbox.blockSignals(True)
             try:
                 self._loop_checkbox.setChecked(bool(loop))
@@ -1284,7 +1405,7 @@ class CommandsTab(QWidget):
             self._loop_checkbox.setToolTip(base_tip)
 
     def set_playlist_loop(self, loop: bool | None, multi_count: int | None = None) -> None:
-        if loop is not None:
+        if loop is not None and self._should_apply_loop_update("playlist", bool(loop)):
             self._playlist_loop_checkbox.blockSignals(True)
             try:
                 self._playlist_loop_checkbox.setChecked(bool(loop))
@@ -1340,11 +1461,11 @@ class CommandsTab(QWidget):
             if missing_list:
                 msg = f"{len(missing_list)} asset mancanti" + suffix
                 self.set_banner(msg, level="error")
-                self._set_playlist_led_color("red")
+                self._set_playlist_led_color("red", msg)
             else:
                 msg = f"{len(invalid_list)} elementi non validi" + suffix
                 self.set_banner(msg, level="warning")
-                self._set_playlist_led_color("orange")
+                self._set_playlist_led_color("orange", msg)
             self._playlist_banner_validation = True
         elif self._playlist_banner_validation:
             self._playlist_banner_validation = False
@@ -1510,7 +1631,7 @@ class CommandsTab(QWidget):
 
         if not isinstance(mode, dict):
             label_widget.setText("—")
-            label_widget.setStyleSheet(base_style + " color: #7f8c8d; font-style: italic;")
+            label_widget.setStyleSheet(base_style + " color: #dfe6ee; font-style: italic;")
             tip = "Risoluzione corrente non disponibile"
             if isinstance(multi_count, int) and multi_count > 1:
                 tip += f" (mostrata per il primario; {multi_count} selezionati)"
@@ -1539,7 +1660,7 @@ class CommandsTab(QWidget):
         valid = bool(valid_flag) if valid_flag is not None else bool(width and height)
         if not valid:
             label_widget.setText("—")
-            label_widget.setStyleSheet(base_style + " color: #7f8c8d; font-style: italic;")
+            label_widget.setStyleSheet(base_style + " color: #dfe6ee; font-style: italic;")
             tip = "Risoluzione corrente non disponibile"
             if isinstance(multi_count, int) and multi_count > 1:
                 tip += f" (mostrata per il primario; {multi_count} selezionati)"
@@ -1572,7 +1693,12 @@ class CommandsTab(QWidget):
         if isinstance(matches_target, bool) and not matches_target and target_width and target_height:
             style += " background-color: #fdecea; border: 1px solid #e74c3c; color: #c0392b;"
         else:
-            style += " color: #2c3e50;"
+            style += (
+                " color: #ffeaa7;"
+                " background-color: rgba(255, 255, 255, 0.08);"
+                " border: 1px solid rgba(255, 255, 255, 0.15);"
+                " border-radius: 4px;"
+            )
         label_widget.setStyleSheet(style)
 
         tooltip_lines: list[str] = []
@@ -1604,6 +1730,150 @@ class CommandsTab(QWidget):
 
         tooltip = "\n".join(tooltip_lines) if tooltip_lines else "Risoluzione corrente"
         label_widget.setToolTip(tooltip)
+
+    def _on_display_center_toggled(self, checked: bool) -> None:
+        if not self._targets_enabled:
+            return
+        self.miscCommandTriggered.emit("display_center", {"on": 1 if checked else 0})
+
+    def set_display_center(self, enabled: bool | None, multi_count: int | None = None) -> None:
+        checkbox = getattr(self, "_display_center_checkbox", None)
+        if checkbox is None:
+            return
+        if enabled is not None:
+            checkbox.blockSignals(True)
+            try:
+                checkbox.setChecked(bool(enabled))
+            finally:
+                checkbox.blockSignals(False)
+        base_style = "font-weight: 500;"
+        if isinstance(multi_count, int) and multi_count > 1:
+            checkbox.setStyleSheet(base_style + " background-color: #fff4e5; border: 1px solid #f39c12;")
+            checkbox.setToolTip(f"Centra i video (si applica a {multi_count} player)")
+        else:
+            checkbox.setStyleSheet(base_style)
+            checkbox.setToolTip("Posiziona i video al centro dello schermo")
+
+    def set_image_duration(self, info: dict | None, multi_count: int | None = None) -> None:
+        if not hasattr(self, "_image_duration_spin"):
+            return
+        seconds = None
+        min_seconds, max_seconds = self._image_duration_limits
+        remaining = None
+        active_name = None
+        if isinstance(info, dict):
+            try:
+                seconds_val = info.get("seconds")
+                if seconds_val is not None:
+                    seconds = float(seconds_val)
+            except Exception:
+                seconds = None
+            try:
+                min_candidate = info.get("min")
+                if min_candidate is not None:
+                    min_seconds = float(min_candidate)
+            except Exception:
+                pass
+            try:
+                max_candidate = info.get("max")
+                if max_candidate is not None:
+                    max_seconds = float(max_candidate)
+            except Exception:
+                pass
+            try:
+                remaining_val = info.get("remaining")
+                if remaining_val is not None:
+                    remaining = float(remaining_val)
+            except Exception:
+                remaining = None
+            try:
+                path_val = info.get("path")
+                if path_val:
+                    active_name = Path(str(path_val)).name
+            except Exception:
+                active_name = None
+        self._image_duration_limits = (min_seconds, max_seconds)
+        spin = self._image_duration_spin
+        spin.blockSignals(True)
+        try:
+            spin.setRange(max(0.1, float(min_seconds)), max(float(min_seconds), float(max_seconds)))
+            if seconds is not None:
+                spin.setValue(float(seconds))
+        finally:
+            spin.blockSignals(False)
+        self._image_duration_remote = seconds
+        self._image_duration_dirty = False
+        status_parts: list[str] = []
+        if seconds is not None:
+            status_parts.append(f"default: {seconds:.1f}s")
+        status_parts.append(f"range {min_seconds:.1f}–{max_seconds:.1f}s")
+        if active_name:
+            status_parts.append(f"attivo: {active_name}")
+        if remaining is not None:
+            status_parts.append(f"restano {max(0.0, remaining):.1f}s")
+        summary = " | ".join(status_parts) if status_parts else "Durata immagini non disponibile"
+        try:
+            self._image_duration_status.setText(summary)
+        except Exception:
+            pass
+        if isinstance(multi_count, int) and multi_count > 1:
+            spin.setStyleSheet("background-color: #fff4e5;")
+        else:
+            spin.setStyleSheet("")
+        self._update_image_duration_controls()
+
+    def _on_image_duration_value_changed(self, value: float) -> None:
+        remote = None
+        try:
+            if self._image_duration_remote is not None:
+                remote = float(self._image_duration_remote)
+        except Exception:
+            remote = None
+        dirty = remote is None or abs(float(value) - float(remote)) > 0.05
+        self._image_duration_dirty = dirty
+        self._update_image_duration_controls()
+
+    def _emit_image_duration_apply(self) -> None:
+        if not self._targets_enabled:
+            return
+        value = float(self._image_duration_spin.value())
+        self.miscCommandTriggered.emit("image_duration_set", {"seconds": value})
+
+    def _emit_image_duration_refresh(self) -> None:
+        if not self._targets_enabled:
+            return
+        self.miscCommandTriggered.emit("image_duration_get", {})
+
+    def _update_image_duration_controls(self) -> None:
+        apply_enabled = self._targets_enabled and self._image_duration_dirty
+        apply_reason = None
+        if not self._targets_enabled:
+            apply_reason = self._selection_required_tip
+        elif not self._image_duration_dirty:
+            apply_reason = "Modifica il valore per applicarlo"
+        self._set_control_enabled(
+            self._image_duration_apply,
+            apply_enabled,
+            disabled_reason=apply_reason,
+        )
+        if apply_enabled:
+            self._image_duration_apply.setStyleSheet(
+                f"{self._image_duration_apply_base_style}\nbackground-color: #27ae60; color: #ffffff;"
+            )
+        else:
+            self._image_duration_apply.setStyleSheet(self._image_duration_apply_base_style)
+        refresh_reason = None if self._targets_enabled else self._selection_required_tip
+        self._set_control_enabled(
+            self._image_duration_refresh,
+            self._targets_enabled,
+            disabled_reason=refresh_reason,
+        )
+        spin_reason = None if self._targets_enabled else self._selection_required_tip
+        self._set_control_enabled(
+            self._image_duration_spin,
+            self._targets_enabled,
+            disabled_reason=spin_reason,
+        )
 
     def _emit_brightness_command(self) -> None:
         if not self._targets_enabled or not self._brightness_dirty:
@@ -1722,7 +1992,31 @@ class CommandsTab(QWidget):
                 normalized = resolved.as_posix()
         elif resolved is not None:
             normalized = resolved.as_posix()
+        if resolved is not None and normalized:
+            self._remember_playlist_asset(normalized, resolved)
         return normalized, resolved
+
+    def _remember_playlist_asset(self, rel: str, path_obj: Path) -> None:
+        try:
+            key = self._normalize_validation_key(rel)
+            self._playlist_asset_cache[key] = path_obj
+        except Exception:
+            pass
+        try:
+            abs_key = self._normalize_validation_key(path_obj.as_posix())
+            self._playlist_asset_cache[abs_key] = path_obj
+        except Exception:
+            pass
+        try:
+            base = Path(rel).name
+        except Exception:
+            base = rel
+        if base:
+            try:
+                base_key = self._normalize_validation_key(base)
+                self._playlist_asset_cache[base_key] = path_obj
+            except Exception:
+                pass
 
     def _normalize_playlist_items(self) -> None:
         updated = False
@@ -1737,6 +2031,32 @@ class CommandsTab(QWidget):
                 updated = True
         if updated:
             self._local_playlist_fp = None
+        self._apply_playlist_numbering()
+
+    def _derive_playlist_label(self, item: QListWidgetItem) -> str:
+        base = item.data(self._PLAYLIST_LABEL_ROLE)
+        if base:
+            return str(base)
+        raw = item.data(Qt.UserRole) or item.text()
+        try:
+            base_label = Path(str(raw or "")).name
+        except Exception:
+            base_label = str(raw or "")
+        if not base_label:
+            base_label = str(raw or "")
+        item.setData(self._PLAYLIST_LABEL_ROLE, base_label)
+        return base_label
+
+    def _apply_playlist_numbering(self) -> None:
+        if not hasattr(self, "_playlist"):
+            return
+        # Keep numbering separate to avoid storing prefix in text payloads
+        for idx in range(self._playlist.count()):
+            item = self._playlist.item(idx)
+            if item is None:
+                continue
+            label = self._derive_playlist_label(item)
+            item.setData(Qt.DisplayRole, f"{idx + 1} - {label}")
 
     def _build_validation_lookup(self, entries: Sequence[str]) -> set[str]:
         lookup: set[str] = set()
@@ -2124,6 +2444,95 @@ class CommandsTab(QWidget):
         # Keep bar visibility in sync with activity
         self.set_upload_activity(f)
 
+    # -----------------------------
+    # Media clone progress UI
+    # -----------------------------
+    def _reset_clone_panel(self) -> None:
+        if not hasattr(self, "_clone_stage_label"):
+            return
+        try:
+            self._clone_stage_label.setText("In attesa di una clonazione media…")
+            self._clone_stage_label.setStyleSheet("color: #95a5a6;")
+        except Exception:
+            pass
+        try:
+            self._clone_progress.setVisible(False)
+            self._clone_progress.setValue(0)
+        except Exception:
+            pass
+        try:
+            self._clone_progress_hint.setText("")
+        except Exception:
+            pass
+        try:
+            self._clone_log.clear()
+        except Exception:
+            pass
+        self._clone_job_active = False
+
+    def reset_clone_panel(self) -> None:
+        """Espone un reset esplicito per la UI principale prima di una nuova clonazione."""
+        self._reset_clone_panel()
+
+    def set_clone_progress(self, fraction: float, stage: str) -> None:
+        if not hasattr(self, "_clone_progress"):
+            return
+        try:
+            pct = max(0.0, min(1.0, float(fraction)))
+        except Exception:
+            pct = 0.0
+        if not getattr(self, "_clone_job_active", False):
+            try:
+                self._clone_log.clear()
+            except Exception:
+                pass
+        try:
+            self._clone_progress.setVisible(True)
+            self._clone_progress.setValue(int(pct * 100))
+            self._clone_progress_hint.setText(f"{int(pct * 100)}%")
+        except Exception:
+            pass
+        if stage:
+            try:
+                self._clone_stage_label.setText(stage)
+                self._clone_stage_label.setStyleSheet("color: #ecf0f1;")
+            except Exception:
+                pass
+        self._clone_job_active = True
+
+    def append_clone_log(self, message: str) -> None:
+        if not hasattr(self, "_clone_log"):
+            return
+        try:
+            ts = QDateTime.currentDateTime().toString("HH:mm:ss")
+        except Exception:
+            ts = "--:--"
+        line = f"[{ts}] {message}" if message else f"[{ts}]"
+        try:
+            self._clone_log.appendPlainText(line)
+        except Exception:
+            pass
+        self._clone_job_active = True
+
+    def finish_clone_job(self, ok: bool, summary: str | None = None) -> None:
+        if not hasattr(self, "_clone_stage_label"):
+            return
+        text = summary or ("Clonazione completata" if ok else "Clonazione fallita")
+        color = "#27ae60" if ok else "#e74c3c"
+        try:
+            self._clone_stage_label.setText(text)
+            self._clone_stage_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        except Exception:
+            pass
+        try:
+            self._clone_progress.setVisible(True)
+            if ok:
+                self._clone_progress.setValue(100)
+            self._clone_progress_hint.setText("OK" if ok else "ERR")
+        except Exception:
+            pass
+        self._clone_job_active = False
+
     def _clear_action_badge(self) -> None:
         try:
             self._action_badge.setText("")
@@ -2322,6 +2731,7 @@ class CommandsTab(QWidget):
 
     def _on_playlist_loop_toggled(self, checked: bool) -> None:
         """Dispatch playlist loop command and mirror hidden checkbox without feedback loops."""
+        self._playlist_loop_pending = (bool(checked), _time.monotonic() + self._loop_pending_timeout)
         try:
             self.miscCommandTriggered.emit("playlist_loop_on" if checked else "playlist_loop_off", {})
         except Exception:
@@ -2343,6 +2753,30 @@ class CommandsTab(QWidget):
         except Exception:
             pass
 
+    def _on_playback_loop_toggled(self, checked: bool) -> None:
+        self._loop_pending = (bool(checked), _time.monotonic() + self._loop_pending_timeout)
+        try:
+            self.miscCommandTriggered.emit("loop_on" if checked else "loop_off", {})
+        except Exception:
+            pass
+
+    def _should_apply_loop_update(self, kind: str, remote_state: bool) -> bool:
+        if kind == "playback":
+            pending = self._loop_pending
+        else:
+            pending = self._playlist_loop_pending
+        if not pending:
+            return True
+        desired, deadline = pending
+        now = _time.monotonic()
+        if remote_state == desired or now >= deadline:
+            if kind == "playback":
+                self._loop_pending = None
+            else:
+                self._playlist_loop_pending = None
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # Playlist helpers
     # ------------------------------------------------------------------
@@ -2360,9 +2794,11 @@ class CommandsTab(QWidget):
             payload = normalized or str(rel)
             entry = QListWidgetItem(label)
             entry.setData(Qt.UserRole, payload)
+            entry.setData(self._PLAYLIST_LABEL_ROLE, label)
             self._playlist.addItem(entry)
             added_rel.append(payload)
         self._normalize_playlist_items()
+        self._apply_playlist_numbering()
         if added_rel:
             self._handle_new_playlist_entries(added_rel)
         self._emit_playlist_changed()
@@ -2461,7 +2897,22 @@ class CommandsTab(QWidget):
             self._handle_new_playlist_entries(items)
         self._emit_playlist_changed()
 
+    def _build_playlist_payload(self) -> list[str]:
+        payload: list[str] = []
+        for i in range(self._playlist.count()):
+            it = self._playlist.item(i)
+            if it is None:
+                continue
+            raw = it.data(Qt.UserRole) or it.text()
+            normalized, _ = self._canonicalize_playlist_value(str(raw))
+            if normalized:
+                payload.append(normalized)
+            elif raw:
+                payload.append(str(raw))
+        return payload
+
     def _emit_playlist_changed(self) -> None:
+        self._apply_playlist_numbering()
         self._clear_playlist_validation()
         items: list[str] = []
         for i in range(self._playlist.count()):
@@ -2475,12 +2926,111 @@ class CommandsTab(QWidget):
         # Marca la playlist come modificata localmente
         self._playlist_dirty = True
         # LED rosso (dirty)
-        self._set_playlist_led_color("red")
+        self._set_playlist_led_color("red", "Modifiche locali non ancora inviate")
         self._compute_local_playlist_fingerprint()
         self.playlistChanged.emit(items)
         self._update_total_tc()
         self._update_playlist_controls_state()
         self._apply_playlist_availability_styles()
+        payload = self._build_playlist_payload()
+        self._handle_post_playlist_change(payload)
+
+    def _handle_post_playlist_change(self, payload: list[str]) -> None:
+        if not payload:
+            self._cancel_auto_apply()
+            return
+        change_kind = self._classify_playlist_change(payload)
+        if change_kind in {"reorder", "remove"}:
+            self._schedule_auto_apply(payload)
+        elif change_kind in {"add", "mixed"}:
+            self._cancel_auto_apply()
+        elif change_kind == "none":
+            self._cancel_auto_apply()
+
+    def _classify_playlist_change(self, payload: list[str]) -> str:
+        baseline = self._last_synced_playlist_items
+        if not baseline:
+            return "unknown"
+        if payload == baseline:
+            return "none"
+        current = Counter(payload)
+        previous = Counter(baseline)
+        if current == previous:
+            return "reorder"
+        added = any(current[item] > previous.get(item, 0) for item in current)
+        removed = any(previous[item] > current.get(item, 0) for item in previous)
+        if added and removed:
+            return "mixed"
+        if added:
+            return "add"
+        if removed:
+            return "remove"
+        return "unknown"
+
+    def _schedule_auto_apply(self, payload: list[str]) -> None:
+        if not self._targets_enabled:
+            return
+        if not self._can_auto_apply_now(payload):
+            self._cancel_auto_apply()
+            return
+        loop_flag = self._current_loop_state()
+        self._auto_apply_pending = (list(payload), loop_flag)
+        self._auto_apply_timer.start()
+        self._set_playlist_led_color("orange", "Riordino rilevato: sincronizzazione automatica…")
+        self._update_synced_playlist_snapshot(payload)
+
+    def _cancel_auto_apply(self) -> None:
+        self._auto_apply_pending = None
+        try:
+            self._auto_apply_timer.stop()
+        except Exception:
+            pass
+
+    def _on_auto_apply_timeout(self) -> None:
+        pending = self._auto_apply_pending
+        if not pending:
+            return
+        items, loop_flag = pending
+        if not self._can_auto_apply_now(items):
+            self._auto_apply_pending = None
+            return
+        self._set_playlist_led_color("orange", "Playlist aggiornata automaticamente")
+        self.playlistAutoApplyRequested.emit(items, loop_flag)
+        self._auto_apply_pending = None
+
+    def _can_auto_apply_now(self, payload: list[str]) -> bool:
+        if not self._targets_enabled:
+            return False
+        if not payload:
+            return False
+        if self._downloads_in_progress:
+            return False
+        if not self._device_media_seen:
+            return False
+        return self._has_all_items_on_device(payload)
+
+    def _current_loop_state(self) -> bool:
+        try:
+            if hasattr(self, "_playlist_loop_checkbox") and self._playlist_loop_checkbox is not None:
+                return bool(self._playlist_loop_checkbox.isChecked())
+            if hasattr(self, "_playlist_loop_toggle") and self._playlist_loop_toggle is not None:
+                return bool(self._playlist_loop_toggle.isChecked())
+        except Exception:
+            pass
+        return False
+
+    def _has_all_items_on_device(self, payload: list[str]) -> bool:
+        names = self._device_media_names
+        if not names:
+            return False
+        for entry in payload:
+            base = self._playlist_basename(entry).lower()
+            if base and base not in names:
+                return False
+        return True
+
+    def _update_synced_playlist_snapshot(self, payload: list[str]) -> None:
+        self._last_synced_playlist_items = list(payload)
 
     def _compute_local_playlist_fingerprint(self) -> dict[str, Any]:
         """Calcola hash locale della playlist usando la media root configurata."""
@@ -2577,6 +3127,7 @@ class CommandsTab(QWidget):
             if not media_path or not media_path.exists():
                 missing_local.append(str(rel))
                 continue
+            self._remember_playlist_asset(str(rel), media_path)
             self._downloads_in_progress.add(key)
             self.uploadRequested.emit(str(media_path))
             started = True
@@ -2599,11 +3150,27 @@ class CommandsTab(QWidget):
         try:
             candidate = (self._media_root / Path(rel))
         except Exception:
-            return None
+            candidate = None
+        if candidate is not None:
+            try:
+                return candidate.resolve()
+            except Exception:
+                return candidate
+        # fallback to cached assets (es. file aggiunti fuori dalla media root)
+        key = self._normalize_validation_key(str(rel))
+        cached = self._playlist_asset_cache.get(key)
+        if cached and cached.exists():
+            return cached
         try:
-            return candidate.resolve()
+            base = Path(rel).name
         except Exception:
-            return candidate
+            base = None
+        if base:
+            cache_key = self._normalize_validation_key(base)
+            cached = self._playlist_asset_cache.get(cache_key)
+            if cached and cached.exists():
+                return cached
+        return None
 
     def _apply_playlist_availability_styles(self) -> None:
         """Evidenzia gli elementi non presenti sul device o in download."""
@@ -2668,6 +3235,8 @@ class CommandsTab(QWidget):
             return str(value)
 
     def _emit_push_playlist(self) -> None:
+        # Allow remote updates once the playlist is being dispatched
+        self._resume_playlist_updates()
         items: list[str] = []
         for i in range(self._playlist.count()):
             it = self._playlist.item(i)
@@ -2682,17 +3251,8 @@ class CommandsTab(QWidget):
         # Reset del flag dirty (stiamo inviando al player)
         self._playlist_dirty = False
         # LED arancione (in progress)
-        self._set_playlist_led_color("orange")
-        # Determine playlist loop from promoted toggle if available
-        try:
-            if hasattr(self, "_playlist_loop_checkbox") and self._playlist_loop_checkbox is not None:
-                pl_loop = bool(self._playlist_loop_checkbox.isChecked())
-            elif hasattr(self, "_playlist_loop_toggle") and self._playlist_loop_toggle is not None:
-                pl_loop = bool(self._playlist_loop_toggle.isChecked())
-            else:
-                pl_loop = False
-        except Exception:
-            pl_loop = False
+        self._set_playlist_led_color("orange", "Playlist in invio verso i player")
+        pl_loop = self._current_loop_state()
         self.playlistPushRequested.emit(items, self._clear_before_push.isChecked(), pl_loop)
 
     def _apply_playlist_frame_style(self) -> None:
@@ -2722,7 +3282,7 @@ class CommandsTab(QWidget):
         except Exception:
             pass
 
-    def _set_playlist_led_color(self, state: str) -> None:
+    def _set_playlist_led_color(self, state: str, reason: str | None = None) -> None:
         colors = {
             "red": "#e74c3c",
             "orange": "#f39c12",
@@ -2734,6 +3294,17 @@ class CommandsTab(QWidget):
         self._apply_playlist_frame_style()
         try:
             self._playlist_led.setStyleSheet(f"background-color: {color}; border-radius: 7px;")
+        except Exception:
+            pass
+        default_reasons = {
+            "red": "Playlist locale non allineata",
+            "orange": "Playlist in aggiornamento",
+            "green": "Playlist allineata ai device",
+            "gray": "Playlist non sincronizzata",
+        }
+        tip = reason or default_reasons.get(state, "Stato playlist sconosciuto")
+        try:
+            self._playlist_led.setToolTip(tip)
         except Exception:
             pass
 
@@ -2753,9 +3324,9 @@ class CommandsTab(QWidget):
     def set_total_timecode_text(self, text: str) -> None:
         self._total_tc_label.setText(text)
 
-    def set_playlist_led(self, state: str) -> None:
+    def set_playlist_led(self, state: str, reason: str | None = None) -> None:
         """Public setter to control the playlist LED color (red/orange/green/gray)."""
-        self._set_playlist_led_color(state)
+        self._set_playlist_led_color(state, reason)
 
     def set_banner(self, text: str | None, level: str = "info") -> None:
         """Set a status banner below playlist controls.

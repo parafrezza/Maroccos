@@ -16,11 +16,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#ifndef GLFW_EXPOSE_NATIVE_WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
-#endif
-#include "ofAppGLFWWindow.h"
-#include <GLFW/glfw3native.h>
 #else
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -93,11 +88,12 @@ void ofApp::saveDefaultConfigIfMissing(){
         ofJson j;
         j["mediaDir"] = cfg.mediaDir;
         j["udpPort"] = cfg.udpPort;
-        j["httpPort"] = cfg.httpPort;                 // <— NUOVO
+        j["httpPort"] = cfg.httpPort;                 // <- NUOVO
         j["startPaused"] = cfg.startPaused;
         j["loopEach"] = cfg.loopEach;
         j["targetFps"] = cfg.targetFps;
         j["autoReloadOnChange"] = cfg.autoReloadOnChange;
+        j["centerVideo"] = cfg.centerVideo;
         ofSavePrettyJson("config.json", j);
         ofLogNotice() << "config.json creato (default).";
     }
@@ -113,6 +109,7 @@ void ofApp::loadConfig(){
     if(j.contains("loopEach")) cfg.loopEach = j["loopEach"].get<bool>();
     if(j.contains("targetFps")) cfg.targetFps = j["targetFps"].get<int>();
     if(j.contains("autoReloadOnChange")) cfg.autoReloadOnChange = j["autoReloadOnChange"].get<bool>();
+    if(j.contains("centerVideo")) cfg.centerVideo = j["centerVideo"].get<bool>();
     if(const char* envMediaDir = std::getenv("MEDIA_DIR")){
         if(envMediaDir[0] != '\0'){
             cfg.mediaDir = envMediaDir;
@@ -194,6 +191,7 @@ void ofApp::setup(){
     api.fnPrev      = [this]{ this->prev(); };
     api.fnSetIndex  = [this](size_t i){ this->setIndex(i); };
     api.fnSetDir    = [this](const std::string& p){ this->setDir(p); };
+    api.fnCenterVideo = [this](bool on){ this->setCenterVideo(on); };
     api.fnReload    = [this]{ this->reloadPlaylist(); };
     api.fnStatus    = [this]{ return this->statusString(); };
     api.fnPlaylist  = [this]{ return this->playlistJSON(); };
@@ -440,6 +438,18 @@ void ofApp::setDir(const std::string& dir){
     ofLogNotice() << "DIR -> " << cfg.mediaDir;
 }
 
+void ofApp::setCenterVideo(bool enabled){
+    bool sanitized = enabled;
+    if(cfg.centerVideo == sanitized){
+        return;
+    }
+    cfg.centerVideo = sanitized;
+    ofJson j = ofLoadJson("config.json");
+    j["centerVideo"] = cfg.centerVideo;
+    ofSavePrettyJson("config.json", j);
+    ofLogNotice() << "CENTER VIDEO -> " << (cfg.centerVideo ? "center" : "top-left");
+}
+
 void ofApp::playFileAbsolute(const std::string& absPath){
     if(absPath.empty()){
         ofLogError() << "PLAY_FILE: path vuoto";
@@ -521,6 +531,7 @@ std::string ofApp::statusString() const {
     ss << "\"index\":" << currentIndex << ",";
     ss << "\"playing\":" << (isPlaying ? "true":"false") << ",";
     ss << "\"loop\":" << (cfg.loopEach ? "true":"false") << ",";
+    ss << "\"centerVideo\":" << (cfg.centerVideo ? "true":"false") << ",";
     ss << "\"kind\":\"" << (currentIsImage ? "image" : "video") << "\",";
     ss << "\"file\":\"";
     if(!playlist.empty() && currentIndex < playlist.size()){
@@ -807,8 +818,8 @@ void ofApp::draw(){
                 float scale = std::min(sw/iw, sh/ih);
                 float dw = iw * scale;
                 float dh = ih * scale;
-                float x = (sw - dw) * 0.5f;
-                float y = (sh - dh) * 0.5f;
+                float x = cfg.centerVideo ? (sw - dw) * 0.5f : 0.0f;
+                float y = cfg.centerVideo ? (sh - dh) * 0.5f : 0.0f;
                 ofSetColor(255);
                 currentImage.draw(x, y, dw, dh);
             }
@@ -820,11 +831,13 @@ void ofApp::draw(){
                 float sw = ofGetWidth(), sh = ofGetHeight();
                 float scale = std::min(sw/vw, sh/vh);
                 float dw = vw*scale, dh = vh*scale;
-                float x = (sw - dw) * 0.5f;
-                float y = (sh - dh) * 0.5f;
+                float x = cfg.centerVideo ? (sw - dw) * 0.5f : 0.0f;
+                float y = cfg.centerVideo ? (sh - dh) * 0.5f : 0.0f;
                 player.draw(x, y, dw, dh);
             }
         }
+
+        drawTrackIndexBadge();
 
         // splash overlay sopra al video se attivo
         splash.draw(ofGetWidth(), ofGetHeight());
@@ -1133,11 +1146,43 @@ void ofApp::drawLedTestPattern(){
     ofPopStyle();
 }
 
+void ofApp::drawTrackIndexBadge(){
+    if(playlist.empty() || hudMode == HudMode::Hidden){
+        return;
+    }
+    size_t safeIndex = currentIndex;
+    if(safeIndex >= playlist.size()){
+        safeIndex = playlist.size() - 1;
+    }
+    std::string text = ofToString(static_cast<int>(safeIndex) + 1);
+    ofPushStyle();
+    ofEnableBlendMode(OF_BLENDMODE_ALPHA);
+    ofSetColor(255, 242, 99, 230);
+    float margin = 36.0f;
+    if(overlayFontLoaded){
+        float scale = 3.4f;
+        float w = overlayFont.stringWidth(text) * scale;
+        float h = overlayFont.getLineHeight() * scale;
+        ofPushMatrix();
+        ofTranslate(ofGetWidth() - w - margin, h + margin);
+        ofScale(scale, scale);
+        overlayFont.drawString(text, 0.0f, 0.0f);
+        ofPopMatrix();
+    }else{
+        ofDrawBitmapStringHighlight(text, ofGetWidth() - 60.0f, 48.0f, ofColor(0, 0, 0, 160), ofColor(255));
+    }
+    ofPopStyle();
+}
+
 void ofApp::keyPressed(int key){
     ofLogNotice() << "Key pressed -> " << key;
     if(key==' '){ isPlaying ? stop() : play(); }
     if(key==OF_KEY_RIGHT) next();
     if(key==OF_KEY_LEFT) prev();
+    if(key=='c' || key=='C'){
+        setCenterVideo(!cfg.centerVideo);
+        return;
+    }
     if(key=='f' || key=='F'){
         auto window = ofGetWindowPtr();
         if(!window){
@@ -1159,26 +1204,20 @@ void ofApp::keyPressed(int key){
                 int posX = std::max(0, (screenW - targetW) / 2);
                 int posY = std::max(0, (screenH - targetH) / 2);
 #ifdef _WIN32
-                if(auto windowPtr = ofGetWindowPtr()){
-                    if(auto glfwWindow = std::dynamic_pointer_cast<ofAppGLFWWindow>(windowPtr)){
-                        if(GLFWwindow* nativeGLFW = glfwWindow->getGLFWWindow()){
-                            if(HWND hwnd = glfwGetWin32Window(nativeGLFW)){
-                                // Force native window size/position so the OS applies chrome offsets correctly
-                                RECT rect{posX, posY, posX + targetW, posY + targetH};
-                                DWORD style = GetWindowLong(hwnd, GWL_STYLE);
-                                AdjustWindowRectEx(&rect, style, FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
-                                int widthAdj = rect.right - rect.left;
-                                int heightAdj = rect.bottom - rect.top;
-                                SetWindowPos(hwnd, nullptr, std::max(0, posX), std::max(0, posY), widthAdj, heightAdj, SWP_NOZORDER | SWP_NOACTIVATE);
-                            }else{
-                                ofSetWindowPosition(posX, posY);
-                            }
-                        }else{
-                            ofSetWindowPosition(posX, posY);
-                        }
-                    }else{
-                        ofSetWindowPosition(posX, posY);
-                    }
+                if(HWND hwnd = ofGetWin32Window()){
+                    RECT rect{posX, posY, posX + targetW, posY + targetH};
+                    DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+                    AdjustWindowRectEx(&rect, style, FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
+                    int widthAdj = rect.right - rect.left;
+                    int heightAdj = rect.bottom - rect.top;
+                    SetWindowPos(
+                        hwnd,
+                        nullptr,
+                        std::max(0, posX),
+                        std::max(0, posY),
+                        widthAdj,
+                        heightAdj,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
                 }else{
                     ofSetWindowPosition(posX, posY);
                 }

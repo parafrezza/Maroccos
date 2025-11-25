@@ -20,6 +20,7 @@ struct AppConfig {
     bool loopEach = true;
     int targetFps = 25;
     bool autoReloadOnChange = true;
+    bool centerVideo = false;
 };
 
 class ofApp : public ofBaseApp {
@@ -46,6 +47,7 @@ public:
     void setIndex(size_t idx);
     void reloadPlaylist();
     void setDir(const std::string& dir);
+    void setCenterVideo(bool enabled);
     void playFileAbsolute(const std::string& absPath);
     // visual fades
     void fadeIn(float seconds);
@@ -100,6 +102,7 @@ private:
     void updateLedTestAnimation();
     void updateLedTestArea();
     void drawLedTestPattern();
+    void drawTrackIndexBadge();
     DisplayInfo detectDisplayInfo() const;
     DisplayInfo getDisplayInfoCached() const;
     std::string formatDisplayInfo(const DisplayInfo& info) const;
@@ -159,4 +162,6 @@ private:
     bool wsaInitialized = false;
 #endif
 };
+
+
 

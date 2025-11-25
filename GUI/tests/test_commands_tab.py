@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from collections.abc import Iterator
 
 import pytest
 
@@ -24,7 +25,7 @@ def qapp() -> QApplication:
 
 
 @pytest.fixture()
-def commands_tab(qapp: QApplication) -> CommandsTab:
+def commands_tab(qapp: QApplication) -> Iterator[CommandsTab]:
     tab = CommandsTab()
     yield tab
     tab.deleteLater()
@@ -172,3 +173,43 @@ def test_prev_command_blocked_with_single_playlist_item(commands_tab: CommandsTa
 
     assert spy.count() == 0
     assert "Playlist con un solo elemento" in commands_tab._banner_label.text()
+
+
+def test_auto_apply_emitted_on_reorder(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab.set_device_media_items([
+        {"name": "track_a.mp4", "size": 10},
+        {"name": "track_b.mp4", "size": 10},
+    ])
+    commands_tab.set_playlist_from_player(["track_a.mp4", "track_b.mp4"], current_index=0)
+    commands_tab._auto_apply_timer.setInterval(5)
+    spy = QSignalSpy(commands_tab.playlistAutoApplyRequested)
+
+    second = commands_tab._playlist.takeItem(1)
+    commands_tab._playlist.insertItem(0, second)
+    commands_tab._emit_playlist_changed()
+    qapp.processEvents()
+
+    if spy.count() == 0:
+        spy.wait(200)
+    assert spy.count() == 1
+    emitted = spy.at(0)
+    assert emitted[0] == ["track_b.mp4", "track_a.mp4"]
+
+
+def test_auto_apply_not_triggered_on_add(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab.set_device_media_items([{ "name": "track_a.mp4", "size": 10 }])
+    commands_tab.set_playlist_from_player(["track_a.mp4"], current_index=0)
+    commands_tab._auto_apply_timer.setInterval(5)
+    spy = QSignalSpy(commands_tab.playlistAutoApplyRequested)
+
+    new_item = QListWidgetItem("track_b.mp4")
+    new_item.setData(Qt.UserRole, "track_b.mp4")
+    commands_tab._playlist.addItem(new_item)
+    commands_tab._emit_playlist_changed()
+    qapp.processEvents()
+
+    if spy.count() == 0:
+        spy.wait(200)
+    assert spy.count() == 0

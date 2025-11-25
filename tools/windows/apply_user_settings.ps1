@@ -23,6 +23,74 @@ function Write-Ok([string]$Message) {
     Write-Host "[OK]  $Message" -ForegroundColor Green
 }
 
+function Invoke-TaskbarVerb {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetPath,
+        [Parameter(Mandatory=$true)][string]$Verb
+    )
+
+    $shell = $null
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $folderPath = Split-Path -Path $TargetPath -Parent
+        $leaf = Split-Path -Path $TargetPath -Leaf
+        $folder = $shell.Namespace($folderPath)
+        if (-not $folder) { return $false }
+        $item = $folder.ParseName($leaf)
+        if (-not $item) { return $false }
+        $item.InvokeVerb($Verb)
+        Start-Sleep -Milliseconds 400
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($shell) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null }
+    }
+}
+
+function Ensure-TaskbarPin {
+    param([Parameter(Mandatory=$true)][string]$TargetPath)
+
+    $expanded = [Environment]::ExpandEnvironmentVariables($TargetPath)
+    if (-not (Test-Path $expanded -PathType Leaf)) {
+        Write-Info "Impossibile fissare sulla taskbar (file mancante): $expanded"
+        return
+    }
+
+    # Rimuovi eventuali pin precedenti per evitare duplicati
+    Invoke-TaskbarVerb -TargetPath $expanded -Verb 'taskbarunpin' | Out-Null
+    if (Invoke-TaskbarVerb -TargetPath $expanded -Verb 'taskbarpin') {
+        Write-Ok "Icona fissata alla taskbar: $expanded"
+    } else {
+        Write-Warning "Impossibile fissare $expanded alla taskbar (verb non disponibile)"
+    }
+}
+
+function Ensure-TaskbarPinnedApps {
+    $configPath = Join-Path $Env:ProgramData 'player_provision\taskbar_pins.json'
+    if (-not (Test-Path $configPath)) {
+        Write-Info "Nessuna configurazione pin taskbar presente ($configPath)"
+        return
+    }
+
+    try {
+        $cfg = Get-Content -Path $configPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Warning "Impossibile leggere configurazione pin taskbar: $($_.Exception.Message)"
+        return
+    }
+
+    if (-not $cfg.pins -or $cfg.pins.Count -eq 0) {
+        Write-Info 'Elenco icone taskbar vuoto'
+        return
+    }
+
+    foreach ($pin in $cfg.pins) {
+        if ([string]::IsNullOrWhiteSpace($pin)) { continue }
+        Ensure-TaskbarPin -TargetPath $pin
+    }
+}
+
 Write-Info "Applicazione impostazioni desktop per utente: $env:USERNAME"
 
 # Sfondo nero (SOLID color)
@@ -108,6 +176,13 @@ try {
         Write-Ok "Desktop pulito"
     }
 } catch {}
+
+# Icone fissate alla taskbar
+try {
+    Ensure-TaskbarPinnedApps
+} catch {
+    Write-Warning "Impossibile fissare le icone sulla taskbar: $($_.Exception.Message)"
+}
 
 # Riavvia Explorer per applicare le modifiche
 try {

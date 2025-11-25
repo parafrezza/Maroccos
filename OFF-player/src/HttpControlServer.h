@@ -31,6 +31,7 @@ struct ControlAPI {
     std::function<std::string()> fnStatus;
     std::function<std::string()> fnPlaylist; // JSON con lista in ordine
     std::function<void(bool)> fnLoop;
+    std::function<void(bool)> fnCenterVideo;
     // Nuove API
     std::function<void()> fnPause;
     std::function<void()> fnResume;

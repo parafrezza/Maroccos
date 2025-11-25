@@ -50,12 +50,18 @@ import netifaces
 import json
 import re
 
+SUBPROCESS_TEXT = {"text": True, "encoding": "utf-8", "errors": "ignore"}
+
 HAS_GST = False
 try:
     import gi
     gi.require_version("Gst", "1.0")
     gi.require_version("GObject", "2.0")
     from gi.repository import Gst, GObject, GLib  # type: ignore
+    try:
+        from gi.repository import GstVideo  # type: ignore
+    except Exception:
+        GstVideo = None  # type: ignore
     HAS_GST = True
 except Exception:
     # Provide lightweight shims so the module can import and the app can run
@@ -134,6 +140,7 @@ except Exception:
     Gst = _DummyGst
     GLib = _DummyGLib
     GObject = None
+    GstVideo = None
 
 # Nota: se HAS_GST è True, Gst/GLib sono già importati sopra.
 # Evita import non condizionati che rompono ambienti senza PyGObject.
@@ -286,6 +293,7 @@ FADE_INTERVAL_MS = 40
 VIDEO_PATH = str(MEDIA_DIR / "orcanmado.mp4")
 APP_PORT = int(os.environ.get("APP_PORT", "8080"))
 SPLASH_BLACK = os.environ.get("SPLASH_BLACK", "0") == "1"
+DISPLAY_CENTER_VIDEO = os.environ.get("DISPLAY_CENTER", "0") in {"1", "true", "True"}
 # Config utente: migra da legacy APP_DIR/config.json se presente
 CONFIG_DIR = _user_config_dir()
 LEGACY_CONFIG_FILE = APP_DIR / "config.json"
@@ -337,8 +345,8 @@ try {{
                 ps,
             ],
             capture_output=True,
-            text=True,
             timeout=20,
+            **SUBPROCESS_TEXT,
         )
         if res.returncode == 0 and "ok" in res.stdout:
             print(f"[MEDIA] Share 'media' attiva su {path}", flush=True)
@@ -917,7 +925,7 @@ def _probe_display_mode_linux() -> dict[str, Any] | None:
     if shutil.which("xrandr") is None:
         return None
     try:
-        proc = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=0.8)
+        proc = subprocess.run(["xrandr", "--current"], capture_output=True, timeout=0.8, **SUBPROCESS_TEXT)
     except Exception:
         return None
     if proc.returncode != 0:
@@ -1223,6 +1231,8 @@ def load_persisted_framework():
             if "TARGET_HEIGHT" in data: TARGET_HEIGHT = int(data.get("TARGET_HEIGHT") or TARGET_HEIGHT)
             if "TARGET_FPS" in data: TARGET_FPS = str(data.get("TARGET_FPS") or TARGET_FPS)
             if "SPLASH_BLACK" in data: SPLASH_BLACK = bool(data.get("SPLASH_BLACK"))
+            if "display_center" in data:
+                DISPLAY_CENTER_VIDEO = bool(data.get("display_center"))
             if data.get("last_media"):
                 lp = Path(data.get("last_media"))
                 if lp.exists():
@@ -1246,6 +1256,19 @@ def load_persisted_framework():
             # Autoplay fade seconds (optional)
             try:
                 globals()["AUTOPLAY_FADE_SECONDS"] = float(data.get("autoplay_fade_seconds", data.get("AUTOPLAY_FADE_SECONDS", globals().get("AUTOPLAY_FADE_SECONDS", 1.0))))
+            except Exception:
+                pass
+            # Image duration default
+            try:
+                dur_candidate = data.get("image_duration_seconds", data.get("IMAGE_DURATION_SECONDS"))
+                if dur_candidate is not None:
+                    duration_val = float(dur_candidate)
+                    if duration_val < IMAGE_DURATION_MIN_SECONDS:
+                        duration_val = IMAGE_DURATION_MIN_SECONDS
+                    if duration_val > IMAGE_DURATION_MAX_SECONDS:
+                        duration_val = IMAGE_DURATION_MAX_SECONDS
+                    globals()["IMAGE_DURATION_DEFAULT_SECONDS"] = duration_val
+                    image_duration_state["seconds"] = duration_val
             except Exception:
                 pass
             # Log UDP config (optional)
@@ -1354,6 +1377,7 @@ def persist_settings(extra: dict | None = None):
             "TARGET_HEIGHT": TARGET_HEIGHT,
             "TARGET_FPS": TARGET_FPS,
             "SPLASH_BLACK": SPLASH_BLACK,
+            "display_center": DISPLAY_CENTER_VIDEO,
             "last_media": VIDEO_PATH,
             # "udp_enabled": UDP_ENABLED,  # Rimosso: UDP sempre attivo
             "autoplay_enabled": autoplay.get("enabled", False),
@@ -1375,6 +1399,7 @@ def persist_settings(extra: dict | None = None):
             "startup_macs": STARTUP_MACS,
             "startup_broadcast": STARTUP_BROADCAST,
             "startup_port": STARTUP_PORT,
+            "image_duration_seconds": float(image_duration_state.get("seconds", _image_duration_default_seconds())),
         })
         # Rimuovi chiavi legacy non più supportate
         for legacy_key in ("osc_enabled", "OSC_ENABLED"):
@@ -2381,7 +2406,7 @@ except Exception:
     pass
 
 main_loop = GLib.MainLoop()
-player = {"pipeline": None, "vb": None, "alpha": None, "loop": True, "state": "stopped"}
+player = {"pipeline": None, "vb": None, "alpha": None, "loop": True, "state": "stopped", "sink": None}
 # Simple explicit FSM view for client UIs: idle | preparing | playing | stopping
 fsm = {"state": "idle", "previous": None, "last_change": time.time(), "reason": None, "action": None, "error": None, "end_monitor_id": None}
 
@@ -2427,6 +2452,18 @@ def fsm_idle(reason: str | None = None, error: str | None = None) -> None:
 playlist = {"items": [], "index": -1, "loop": True}
 splash = {"pipeline": None, "src": None, "vb": None, "active": False}  # Tracking splash (se attivo copre lo schermo)
 preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipeline pre-caricata per prossimo elemento playlist
+IMAGE_DURATION_MIN_SECONDS = 1.0
+IMAGE_DURATION_MAX_SECONDS = 600.0
+try:
+    IMAGE_DURATION_DEFAULT_SECONDS = float(os.environ.get("IMAGE_DURATION_DEFAULT_SECONDS", "10"))
+except Exception:
+    IMAGE_DURATION_DEFAULT_SECONDS = 10.0
+image_duration_state: dict[str, Any] = {
+    "seconds": globals().get("IMAGE_DURATION_DEFAULT_SECONDS", IMAGE_DURATION_DEFAULT_SECONDS),
+    "timer": None,
+    "path": None,
+    "deadline": None,
+}
 fade_seq = 0  # Sequenziatore per cancellare fade sovrapposti
 
 # Overlay controller (pipeline separata su plane dedicato)
@@ -2488,8 +2525,8 @@ def _collect_off_pids_windows() -> list[int]:
         result = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
             capture_output=True,
-            text=True,
             check=True,
+            **SUBPROCESS_TEXT,
         )
     except Exception:
         return []
@@ -2539,7 +2576,7 @@ def _off_process_watchdog_loop() -> None:
                 killable = pids
             for pid in killable:
                 try:
-                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True)
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, **SUBPROCESS_TEXT)
                     print(f"[OFF-WATCHDOG] Terminato OFF-player orfano PID={pid}", flush=True)
                 except Exception as exc:
                     print(f"[OFF-WATCHDOG] Impossibile terminare PID {pid}: {exc}", flush=True)
@@ -4248,7 +4285,7 @@ def _probe_overlay_plane_sysfs() -> tuple[int | None, bool | None]:
 def _probe_overlay_plane_modetest() -> tuple[int | None, bool | None]:
     """Fallback: usa 'modetest -p' se disponibile per trovare un plane 'Overlay'."""
     try:
-        out = subprocess.run(["bash", "-lc", "modetest -p 2>/dev/null"], capture_output=True, text=True, timeout=2)
+        out = subprocess.run(["bash", "-lc", "modetest -p 2>/dev/null"], capture_output=True, timeout=2, **SUBPROCESS_TEXT)
         txt = out.stdout or ""
         if not txt:
             return None, None
@@ -4334,7 +4371,7 @@ def on_bus_message(bus, message, data):
         pass
 
 def build_player_pipeline(path):
-    sink = "kmssink" if USE_KMS else "autovideosink"
+    sink_desc = "kmssink name=vsink" if USE_KMS else "autovideosink name=vsink"
     dec = "decodebin"
     # Supporta immagini statiche (png/jpg/bmp) usando imagefreeze per mantenere un frame costante
     try:
@@ -4351,19 +4388,20 @@ def build_player_pipeline(path):
         desc = (
             f"filesrc location=\"{path}\" ! queue ! {dec} name=dec ! videoconvert ! imagefreeze ! videoconvert ! videoscale ! "
             f"videorate ! {caps_filter} ! videoconvert ! video/x-raw,format=RGBA ! alpha name=af ! videoconvert ! "
-            f"videobalance name=vb ! {sink}"
+            f"videobalance name=vb ! {sink_desc}"
         )
     else:
         desc = (
             f"filesrc location=\"{path}\" ! queue ! {dec} name=dec ! queue ! videoconvert ! videoscale ! "
             f"videorate ! {caps_filter} ! videoconvert ! video/x-raw,format=RGBA ! alpha name=af ! videoconvert ! "
-            f"videobalance name=vb ! {sink}"
+            f"videobalance name=vb ! {sink_desc}"
         )
     print(f"[PLAYER] Pipeline: {desc}", flush=True)
     try:
         pipeline = Gst.parse_launch(desc)
         vb = pipeline.get_by_name("vb")
         af = pipeline.get_by_name("af")
+        sink = pipeline.get_by_name("vsink")
         bus = pipeline.get_bus()
         try:
             bus.add_signal_watch()
@@ -4393,6 +4431,8 @@ def build_player_pipeline(path):
                     w = s.get_int("width")[1]; h = s.get_int("height")[1]
                     print(f"[VIDEO] Stream {w}x{h}", flush=True)
             decbin.connect("pad-added", on_pad_added)
+        player["sink"] = sink
+        _apply_internal_display_center()
         return pipeline, vb, af
     except Exception as e:
         # Se fallisce con kmssink e USE_KMS attivo prova fallback
@@ -4649,6 +4689,40 @@ def adopt_preloaded(path: str) -> bool:
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
 
 
+def _image_duration_default_seconds() -> float:
+    try:
+        base = globals().get("IMAGE_DURATION_DEFAULT_SECONDS", IMAGE_DURATION_DEFAULT_SECONDS)
+    except Exception:
+        base = IMAGE_DURATION_DEFAULT_SECONDS
+    try:
+        return float(base)
+    except Exception:
+        return 10.0
+
+
+def _image_duration_payload() -> dict[str, Any]:
+    default = _image_duration_default_seconds()
+    try:
+        seconds = float(image_duration_state.get("seconds", default))
+    except Exception:
+        seconds = default
+    deadline = image_duration_state.get("deadline")
+    remaining = None
+    if deadline:
+        try:
+            remaining = max(0.0, float(deadline) - time.time())
+        except Exception:
+            remaining = None
+    return {
+        "seconds": seconds,
+        "min": IMAGE_DURATION_MIN_SECONDS,
+        "max": IMAGE_DURATION_MAX_SECONDS,
+        "path": image_duration_state.get("path"),
+        "deadline": deadline,
+        "remaining": remaining,
+    }
+
+
 def _looks_like_image(header: bytes, suffix: str) -> bool:
     """Apply simple magic-number checks for common image formats."""
 
@@ -4664,6 +4738,109 @@ def _looks_like_image(header: bytes, suffix: str) -> bool:
         return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
     if suffix in {".tif", ".tiff"}:
         return header.startswith(b"II*\x00") or header.startswith(b"MM\x00*")
+    return False
+
+def _is_image_media(path: str | None) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).suffix.lower() in _IMAGE_EXTENSIONS
+    except Exception:
+        return False
+
+def _cancel_image_timer() -> None:
+    timer = image_duration_state.get("timer")
+    if timer:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+    image_duration_state.update({"timer": None, "path": None, "deadline": None})
+
+def _schedule_image_timer(path: str) -> None:
+    _cancel_image_timer()
+    if not _is_image_media(path):
+        return
+    try:
+        if player.get("loop"):
+            image_duration_state.update({"path": path, "deadline": None})
+            return
+    except Exception:
+        pass
+    default_seconds = _image_duration_default_seconds()
+    try:
+        seconds = float(image_duration_state.get("seconds", default_seconds))
+    except Exception:
+        seconds = default_seconds
+    if seconds <= 0:
+        return
+    deadline = time.time() + seconds
+    def _fire():
+        GLib.idle_add(_image_timer_fired, path, deadline)
+    timer = threading.Timer(seconds, _fire)
+    timer.daemon = True
+    timer.start()
+    image_duration_state.update({"timer": timer, "path": path, "deadline": deadline})
+    try:
+        print(f"[IMAGE] Timer schedulato: {seconds:.1f}s per {Path(path).name}", flush=True)
+    except Exception:
+        pass
+
+
+def _update_image_timer_policy(path: str | None = None) -> None:
+    target = path or VIDEO_PATH
+    if not target:
+        _cancel_image_timer()
+        return
+    if not _is_image_media(target):
+        _cancel_image_timer()
+        return
+    if player.get("state") != "playing":
+        _cancel_image_timer()
+        image_duration_state.update({"path": target, "deadline": None})
+        return
+    if player.get("loop"):
+        _cancel_image_timer()
+        image_duration_state.update({"path": target, "deadline": None})
+        return
+    _schedule_image_timer(target)
+
+def _advance_playlist_after_timer() -> bool:
+    try:
+        items = playlist.get("items") if isinstance(playlist, dict) else None
+        if not items:
+            stop_play()
+            return False
+        idx = int(playlist.get("index", 0))
+        next_idx = idx + 1
+        if next_idx >= len(items):
+            if playlist.get("loop"):
+                next_idx = 0
+            else:
+                stop_play()
+                return False
+        playlist["index"] = next_idx
+        next_path = items[next_idx]
+        start_play_with_path(next_path, action="image_timeout")
+    except Exception as exc:
+        print(f"[IMAGE] Errore avanzando playlist: {exc}", flush=True)
+    return False
+
+def _image_timer_fired(path: str, expected_deadline: float) -> bool:
+    if image_duration_state.get("path") != path:
+        return False
+    _cancel_image_timer()
+    try:
+        print(f"[IMAGE] Timer scaduto per {Path(path).name}", flush=True)
+    except Exception:
+        pass
+    try:
+        if playlist.get("items"):
+            GLib.idle_add(_advance_playlist_after_timer)
+        else:
+            GLib.idle_add(stop_play)
+    except Exception as exc:
+        print(f"[IMAGE] Timer error: {exc}", flush=True)
     return False
 
 
@@ -4793,6 +4970,7 @@ def start_play(fade_in_seconds: float = 0.5, *, action: str | None = None):
                 GLib.timeout_add(100, _fade_when_ready)
         except Exception:
             pass
+        _update_image_timer_policy(VIDEO_PATH)
         persist_settings()
         fsm_playing("backend_started", action=(action or "play"))
         _autoplay_on_play_started(VIDEO_PATH)
@@ -4828,6 +5006,7 @@ def start_play(fade_in_seconds: float = 0.5, *, action: str | None = None):
         elif player["vb"]:
             fade_to(0.0, fade_in_seconds, start_from=-1.0)
     # Persist last media
+    _update_image_timer_policy(VIDEO_PATH)
     persist_settings()
     _autoplay_on_play_started(VIDEO_PATH)
     # Una volta che si avvia la riproduzione, la readiness per il "go" può considerarsi consumata
@@ -4933,6 +5112,7 @@ def resume_play():
 
 def stop_play():
     fsm_stopping("stop_play")
+    _cancel_image_timer()
     if current_framework["name"] != "gst":
         ensure_backend()
         backend = current_framework.get("backend")
@@ -4949,6 +5129,7 @@ def stop_play():
             player["pipeline"].set_state(Gst.State.NULL)
             player["state"] = "stopped"
             player["pipeline"] = None
+        player["sink"] = None
         player["vb"] = None
         player["alpha"] = None
     try:
@@ -4974,6 +5155,7 @@ def stop_play():
     fsm_idle("stopped")
 
 def set_loop(on: bool):
+    previous = bool(player.get("loop"))
     player["loop"] = bool(on)
     if current_framework["name"] != "gst":
         ensure_backend()
@@ -4983,6 +5165,65 @@ def set_loop(on: bool):
                 backend.set_loop(player["loop"])
             except Exception as exc:
                 print(f"[PLAYER] Set loop backend fallita: {exc}", flush=True)
+    if player["loop"] != previous:
+        try:
+            _update_image_timer_policy()
+        except Exception:
+            pass
+
+def _apply_internal_display_center() -> bool:
+    try:
+        if current_framework.get("name") != "gst":
+            return False
+    except Exception:
+        return False
+    sink = player.get("sink")
+    if sink is None:
+        return False
+    try:
+        pspec = sink.find_property("render-rectangle")  # type: ignore[attr-defined]
+    except Exception:
+        pspec = None
+    if pspec is None:
+        return False
+    try:
+        if DISPLAY_CENTER_VIDEO:
+            sink.set_property("render-rectangle", None)
+        else:
+            rect = (0, 0, int(TARGET_WIDTH), int(TARGET_HEIGHT))
+            try:
+                sink.set_property("render-rectangle", rect)
+            except Exception:
+                if GstVideo:
+                    rectangle = GstVideo.Rectangle()  # type: ignore[attr-defined]
+                    rectangle.x, rectangle.y, rectangle.w, rectangle.h = rect  # type: ignore[attr-defined]
+                    sink.set_property("render-rectangle", rectangle)
+                else:
+                    raise
+        return True
+    except Exception as exc:
+        print(f"[DISPLAY] Errore aggiornando render-rectangle: {exc}", flush=True)
+        return False
+
+def set_display_center(enabled: bool, *, persist: bool = False, propagate: bool = True) -> bool:
+    global DISPLAY_CENTER_VIDEO
+    DISPLAY_CENTER_VIDEO = bool(enabled)
+    if persist:
+        try:
+            persist_settings({"display_center": DISPLAY_CENTER_VIDEO})
+        except Exception:
+            pass
+    applied = _apply_internal_display_center()
+    if propagate:
+        ensure_backend()
+        backend = current_framework.get("backend")
+        if backend and hasattr(backend, "set_center_video"):
+            try:
+                backend.set_center_video(DISPLAY_CENTER_VIDEO)
+                applied = True
+            except Exception as exc:
+                print(f"[DISPLAY] set_center_video backend fallita: {exc}", flush=True)
+    return applied
 
 def fade_to(target: float, duration_s: float = 1.0, on_complete=None, start_from: float | None = None):
     """Esegue fade non bloccante sul brightness.
@@ -6204,6 +6445,7 @@ def status():
             "host": LOG_UDP_HOST,
             "port": LOG_UDP_PORT,
         },
+        "display_center": {"enabled": bool(DISPLAY_CENTER_VIDEO)},
         "hud": {
             "mode": int(globals().get("HUD_MODE", 0) or 0),
             "visible": bool(int(globals().get("HUD_MODE", 0) or 0) > 0),
@@ -6218,6 +6460,7 @@ def status():
         },
         "show_ready": bool(show_state.get("ready")),
         "ready_for": show_state.get("for"),
+        "image_duration": _image_duration_payload(),
         # Playlist readiness summary
         "playlist_hash": _playlist_fingerprint().get("hash"),
         "playlist_ready": bool(_playlist_fingerprint().get("ready")),
@@ -6727,7 +6970,7 @@ def api_shutdown():
         for cmd in _iter_shutdown_cmds():
             try:
                 print(f"[SHUTDOWN] Eseguo: {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, text=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **SUBPROCESS_TEXT)
                 print("[SHUTDOWN] Comando inviato con successo", flush=True)
                 # Se il sistema accetta il comando, chiudiamo l'event loop per una terminazione pulita
                 GLib.idle_add(main_loop.quit)
@@ -6865,9 +7108,6 @@ def api_play(
 
     # Non toccare qui lo splash o la pipeline: ci pensa start_play()
 
-    if loop is None and not autoplay.get("enabled"):
-        # In modalità manuale riespetta il default di riprodurre un singolo media in loop
-        loop = True
     if loop is not None:
         set_loop(loop)
     def start_logic():
@@ -6905,6 +7145,10 @@ def api_play(
                     return {"ok": False, "error": str(e)}
                 try:
                     gui_log("play", data={"path": VIDEO_PATH, "backend": current_framework["name"], "loop": player.get("loop")})
+                except Exception:
+                    pass
+                try:
+                    _update_image_timer_policy(VIDEO_PATH)
                 except Exception:
                     pass
                 return {"ok": True, "playing": VIDEO_PATH, "backend": current_framework["name"], "scheduled": False}
@@ -7974,6 +8218,37 @@ def api_visual_brightness(value: float = Query(...), seconds: float = Query(0.5)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
+
+@app.get("/visual/image_duration")
+def api_image_duration_get():
+    return {"ok": True, "image_duration": _image_duration_payload()}
+
+
+@app.post("/visual/image_duration")
+def api_image_duration_set(seconds: float = Query(..., ge=IMAGE_DURATION_MIN_SECONDS, le=IMAGE_DURATION_MAX_SECONDS)):
+    try:
+        duration = float(seconds)
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "seconds non valido"})
+    if duration < IMAGE_DURATION_MIN_SECONDS or duration > IMAGE_DURATION_MAX_SECONDS:
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": f"seconds fuori range ({IMAGE_DURATION_MIN_SECONDS}-{IMAGE_DURATION_MAX_SECONDS})"},
+        )
+    image_duration_state["seconds"] = duration
+    try:
+        globals()["IMAGE_DURATION_DEFAULT_SECONDS"] = duration
+    except Exception:
+        pass
+    try:
+        persist_settings({"image_duration_seconds": duration})
+    except Exception:
+        pass
+    current_path = image_duration_state.get("path")
+    if current_path:
+        _update_image_timer_policy(current_path)
+    return {"ok": True, "image_duration": _image_duration_payload()}
+
 # ---------- Display mode control (Windows) ----------
 
 
@@ -8356,7 +8631,7 @@ def api_display_mode_apply(payload: dict | None = Body(None)):
 
     start_ts = time.time()
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        proc = subprocess.run(command, capture_output=True, timeout=30, check=False, **SUBPROCESS_TEXT)
         exit_code = int(proc.returncode)
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -8445,6 +8720,25 @@ def api_display_mode_force_720p(payload: dict | None = Body(None)):
         preset["dry_run"] = True
 
     return api_display_mode_apply(preset)
+
+@app.get("/display/center")
+def api_display_center_status():
+    return {"ok": True, "enabled": bool(DISPLAY_CENTER_VIDEO)}
+
+@app.post("/display/center")
+def api_display_center_set(on: Optional[int] = Query(None), payload: Optional[dict[str, Any]] = Body(None)):
+    candidate = on
+    if candidate is None and payload:
+        raw = payload.get("enabled")
+        if raw is None:
+            raw = payload.get("on")
+        if raw is not None:
+            candidate = 1 if str(raw).lower() in {"1", "true", "yes", "on"} else 0
+    if candidate is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Parametro on/enabled richiesto"})
+    enabled = bool(int(candidate))
+    ok = set_display_center(enabled, persist=True)
+    return {"ok": ok, "enabled": enabled}
 
 # ---------- Overlay endpoints ----------
 @app.post("/overlay/show")
@@ -8556,6 +8850,53 @@ def list_media():
         return {"ok": True, "files": files}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/media/archive")
+def media_archive():
+    """Restituisce un archivio ZIP contenente il contenuto di MEDIA_DIR."""
+    if not MEDIA_DIR.exists():
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Cartella media non disponibile"})
+    tmpdir = Path(tempfile.mkdtemp(prefix="media-archive-"))
+    archive_path = tmpdir / "media_sync.zip"
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(MEDIA_DIR):
+                rel_root = Path(root).relative_to(MEDIA_DIR)
+                # Escludi directory di servizio
+                dirs[:] = [d for d in dirs if not d.startswith("_logs")]
+                for fname in files:
+                    if fname in {".DS_Store", "_sentinel_desktop.txt"}:
+                        continue
+                    src_path = Path(root) / fname
+                    rel_path = rel_root / fname if rel_root.parts else Path(fname)
+                    try:
+                        zipf.write(str(src_path), arcname=str(rel_path))
+                    except Exception:
+                        continue
+        handle = open(archive_path, "rb")
+
+        def _cleanup():
+            try:
+                handle.close()
+            except Exception:
+                pass
+            try:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception:
+                pass
+
+        background = BackgroundTask(_cleanup) if BackgroundTask else None
+        headers = {"Content-Disposition": 'attachment; filename="media_sync.zip"'}
+        return StreamingResponse(
+            handle,
+            media_type="application/zip",
+            headers=headers,
+            background=background,
+        )
+    except Exception as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 @app.post("/media/clear")
 def media_clear(confirm: int = Query(0)):
@@ -8985,8 +9326,16 @@ def api_autoplay_update(payload: dict = Body(...)):
 
 def _safe_media_path(name: str) -> Path:
     """Return a MEDIA_DIR-confined path, stripping any directory tricks."""
-    clean = Path(name).name  # drop path components
-    clean = clean.replace("\\", "_")
+    raw = str(name or "").strip()
+    if not raw:
+        raise ValueError("Nome file non valido")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise ValueError("Percorso non consentito")
+    parts = candidate.parts
+    if len(parts) != 1 or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Percorso non consentito")
+    clean = parts[-1].replace("\\", "_")
     if clean in {"", ".", ".."}:
         raise ValueError("Nome file non valido")
     dest = MEDIA_DIR / clean
@@ -9157,12 +9506,12 @@ def ethernet_status():
     """Ritorna stato connessioni ethernet e indirizzi IP v4."""
     info = {"nmcli": None, "ip_addr": None}
     try:
-        out = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE,IP4.ADDRESS", "connection", "show"], text=True)
+        out = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE,IP4.ADDRESS", "connection", "show"], **SUBPROCESS_TEXT)
         info["nmcli"] = out.strip().splitlines()
     except Exception as e:
         info["nmcli"] = [f"errore: {e}"]
     try:
-        out = subprocess.check_output(["ip", "-4", "addr", "show"], text=True)
+        out = subprocess.check_output(["ip", "-4", "addr", "show"], **SUBPROCESS_TEXT)
         info["ip_addr"] = out.strip().splitlines()
     except Exception as e:
         info["ip_addr"] = [f"errore: {e}"]
@@ -9184,7 +9533,7 @@ def ethernet_config(data: dict = Body(...)):
     try:
         # Trova prima connessione ethernet
         cmd_find = "nmcli -t -f NAME,TYPE connection show | awk -F: '$2==\"ethernet\"{print $1; exit}'"
-        p = subprocess.Popen(["bash", "-lc", cmd_find], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen(["bash", "-lc", cmd_find], stdout=subprocess.PIPE, stderr=subprocess.PIPE, **SUBPROCESS_TEXT)
         out, err = p.communicate(timeout=5)
         if p.returncode != 0:
             return JSONResponse(status_code=500, content={"ok": False, "error": f"nmcli find failed: {err.strip()}"})
@@ -9766,10 +10115,10 @@ def api_run_setup(force: bool = Body(False, embed=True)):
             # Esegui direttamente lo script con sudo (richiede regola sudoers specifica)
             cmd = ["sudo", "-n", setup_path]
             try:
-                p = subprocess.Popen(cmd, cwd=str(APP_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                p = subprocess.Popen(cmd, cwd=str(APP_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, **SUBPROCESS_TEXT)
             except Exception:
                 # Fallback: prova con sudo bash PATH (se sudoers permette bash)
-                p = subprocess.Popen(["sudo", "-n", "/bin/bash", setup_path], cwd=str(APP_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                p = subprocess.Popen(["sudo", "-n", "/bin/bash", setup_path], cwd=str(APP_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, **SUBPROCESS_TEXT)
             assert p.stdout is not None
             for line in p.stdout:
                 log_maintenance(line.rstrip())
@@ -9806,7 +10155,7 @@ def api_fix_permissions():
             def _run(cmd: list[str], timeout: float = 30.0) -> None:
                 log_maintenance(f"Eseguo: {' '.join(cmd)}")
                 try:
-                    res = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True)
+                    res = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, **SUBPROCESS_TEXT)
                 except subprocess.TimeoutExpired:
                     log_maintenance(f"Timeout eseguendo {' '.join(cmd)}")
                     raise
@@ -9900,7 +10249,7 @@ def system_reboot():
         for cmd in _iter_reboot_cmds():
             try:
                 print(f"[REBOOT] Eseguo: {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, text=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **SUBPROCESS_TEXT)
                 print("[REBOOT] Comando inviato con successo", flush=True)
                 GLib.idle_add(main_loop.quit)
                 result.update({"ok": True, "message": "Reboot in corso", "attempts": []})
@@ -10019,7 +10368,7 @@ def system_service_restart(name: Optional[str] = Query(None)):
                     f"Try {{ Restart-Service -Name '{svc_name}' -Force -ErrorAction Stop; exit 0 }} Catch {{ Write-Error $_; exit 1 }}",
                 ]
                 print(f"[SERVICE] Eseguo (Windows): {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, text=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, **SUBPROCESS_TEXT)
                 print("[SERVICE] Restart inviato con successo (PowerShell)", flush=True)
                 return
             except subprocess.CalledProcessError as exc:
@@ -10035,7 +10384,7 @@ def system_service_restart(name: Optional[str] = Query(None)):
             # 2) SC stop/start
             try:
                 print(f"[SERVICE] Provo 'sc stop {svc_name}'", flush=True)
-                subprocess.run(["sc", "stop", svc_name], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, text=True)
+                subprocess.run(["sc", "stop", svc_name], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, **SUBPROCESS_TEXT)
             except subprocess.CalledProcessError as exc:
                 msg = (exc.stderr or exc.stdout or "").strip()
                 print(f"[SERVICE] sc stop fallito: {msg}", flush=True)
@@ -10051,7 +10400,7 @@ def system_service_restart(name: Optional[str] = Query(None)):
                 pass
             try:
                 print(f"[SERVICE] Provo 'sc start {svc_name}'", flush=True)
-                subprocess.run(["sc", "start", svc_name], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, text=True)
+                subprocess.run(["sc", "start", svc_name], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, **SUBPROCESS_TEXT)
                 print("[SERVICE] Restart inviato con successo (sc stop/start)", flush=True)
                 return
             except subprocess.CalledProcessError as exc:
@@ -10066,7 +10415,7 @@ def system_service_restart(name: Optional[str] = Query(None)):
             try:
                 cmd = ["nssm", "restart", svc_name]
                 print(f"[SERVICE] Provo NSSM: {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, text=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, **SUBPROCESS_TEXT)
                 print("[SERVICE] Restart inviato con successo (NSSM)", flush=True)
                 return
             except subprocess.CalledProcessError as exc:
@@ -10101,7 +10450,7 @@ def system_service_restart(name: Optional[str] = Query(None)):
         for cmd in cmds:
             try:
                 print(f"[SERVICE] Eseguo: {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, text=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, **SUBPROCESS_TEXT)
                 print("[SERVICE] Restart inviato con successo", flush=True)
                 return
             except subprocess.CalledProcessError as exc:

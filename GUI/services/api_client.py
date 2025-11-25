@@ -66,6 +66,22 @@ class ApiClient:
             payload["cleanup"] = True
         return self.request("post", "/media/sync", json=payload, timeout=timeout)
 
+    def download_media_archive(self, destination: Path, *, timeout: float = 180.0) -> Path:
+        """Scarica l'archivio completo dei media del player nella destinazione indicata."""
+        base = self.base_url.rstrip("/")
+        url = f"{base}/media/archive"
+        headers = self._headers()
+        response = requests.get(url, stream=True, timeout=timeout, headers=headers)
+        response.raise_for_status()
+        destination = destination.expanduser()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with open(destination, "wb") as fh:
+            for chunk in response.iter_content(chunk_size=128 * 1024):
+                if not chunk:
+                    continue
+                fh.write(chunk)
+        return destination
+
     def upload_media_push(self, file_path: Path, target_name: str | None = None) -> dict[str, Any]:
         """Upload a file directly to the player using multipart/form-data.
 

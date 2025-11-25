@@ -130,6 +130,30 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
         if (api_.fnBrightness) {
             api_.fnBrightness(v01, sec);
             sendOK(response);
+    } else if (path == "/display/center") {
+        bool handled = false;
+        bool enabled = false;
+        std::string onStr;
+        if (form.has("on")) {
+            onStr = form.get("on");
+        } else if (form.has("enabled")) {
+            onStr = form.get("enabled");
+        }
+        if (!onStr.empty()) {
+            std::string lowered = ofToLower(onStr);
+            enabled = (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on");
+            handled = true;
+        } else {
+            enabled = true;
+        }
+        if (api_.fnCenterVideo) {
+            api_.fnCenterVideo(enabled);
+            std::ostringstream oss;
+            oss << "{\"ok\":true,\"enabled\":" << (enabled ? "true" : "false") << "}";
+            sendOK(response, oss.str());
+        } else {
+            sendBad(response, "{\"error\":\"center video control not supported\"}");
+        }
         } else {
             sendBad(response, "{\"error\":\"brightness not supported\"}");
         }

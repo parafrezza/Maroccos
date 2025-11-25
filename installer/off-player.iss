@@ -114,6 +114,7 @@ Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso
 Name: "install_tigervnc"; Description: "Installa TigerVNC (opzionale per accesso remoto)"; Flags: unchecked
 #endif
 Name: "set_off_autostart"; Description: "Abilita avvio scaletta OFF all'avvio del player (OFF_AUTOSTART=1)"
+Name: "register_headless_task"; Description: "Avvia player all'avvio del sistema (attività pianificata)"
 #if SilentBuild = 1
 Name: "provision_run_now"; Description: "Esegui ottimizzazioni Player subito (consigliato dopo installazione pulita)"
 #else
@@ -142,7 +143,7 @@ Source: "{#SourcePath}\\..\\headless-player\\dist\\{#HeadlessDirName}\\*"; DestD
 Source: "{#SourcePath}\\..\\tools\\windows\\provision_player.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\\..\\tools\\windows\\apply_user_settings.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\\..\\tools\\windows\\create_provision_task.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
-Source: "{#SourcePath}\\..\\tools\\windows\\fix_autostart.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
+Source: "{#SourcePath}\\..\\tools\\windows\\register_headless_task.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 
 ; Opzionale: K-Lite installer (mettere il file in installer\assets)
 #if FileExists(KLitePath)
@@ -163,9 +164,9 @@ Filename: "{tmp}\\{#KLiteFileName}"; Parameters: "/verysilent /norestart"; Flags
 #endif
 
 ; Installa TigerVNC in modo silenzioso quando richiesto
-Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: FileExists(ExpandConstant('{app}\\assets\\tigervnc64-winvnc-1.15.0.exe')); Tasks: install_tigervnc
+Filename: "{app}\\assets\\tigervnc64-winvnc-1.15.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; Flags: runhidden waituntilterminated; StatusMsg: "Installazione TigerVNC..."; Check: ShouldRunTigerVNCInstaller; Tasks: install_tigervnc
 ; Configura TigerVNC SENZA password (accesso non autenticato), e riavvia servizio se presente
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; $kp='HKLM:\\SOFTWARE\\TigerVNC\\WinVNC4'; New-Item -Path $kp -Force | Out-Null; Remove-ItemProperty -Path $kp -Name 'Password' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path $kp -Name 'ControlPassword' -ErrorAction SilentlyContinue; New-ItemProperty -Path $kp -Name 'AuthRequired' -PropertyType DWord -Value 0 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'SecurityTypes' -PropertyType String -Value 'None' -Force | Out-Null; New-ItemProperty -Path $kp -Name 'AlwaysShared' -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'QuerySetting' -PropertyType DWord -Value 2 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'UseControlAuth' -PropertyType DWord -Value 0 -Force | Out-Null; Try {{ Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue }} Catch {{}}; Try {{ Restart-Service -Name 'WinVNC4' -Force -ErrorAction SilentlyContinue }} Catch {{}}; foreach($svc in 'tvnserver','WinVNC4') {{ try {{ Set-Service -Name $svc -StartupType Automatic }} catch {{}}; try {{ Start-Service -Name $svc }} catch {{}} }}"""; Flags: runhidden waituntilterminated; Tasks: install_tigervnc
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='SilentlyContinue'; $kp='HKLM:\\SOFTWARE\\TigerVNC\\WinVNC4'; New-Item -Path $kp -Force | Out-Null; Remove-ItemProperty -Path $kp -Name 'Password' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path $kp -Name 'ControlPassword' -ErrorAction SilentlyContinue; New-ItemProperty -Path $kp -Name 'AuthRequired' -PropertyType DWord -Value 0 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'SecurityTypes' -PropertyType String -Value 'None' -Force | Out-Null; New-ItemProperty -Path $kp -Name 'AlwaysShared' -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'QuerySetting' -PropertyType DWord -Value 2 -Force | Out-Null; New-ItemProperty -Path $kp -Name 'UseControlAuth' -PropertyType DWord -Value 0 -Force | Out-Null; Try {{ Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue }} Catch {{}}; Try {{ Restart-Service -Name 'WinVNC4' -Force -ErrorAction SilentlyContinue }} Catch {{}}; foreach($svc in 'tvnserver','WinVNC4') {{ try {{ Set-Service -Name $svc -StartupType Automatic }} catch {{}}; try {{ Start-Service -Name $svc }} catch {{}} }}"""; Flags: runhidden waituntilterminated; Check: TigerVNCInstallSelected; Tasks: install_tigervnc
 
 ; PRIMA: Crea SEMPRE l'utente "extra" (necessario per provisioning e autostart)
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference = 'Stop'; if (-not (Get-LocalUser -Name '{#ExtraUserName}' -ErrorAction SilentlyContinue)) {{ $sec = ConvertTo-SecureString '{#ExtraPassword}' -AsPlainText -Force; New-LocalUser -Name '{#ExtraUserName}' -Password $sec -FullName 'Extra Admin' -PasswordNeverExpires:$true -UserMayNotChangePassword:$true | Out-Null }}; Add-LocalGroupMember -Group 'Administrators' -Member '{#ExtraUserName}' -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; StatusMsg: "Creazione utente amministratore..."
@@ -185,8 +186,7 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
 
 ; Crea attività pianificate per avvio headless automatico (se presente l'eseguibile)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\fix_autostart.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -RunAsUser ""{#ExtraUserName}"" -RunAsPassword ""{#ExtraPassword}"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\register_headless_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -DelaySeconds 15"; Flags: runhidden waituntilterminated; Tasks: register_headless_task; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 #if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
@@ -244,10 +244,17 @@ var
   PrevUninstallDone: Boolean;
   NeedUninstallAtStart: Boolean;
   UILogStep: Integer;
+  TaskTigerIndex: Integer;
   
 const
   // Mostra un avviso se la disinstallazione precedente impiega più di N secondi
   UninstallWarnSeconds = 120;
+
+procedure UpdateTigerTaskState; forward;
+procedure CacheTaskIndexes; forward;
+procedure TasksListClickCheck(Sender: TObject); forward;
+function TigerVNCInstallSelected(): Boolean; forward;
+function ShouldRunTigerVNCInstaller(): Boolean; forward;
 
 procedure GetLocalTime(var lpSystemTime: TSystemTime);
   external 'GetLocalTime@kernel32.dll stdcall';
@@ -429,6 +436,8 @@ begin
   UninstMemo.ReadOnly := True;
   UninstMemo.ScrollBars := ssVertical;
   UILogStep := 0;
+  TaskTigerIndex := -1;
+  WizardForm.TasksList.OnClickCheck := @TasksListClickCheck;
 end;
 
 function _ServiceIsRunning(const SvcName: string): Boolean; forward;
@@ -438,8 +447,13 @@ procedure CurPageChanged(CurPageID: Integer);
 var
   StartTick: Int64;
   ElapsedSec: Integer;
+#if SilentBuild = 0
   Msg: string;
+#endif
 begin
+  if CurPageID = wpSelectTasks then
+    UpdateTigerTaskState;
+
   if (NeedUninstallAtStart) and (not PrevUninstallDone) and (CurPageID = UninstPage.ID) then
   begin
     NeedUninstallAtStart := False;
@@ -510,3 +524,63 @@ begin
   if not Result then
     Result := _ServiceIsRunning('WinVNC4');
 end;
+
+procedure CacheTaskIndexes;
+var
+  I: Integer;
+  CaptionLower: string;
+begin
+  if not Assigned(WizardForm) then Exit;
+  if not Assigned(WizardForm.SelectTasksPage) then Exit;
+  if not Assigned(WizardForm.TasksList) then Exit;
+  if TaskTigerIndex >= 0 then Exit;
+
+  with WizardForm.TasksList do
+  begin
+    for I := 0 to Items.Count - 1 do
+    begin
+      CaptionLower := LowerCase(Items[I]);
+      if Pos('tigervnc', CaptionLower) > 0 then
+      begin
+        TaskTigerIndex := I;
+        Break;
+      end;
+    end;
+  end;
+end;
+
+procedure UpdateTigerTaskState;
+var
+  DisableTiger: Boolean;
+begin
+  if not Assigned(WizardForm) then Exit;
+  if not Assigned(WizardForm.SelectTasksPage) then Exit;
+  if not Assigned(WizardForm.TasksList) then Exit;
+
+  CacheTaskIndexes;
+  if TaskTigerIndex < 0 then Exit;
+
+  DisableTiger := WizardIsTaskSelected('provision_run_now');
+  with WizardForm.TasksList do
+  begin
+    ItemEnabled[TaskTigerIndex] := not DisableTiger;
+    if DisableTiger and Checked[TaskTigerIndex] then
+      Checked[TaskTigerIndex] := False;
+  end;
+end;
+
+procedure TasksListClickCheck(Sender: TObject);
+begin
+  UpdateTigerTaskState;
+end;
+
+function TigerVNCInstallSelected(): Boolean;
+begin
+  Result := WizardIsTaskSelected('install_tigervnc') and (not WizardIsTaskSelected('provision_run_now'));
+end;
+
+function ShouldRunTigerVNCInstaller(): Boolean;
+begin
+  Result := TigerVNCInstallSelected() and FileExists(ExpandConstant('{app}\assets\tigervnc64-winvnc-1.15.0.exe'));
+end;
+

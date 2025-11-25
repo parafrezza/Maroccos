@@ -49,6 +49,7 @@ class PlayerRecord:
     playlist_missing: int = 0
     playlist_invalid: int = 0
     expected_playlist_hash: str | None = None
+    last_error: str | None = None
     # GUI-only: debouncing emission
     _ui_last_status_key: str | None = None
     _ui_last_emit_ts: float = 0.0
@@ -137,12 +138,16 @@ class PlayerRegistry(QObject):
             response.raise_for_status()
             data = response.json()
         except requests.RequestException as exc:
-            _LOG.debug("Ping failed for %s: %s", record.ip, exc)
+            error_msg = self._describe_request_error(exc)
+            record.last_error = error_msg
+            record.status_text = f"offline • {error_msg}" if error_msg else "offline"
+            _LOG.debug("Ping failed for %s: %s", record.ip, error_msg or exc)
             self._update_state(record, reachable=False)
             return
 
         record.last_seen = time.time()
         record.version = data.get("version") or data.get("version_current")
+        record.last_error = None
         try:
             fw = data.get("framework") if isinstance(data, dict) else None
             record.framework = str(fw) if fw is not None else None
@@ -265,6 +270,22 @@ class PlayerRegistry(QObject):
             pass
 
         self._update_state(record, reachable=True)
+
+    def _describe_request_error(self, exc: requests.RequestException) -> str:
+        try:
+            if isinstance(exc, requests.Timeout):
+                return "timeout"
+            if isinstance(exc, requests.ConnectionError):
+                base = exc.__cause__ or exc
+                text = str(base) if base else str(exc)
+                return text.strip() or "connessione fallita"
+            resp = getattr(exc, "response", None)
+            if resp is not None and getattr(resp, "status_code", None):
+                return f"HTTP {resp.status_code}"
+            msg = str(exc).strip()
+            return msg or exc.__class__.__name__
+        except Exception:
+            return exc.__class__.__name__
 
     # --- UDP beacon listener ---
     def _beacon_loop(self) -> None:

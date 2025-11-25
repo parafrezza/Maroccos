@@ -29,11 +29,11 @@ param(
     [switch]$SkipTigerVNC,
     [string]$TigerVNCPassword = 'extra',
     [string]$ScheduledTaskName,
-    [string]$HeadlessTaskName = 'MaroccosHeadless',
     [string]$HeadlessTaskUser = 'extra',
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [switch]$SkipMediaShare = $false,
-    [switch]$SkipHostnameSync
+    [switch]$SkipHostnameSync,
+    [string[]]$TaskbarPinApps = @('OFF-player\OFF-player.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -987,6 +987,51 @@ function Ensure-RunOnLogin {
     }
 }
 
+function Write-TaskbarPinConfig {
+    param(
+        [string]$InstallRoot,
+        [string[]]$PinApps
+    )
+
+    Write-Step 'Preparo configurazione icone taskbar'
+    $configDir = Join-Path $Env:ProgramData 'player_provision'
+    try { New-Item -ItemType Directory -Path $configDir -Force | Out-Null } catch {}
+    $configPath = Join-Path $configDir 'taskbar_pins.json'
+
+    $absPins = @()
+    if ($PinApps) {
+        foreach ($entry in $PinApps) {
+            if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+            $candidate = $entry.Trim()
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+                    $candidate = Join-Path $InstallRoot $candidate
+                }
+                $absPins += [System.IO.Path]::GetFullPath($candidate)
+            } catch {
+                Write-Warn ("Percorso pin non valido '{0}': {1}" -f $entry, $_.Exception.Message)
+            }
+        }
+    }
+    $absPins = $absPins | Where-Object { $_ } | Select-Object -Unique
+
+    $payload = [ordered]@{
+        generatedAt = (Get-Date).ToString('s')
+        pins        = $absPins
+    }
+
+    try {
+        $payload | ConvertTo-Json -Depth 4 | Set-Content -Path $configPath -Encoding UTF8 -Force
+        if ($absPins.Count -gt 0) {
+            Write-Ok ("Elenco icone taskbar salvato ({0})" -f $configPath)
+        } else {
+            Write-Info ("Nessuna icona specificata; file creato vuoto ({0})" -f $configPath)
+        }
+    } catch {
+        Write-Warn ("Impossibile scrivere configurazione pin taskbar ({0}): {1}" -f $configPath, $_.Exception.Message)
+    }
+}
+
 function Ensure-ServiceRecovery {
     param(
         [Parameter(Mandatory=$true)][string]$ServiceName
@@ -1022,10 +1067,10 @@ function Ensure-HeadlessPermissions {
 
     Write-Step 'Garantisco permessi completi su headless-player e contenuti _internal'
     $targets = @(
-        "$InstallRoot\headless-player",
-        "$InstallRoot\_internal"
+        (Join-Path $InstallRoot 'headless-player'),
+        (Join-Path $InstallRoot '_internal')
     )
-    $principals = @('Users', 'Administrators')
+    $principals = @('SYSTEM', 'Administrators', 'Users')
     try {
         if ($RunAsUser -and (Get-LocalUser -Name $RunAsUser -ErrorAction SilentlyContinue)) {
             $principals += $RunAsUser
@@ -1033,6 +1078,7 @@ function Ensure-HeadlessPermissions {
     } catch {}
 
     foreach ($target in $targets) {
+        try { New-Item -ItemType Directory -Path $target -Force | Out-Null } catch {}
         if (-not (Test-Path $target)) { continue }
         foreach ($principal in $principals | Select-Object -Unique) {
             try {
@@ -1042,126 +1088,14 @@ function Ensure-HeadlessPermissions {
                 Write-Warn ("icacls fallito su {0} per {1}: {2}" -f $target, $principal, $_.Exception.Message)
             }
         }
-    }
-}
-
-function Ensure-HeadlessScheduledTask {
-    param(
-        [string]$InstallRoot = 'C:\Program Files\marocco-player',
-        [string]$TaskName = 'MaroccosHeadless',
-        [string]$RunAsUser = 'extra',
-        [ValidateSet('Logon','Startup')]
-        [string]$Trigger = 'Logon',
-        [string]$RunAsPassword,
-        [switch]$RunAsSystem
-    )
-
-    Write-Step "Configuro avvio headless-player (trigger $Trigger)"
-
-    $exePath = Join-Path $InstallRoot 'headless-player\headless-player.exe'
-    if (-not (Test-Path $exePath)) {
-        Write-Warn ("headless-player.exe non trovato in {0}; salto configurazione autostart" -f $exePath)
-        return
-    }
-
-    try {
-        Import-Module ScheduledTasks -ErrorAction Stop | Out-Null
-    } catch {
-        Write-Warn ("Modulo ScheduledTasks non disponibile: {0}" -f $_.Exception.Message)
-        return
-    }
-
-    try {
-        $svc = Get-Service -Name 'MaroccosHeadless' -ErrorAction SilentlyContinue
-        if ($svc) {
-            if ($svc.Status -eq 'Running') {
-                try { Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue } catch {}
-            }
-            if ($svc.StartType -ne 'Manual') {
-                try {
-                    Set-Service -Name $svc.Name -StartupType Manual -ErrorAction Stop
-                    Write-Info 'Servizio MaroccosHeadless impostato su avvio manuale'
-                } catch {
-                    Write-Warn ("Impossibile modificare startup del servizio MaroccosHeadless: {0}" -f $_.Exception.Message)
-                }
-            }
-        }
-    } catch {
-        Write-Warn ("Errore durante la gestione del servizio MaroccosHeadless: {0}" -f $_.Exception.Message)
-    }
-
-    $workDir = Split-Path $exePath -Parent
-    $currentPrincipal = ([Security.Principal.WindowsIdentity]::GetCurrent()).Name
-    $principalUser = $currentPrincipal
-
-    if ($RunAsSystem) {
-        $principalUser = 'SYSTEM'
-    } elseif (-not [string]::IsNullOrWhiteSpace($RunAsUser)) {
         try {
-            $targetUser = $RunAsUser
-            if ($RunAsUser -notmatch '\\|@') {
-                $targetUser = "${env:COMPUTERNAME}\$RunAsUser"
-            }
-            if (Get-LocalUser -Name $RunAsUser -ErrorAction SilentlyContinue) {
-                $principalUser = $targetUser
-            } else {
-                Write-Warn ("Utente '{0}' non trovato; userò {1}" -f $RunAsUser, $currentPrincipal)
-            }
+            $testFile = Join-Path $target 'permission_test.txt'
+            Set-Content -Path $testFile -Value 'perm test' -Encoding utf8 -Force
+            Remove-Item -Path $testFile -Force
         } catch {
-            Write-Warn ("Impossibile verificare utente '{0}': {1}" -f $RunAsUser, $_.Exception.Message)
+            Write-Warn ("Test scrittura fallito su {0}: {1}" -f $target, $_.Exception.Message)
         }
     }
-
-    try {
-        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        if ($existing) {
-            Write-Info ("Rimuovo attività esistente {0}" -f $TaskName)
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        }
-    } catch {
-        Write-Warn ("Impossibile rimuovere l'attività {0}: {1}" -f $TaskName, $_.Exception.Message)
-    }
-
-    $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $workDir
-    switch ($Trigger) {
-        'Startup' { $trigger = New-ScheduledTaskTrigger -AtStartup }
-        default   {
-            if ($principalUser -and -not $RunAsSystem) { $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser }
-            else { $trigger = New-ScheduledTaskTrigger -AtLogOn }
-        }
-    }
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
-
-    $logonType = 'Interactive'
-    if ($RunAsSystem) {
-        $logonType = 'ServiceAccount'
-    } elseif ($RunAsPassword) {
-        $logonType = 'Password'
-    }
-
-    if ($Trigger -eq 'Startup' -and -not $RunAsSystem -and -not $RunAsPassword) {
-        Write-Warn 'Trigger Startup richiede credenziali o account SYSTEM: userò SYSTEM.'
-        $principalUser = 'SYSTEM'
-        $logonType = 'ServiceAccount'
-        $RunAsSystem = $true
-    }
-
-    $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType $logonType -RunLevel Highest
-
-    try {
-        $definition = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
-        if ($RunAsPassword -and -not $RunAsSystem) {
-            Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force -User $principalUser -Password $RunAsPassword | Out-Null
-        } else {
-            Register-ScheduledTask -TaskName $TaskName -InputObject $definition -Force | Out-Null
-        }
-        Write-Ok ("Attività {0} registrata (utente {1}, trigger {2})" -f $TaskName, $principalUser, $Trigger)
-    } catch {
-        Write-Warn ("Registrazione attività {0} fallita: {1}" -f $TaskName, $_.Exception.Message)
-        return
-    }
-
-    Write-Info ('Per testare subito: Start-ScheduledTask -TaskName "{0}"' -f $TaskName)
 }
 
 function Apply-PreferredResolution {
@@ -1475,6 +1409,34 @@ function Ensure-WiFiPreferredNetwork {
         }
 }
 
+function Set-NetworkProfilesPrivate {
+    Write-Step 'Impostazione profili di rete su Private'
+    try {
+        $profiles = Get-NetConnectionProfile -ErrorAction Stop
+        if (-not $profiles) {
+            Write-Info 'Nessun profilo di rete trovato'
+            return
+        }
+
+        foreach ($profile in $profiles) {
+            $name = if ($profile.Name) { $profile.Name } elseif ($profile.InterfaceAlias) { $profile.InterfaceAlias } else { "Idx $($profile.InterfaceIndex)" }
+            if ($profile.NetworkCategory -ne 'Private') {
+                try {
+                    Set-NetConnectionProfile -InterfaceIndex $profile.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+                    Write-Info ("Profilo rete '{0}' impostato a Private" -f $name)
+                } catch {
+                    Write-Warn ("Impossibile impostare il profilo '{0}' come Private: {1}" -f $name, $_.Exception.Message)
+                }
+            } else {
+                Write-Info ("Profilo rete '{0}' già Private" -f $name)
+            }
+        }
+        Write-Ok 'Profili di rete aggiornati a Private'
+    } catch {
+        Write-Warn ("Impossibile enumerare/impostare i profili di rete: {0}" -f $_.Exception.Message)
+    }
+}
+
 # Abilita OpenSSH Server e avvio automatico (porta di default), abilita autenticazione password
 function Configure-OpenSSH {
     Write-Step 'Installazione/abilitazione OpenSSH Server'
@@ -1782,6 +1744,7 @@ function Main {
     Configure-EthernetStaticIP
     Ensure-WiFiDHCP
     Ensure-WiFiPreferredNetwork
+    Set-NetworkProfilesPrivate
     Install-TigerVNC
     Configure-OpenSSH
     Configure-MediaShare
@@ -1789,7 +1752,7 @@ function Main {
     Rename-ComputerFromConfig
     Ensure-HeadlessPermissions -InstallRoot $InstallRoot -RunAsUser $HeadlessTaskUser
     Ensure-RunOnLogin -InstallRoot $InstallRoot
-    Ensure-HeadlessScheduledTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -RunAsUser $HeadlessTaskUser -Trigger 'Logon'
+    Write-TaskbarPinConfig -InstallRoot $InstallRoot -PinApps $TaskbarPinApps
     Mark-ProvisionComplete -InstallRoot $InstallRoot
 
     # Applica impostazioni utente anche all'account extra se esiste
@@ -1854,4 +1817,5 @@ try {
     }
     exit 1
 }
+
 

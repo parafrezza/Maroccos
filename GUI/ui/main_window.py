@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         # Playlist push tracking
         self._playlist_pending: set[str] = set()
         self._playlist_active: bool = False
+        self._clone_job_active: bool = False
         # Countdown to start_show
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(200)
@@ -235,6 +236,13 @@ class MainWindow(QMainWindow):
         ctrl.statusReceived.connect(self._handle_status)
         ctrl.deviceMediaReceived.connect(self._handle_device_media)
         ctrl.playlistStatusReceived.connect(self._handle_playlist_status)
+        # Media clone workflow wiring
+        try:
+            ctrl.mediaCloneProgress.connect(self._handle_media_clone_progress)
+            ctrl.mediaCloneLog.connect(self._commands_tab.append_clone_log)
+            ctrl.mediaCloneCompleted.connect(self._handle_media_clone_completed)
+        except Exception:
+            pass
         # Start Sync button wiring
         try:
             self._commands_tab.startSyncRequested.connect(self._handle_start_sync_requested)
@@ -270,6 +278,7 @@ class MainWindow(QMainWindow):
         # Playlist wiring
         self._commands_tab.playlistChanged.connect(self._handle_playlist_changed)
         self._commands_tab.playlistPushRequested.connect(self._handle_push_playlist)
+        self._commands_tab.playlistAutoApplyRequested.connect(self._handle_auto_apply_playlist)
         self._commands_tab.playlistRefreshRequested.connect(self._handle_playlist_refresh)
         self._commands_tab.startShowRequested.connect(self._handle_start_show)
         self._commands_tab.jumpToTrackRequested.connect(self._handle_jump_to_track)
@@ -891,10 +900,10 @@ class MainWindow(QMainWindow):
             self._controller.refresh_status(self._selected_players[0])
             # Start device media polling for primary
             self._device_media_timer.start()
-            self._controller.refresh_device_media(self._selected_players[0])
+            self._handle_device_media_refresh()
             # Start playlist status polling for primary
             self._playlist_timer.start()
-            self._controller.refresh_playlist_status(self._selected_players[0])
+            self._handle_playlist_refresh()
             # If live CVLC log is active, restart it for the new primary
             try:
                 if self._commands_tab.is_log_live_active():
@@ -916,19 +925,65 @@ class MainWindow(QMainWindow):
                 pass
 
     def _handle_sync_media_request(self, ip: str, port: int) -> None:
-        default_url = ""
+        _ = port  # legacy signature; port non più necessario
+        if self._clone_job_active:
+            self._append_log("[Clone] Operazione già in corso: attendi il completamento")
+            return
+        record = self._controller.player_registry.get_player(ip)
+        if not record:
+            self._append_log(f"[Clone] Player {ip} non più disponibile")
+            return
         try:
-            media_root = self._controller.state.config.media.media_root
-            if media_root:
-                default_url = str(media_root)
+            self._commands_tab.reset_clone_panel()
         except Exception:
             pass
-        url, ok = QInputDialog.getText(
-            self, "Sync media", "URL pacchetto media (.zip)", text=default_url
-        )
-        if not ok or not url:
-            return
-        self._controller.sync_media_to_player(ip, port, url.strip())
+        label = record.name or record.ip
+        self._set_clone_job_state(True, f"Clonazione avviata da {label}")
+        try:
+            self._controller.clone_media_from_player(record)
+        except Exception as exc:
+            self._append_log(f"[Clone] Avvio fallito: {exc}")
+            self._set_clone_job_state(False, f"Avvio clonazione fallito: {exc}")
+
+    def _handle_media_clone_progress(self, fraction: float, stage: str) -> None:
+        try:
+            self._commands_tab.set_clone_progress(float(fraction), stage)
+        except Exception:
+            pass
+        if not self._clone_job_active:
+            self._set_clone_job_state(True, stage)
+
+    def _handle_media_clone_completed(self, ok: bool, summary: str | None) -> None:
+        try:
+            self._commands_tab.finish_clone_job(bool(ok), summary)
+        except Exception:
+            pass
+        label = summary or ("Clonazione completata" if ok else "Clonazione fallita")
+        tooltip = f"Ultima clonazione: {label}"
+        self._set_clone_job_state(False, tooltip)
+
+    def _set_clone_job_state(self, active: bool, message: str | None = None) -> None:
+        self._clone_job_active = bool(active)
+        note = (message or "").strip() or None
+        if active:
+            reason = note or "Clonazione media in corso…"
+            try:
+                self._player_panel.set_sync_lock(reason)
+            except Exception:
+                pass
+            try:
+                self._player_panel.set_sync_status_tip(reason)
+            except Exception:
+                pass
+        else:
+            try:
+                self._player_panel.set_sync_lock(None)
+            except Exception:
+                pass
+            try:
+                self._player_panel.set_sync_status_tip(note)
+            except Exception:
+                pass
 
     def _toggle_player_panel(self) -> None:
         if self._player_panel_window:
@@ -1320,6 +1375,28 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        try:
+            center_payload = payload.get("display_center") if isinstance(payload, dict) else None
+            center_enabled = None
+            if isinstance(center_payload, dict):
+                enabled_val = center_payload.get("enabled")
+                if isinstance(enabled_val, bool):
+                    center_enabled = enabled_val
+                elif enabled_val is not None:
+                    center_enabled = bool(enabled_val)
+            elif center_payload is not None:
+                center_enabled = bool(center_payload)
+            self._commands_tab.set_display_center(center_enabled, len(self._selected_players))
+        except Exception:
+            pass
+
+        try:
+            img_payload = payload.get("image_duration") if isinstance(payload, dict) else None
+            if isinstance(img_payload, dict):
+                self._commands_tab.set_image_duration(img_payload, len(self._selected_players))
+        except Exception:
+            pass
+
         # Playlist ready aggregation: when pushing, mark device ready on show_ready
         try:
             if self._playlist_active and isinstance(payload, dict) and payload.get("show_ready"):
@@ -1360,6 +1437,29 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{ip}] {response}")
         if not isinstance(response, dict):
             return
+        command_name = response.get("_command")
+        primary = self._selected_players[0] if self._selected_players else None
+        if command_name in {"image_duration_get", "image_duration_set"} and primary and ip == primary.ip:
+            if response.get("ok", True):
+                try:
+                    self._commands_tab.set_image_duration(response, len(self._selected_players))
+                except Exception:
+                    pass
+        if command_name == "display_center" and primary and ip == primary.ip:
+            enabled_val = response.get("enabled")
+            enabled_flag = None
+            if isinstance(enabled_val, bool):
+                enabled_flag = enabled_val
+            elif enabled_val is not None:
+                enabled_flag = bool(enabled_val)
+            try:
+                self._commands_tab.set_display_center(enabled_flag, len(self._selected_players))
+            except Exception:
+                pass
+            try:
+                self._controller.refresh_status(primary)
+            except Exception:
+                pass
         if response.get("skipped") and response.get("action") in {"next", "prev"}:
             msg = response.get("message") or "Comando ignorato: playlist con un solo elemento"
             try:
@@ -1846,15 +1946,36 @@ class MainWindow(QMainWindow):
             clear_before=bool(clear_before),
         )
 
-    def _update_playlist_led_state(self) -> None:
-        # LED aggregato: rosso se dirty, arancio se parziale, verde se tutti pronti, grigio se nessuna selezione
+    def _handle_auto_apply_playlist(self, items: list[str], loop_enabled: bool) -> None:
+        if not self._selected_players:
+            return
+        self._playlist_pending = {p.ip for p in self._selected_players}
+        self._playlist_active = True
         try:
-            if self._commands_tab.is_playlist_dirty():
-                self._commands_tab.set_playlist_led("red")
-                self._commands_tab.set_action_badge("Playlist non inviata")
-                return
+            local_hash = self._commands_tab.get_local_playlist_hash()
+            self._controller.set_expected_playlist_hash(local_hash)
         except Exception:
             pass
+        try:
+            self._commands_tab.set_banner("Riordino inviato automaticamente…", level="progress")
+        except Exception:
+            pass
+        self._controller.apply_playlist_only(items, self._selected_players, loop=bool(loop_enabled))
+
+    def _update_playlist_led_state(self) -> None:
+        # LED aggregato: rosso se dirty, arancio se parziale, verde se tutti pronti, grigio se nessuna selezione
+        dirty = False
+        try:
+            dirty = self._commands_tab.is_playlist_dirty()
+        except Exception:
+            dirty = False
+        if dirty or self._playlist_active:
+            try:
+                self._commands_tab.set_playlist_led("orange" if self._playlist_active else "red")
+                self._commands_tab.set_action_badge("Playlist non inviata")
+            except Exception:
+                pass
+            return
         if not self._selected_players:
             try:
                 self._commands_tab.set_playlist_led("gray")

@@ -239,6 +239,11 @@ def _write_fake_mp4(path: Path):
     path.write_bytes(bytes(data))
 
 
+def _write_fake_png(path: Path):
+    header = b"\x89PNG\r\n\x1a\n"
+    path.write_bytes(header + b"\x00" * 16)
+
+
 def test_play_immediate_with_filename(fastapi_app, tmp_path):
     from fastapi.testclient import TestClient
     # crea un file video valido in media/
@@ -252,6 +257,57 @@ def test_play_immediate_with_filename(fastapi_app, tmp_path):
         r = client.post("/play", json={"filename": "clip.mp4", "loop": False, "fade_in_seconds": 0.1})
         assert r.status_code == 200
         assert r.json().get("ok") is True
+
+
+def test_play_respects_existing_loop_state(fastapi_app, tmp_path):
+    from fastapi.testclient import TestClient
+    import importlib
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    f = media_dir / "loop_guard.mp4"
+    _write_fake_mp4(f)
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/loop", params={"on": 0})
+        assert resp.status_code == 200
+        assert resp.json().get("loop") is False
+        play = client.post("/play", json={"filename": f.name})
+        assert play.status_code == 200
+        status = client.get("/status")
+        assert status.status_code == 200
+        payload = status.json()
+        assert payload.get("loop_enabled") is False
+    assert app_mod.player.get("loop") is False
+
+
+def test_image_loop_toggle_updates_timer(fastapi_app, tmp_path):
+    from fastapi.testclient import TestClient
+    import importlib
+
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    img = media_dir / "loop_image.png"
+    _write_fake_png(img)
+    app_mod.image_duration_state["seconds"] = 5.0
+
+    with TestClient(fastapi_app) as client:
+        client.post("/loop", params={"on": 0})
+        play = client.post("/play", json={"filename": img.name})
+        assert play.status_code == 200
+        assert app_mod.image_duration_state.get("path", "").endswith(img.name)
+        assert app_mod.image_duration_state.get("timer") is not None
+
+        client.post("/loop", params={"on": 1})
+        status = client.get("/status")
+        info = status.json().get("image_duration") or {}
+        assert info.get("path", "").endswith(img.name)
+        assert info.get("deadline") is None
+        assert app_mod.image_duration_state.get("timer") is None
+
+        client.post("/loop", params={"on": 0})
+        assert app_mod.image_duration_state.get("timer") is not None
+        client.post("/stop")
 
 
 def test_play_scheduled_with_in_time(fastapi_app):
@@ -292,3 +348,64 @@ def test_playlist_apply_sets_show_ready(fastapi_app):
         assert st.status_code == 200
         sbody = st.json()
         assert sbody.get("show_ready") is True
+
+
+def test_upload_asset_stores_file_exact_bytes(fastapi_app):
+    from fastapi.testclient import TestClient
+    import importlib
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    target = media_dir / "uploaded_test.bin"
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    payload = b"media-bytes"
+    with TestClient(fastapi_app) as client:
+        resp = client.post(
+            "/upload_asset",
+            params={"filename": target.name},
+            files={"file": ("clip.bin", payload, "application/octet-stream")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("size") == len(payload)
+        assert target.exists()
+        assert target.read_bytes() == payload
+    target.unlink(missing_ok=True)
+
+
+def test_upload_asset_rejects_directory_escape(fastapi_app):
+    from fastapi.testclient import TestClient
+    with TestClient(fastapi_app) as client:
+        resp = client.post(
+            "/upload_asset",
+            params={"filename": "../forbidden.bin"},
+            files={"file": ("evil.bin", b"x", "application/octet-stream")},
+        )
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload.get("ok") is False
+        assert "non valido" in payload.get("error", "") or "non consentito" in payload.get("error", "")
+
+
+def test_media_prune_to_playlist_removes_extra_files(fastapi_app):
+    from fastapi.testclient import TestClient
+    import importlib
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    keep = media_dir / "keep_clip.mp4"
+    drop = media_dir / "drop_clip.mp4"
+    _write_fake_mp4(keep)
+    _write_fake_mp4(drop)
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/media/prune_to_playlist", json={"items": [keep.name]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("removed", 0) >= 1
+    assert keep.exists()
+    assert not drop.exists()

@@ -1,22 +1,22 @@
 {
-  "geometry": "AdnQywADAAAAAArOAAAAAAAADv8AAAQzAAAKzgAAAB8AAA7/AAAEMwAAAAEAAAAAB4AAAArOAAAAHwAADv8AAAQz",
+  "geometry": "AdnQywADAAAAAAqUAAAACwAADv4AAAQ+AAAKlAAAACoAAA7+AAAEPgAAAAEAAAAAB4AAAAqUAAAAKgAADv4AAAQ+",
   "maximized": false,
   "player_collapsed": false,
   "log_collapsed": false,
   "player_panel_width": 318,
-  "log_panel_height": 226,
+  "log_panel_height": 102,
   "splitter_sizes": [
     0,
-    1058
+    1115
   ],
   "main_splitter_sizes": [
     1023,
     0
   ],
-  "splitter_state": "AAAA/wAAAAEAAAACAAAAAAAABdMB/////wEAAAABAA==",
-  "main_splitter_state": "AAAA/wAAAAEAAAACAAAD/wAAAAABAAAACgEAAAACAA==",
+  "splitter_state": "AAAA/wAAAAEAAAACAAAAAAAAA74B/////wEAAAABAA==",
+  "main_splitter_state": "AAAA/wAAAAEAAAACAAADvAAAAAABAAAACgEAAAACAA==",
   "player_detached": true,
   "log_detached": true,
-  "player_window_geometry": "AdnQywADAAAAAAeMAAAAAAAACswAAAFzAAAHjAAAAB8AAArMAAABcwAAAAEAAAAAB4AAAAeMAAAAHwAACswAAAFz",
-  "log_window_geometry": "AdnQywADAAAAAAeAAAABdwAACsUAAAQqAAAHgAAAAZYAAArFAAAEKgAAAAEAAAAAB4AAAAeAAAABlgAACsUAAAQq"
+  "player_window_geometry": "AdnQywADAAAAAAeIAAAACAAACo4AAAF7AAAHiAAAACcAAAqOAAABewAAAAEAAAAAB4AAAAeIAAAAJwAACo4AAAF7",
+  "log_window_geometry": "AdnQywADAAAAAAeNAAABhQAACoYAAAQ4AAAHjQAAAaQAAAqGAAAEOAAAAAEAAAAAB4AAAAeNAAABpAAACoYAAAQ4"
 }

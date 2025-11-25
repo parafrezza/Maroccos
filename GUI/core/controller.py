@@ -94,6 +94,10 @@ class ApplicationController(QObject):
     playlistStatusReceived = Signal(str, dict)
     # Live log streaming (framework logs routed to event log)
     logLiveStatusChanged = Signal(bool)
+    # Media clone workflow
+    mediaCloneProgress = Signal(float, str)
+    mediaCloneLog = Signal(str)
+    mediaCloneCompleted = Signal(bool, str)
 
     def __init__(self, settings_path: Path) -> None:
         super().__init__()
@@ -125,9 +129,11 @@ class ApplicationController(QObject):
         self._uploads_total = 0
         self._uploads_done = 0
         self._uploads_lock = threading.Lock()
+        self._permission_fix_attempted: set[str] = set()
         # Cached /status payloads keyed by player IP to avoid redundant fetches
         self._status_cache: dict[str, dict[str, Any]] = {}
         self._status_cache_lock = threading.Lock()
+        self._media_clone_future: concurrent.futures.Future | None = None
 
     @property
     def settings_path(self) -> Path:
@@ -236,6 +242,46 @@ class ApplicationController(QObject):
             self._executor.submit(worker)
         except Exception as exc:
             self.logMessage.emit(f"[MEDIA] Unable to run sync worker for {ip}: {exc}")
+
+    def clone_media_from_player(self, source: PlayerRecord) -> None:
+        """Clone the media library and playlist from the selected source player to all others."""
+        if self._media_clone_future and not self._media_clone_future.done():
+            self.logMessage.emit("Clonazione media già in corso: attendi il completamento")
+            return
+        if not getattr(source, "media_available", True):
+            self.logMessage.emit(f"[Clone] Il player {source.ip} non ha media disponibili da clonare")
+            return
+        label = source.name or source.ip
+        self.mediaCloneLog.emit(f"[Clone] Avvio clonazione da {label} ({source.ip})")
+        self.mediaCloneProgress.emit(0.0, f"Preparazione clone da {source.ip}")
+        try:
+            future = self._executor.submit(self._run_media_clone_job, source)
+        except Exception as exc:
+            msg = f"Impossibile avviare il job di clonazione: {exc}"
+            self.logMessage.emit(f"[Clone] {msg}")
+            self.mediaCloneLog.emit(f"[Clone] {msg}")
+            self.mediaCloneProgress.emit(0.0, msg)
+            return
+        self._media_clone_future = future
+        future.add_done_callback(self._handle_media_clone_done)
+
+    def _handle_media_clone_done(self, future: concurrent.futures.Future) -> None:
+        try:
+            result = future.result()
+            ok = bool(result.get("ok", False)) if isinstance(result, dict) else bool(result)
+            summary = result.get("summary") if isinstance(result, dict) else None
+        except Exception as exc:
+            ok = False
+            summary = f"Clonazione media fallita: {exc}"
+            self.logMessage.emit(f"[Clone] {summary}")
+            self.mediaCloneLog.emit(f"[Clone] {summary}")
+        else:
+            if not summary:
+                summary = "Clonazione completata" if ok else "Clonazione terminata"
+            self.logMessage.emit(f"[Clone] {summary}")
+        finally:
+            self._media_clone_future = None
+            self.mediaCloneCompleted.emit(ok, summary or "")
 
     def set_status_poll_ms(self, ms: int) -> None:
         """Update status polling interval setting and persist it."""
@@ -1187,6 +1233,245 @@ class ApplicationController(QObject):
             self._executor.submit(self._invoke_upload, player, media_url, target_name, media_path)
 
     # ------------------------------------------------------------------
+    # Media clone orchestration
+    # ------------------------------------------------------------------
+
+    def _run_media_clone_job(self, source: PlayerRecord) -> dict[str, Any]:
+        source_ip = source.ip
+        source_label = (source.name or source_ip).strip() if getattr(source, "name", None) else source_ip
+        label = f"{source_label} ({source_ip})" if source_label and source_label != source_ip else source_ip
+
+        def _emit_progress(pct: float, text: str) -> None:
+            try:
+                self.mediaCloneProgress.emit(max(0.0, min(1.0, float(pct))), text)
+            except Exception:
+                pass
+
+        def _log(message: str) -> None:
+            formatted = f"[Clone] {message}"
+            self.logMessage.emit(formatted)
+            self.mediaCloneLog.emit(formatted)
+
+        root = self.state.config.media.media_root
+        if not root or not root.exists():
+            raise RuntimeError("Cartella media locale non configurata o non accessibile")
+        if not self._file_server:
+            raise RuntimeError("File server media non attivo: configura una cartella media valida")
+
+        snapshot = self.player_registry.current_players()
+        targets = [p for p in snapshot if p.ip != source_ip]
+        online_targets = [p for p in targets if str(getattr(p, "state", "online")).lower() != "offline"]
+        if not online_targets:
+            raise RuntimeError("Nessun altro player online disponibile per la clonazione")
+        skipped = len(targets) - len(online_targets)
+        _log(f"Sorgente: {label} → {len(online_targets)} target")
+        if skipped > 0:
+            _log(f"{skipped} player ignorati perché offline")
+
+        client = self._client_for(source)
+        _emit_progress(0.05, "Analisi inventario media sorgente")
+        media_listing = client.request("get", "/media", timeout=30)
+        files = media_listing.get("files", []) if isinstance(media_listing, dict) else []
+        source_manifest, prefix = self._build_media_manifest(files)
+        _log(f"Inventario sorgente: {len(source_manifest)} file")
+
+        playlist_status = client.request("get", "/playlist/status", timeout=10)
+        raw_items = playlist_status.get("items") if isinstance(playlist_status, dict) else []
+        playlist_loop = bool(playlist_status.get("loop", True)) if isinstance(playlist_status, dict) else True
+        playlist_items = self._normalize_playlist_items(raw_items, prefix)
+        _log(
+            f"Playlist sorgente: {len(playlist_items)} elementi" + (" (loop)" if playlist_loop else "")
+        )
+
+        safe_ip = source_ip.replace(":", "-").replace("/", "-").replace(".", "-")
+        archive_rel = Path("_sync_jobs") / f"clone_{safe_ip}_{int(time.time())}.zip"
+        archive_path = (root / archive_rel)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        cleanup_path: Path | None = archive_path
+        try:
+            _emit_progress(0.15, "Scarico archivio media dalla sorgente")
+            client.download_media_archive(archive_path, timeout=600)
+            try:
+                size_mb = archive_path.stat().st_size / (1024 * 1024)
+                _log(f"Archivio scaricato ({size_mb:.1f} MB) → {archive_rel.as_posix()}")
+            except Exception:
+                _log(f"Archivio scaricato → {archive_rel.as_posix()}")
+
+            media_url, _ = self._build_media_pull_url(archive_rel, online_targets)
+            _log(f"URL distribuzione: {media_url}")
+
+            successes: list[PlayerRecord] = []
+            failures: dict[str, str] = {}
+            total = len(online_targets)
+            for idx, target in enumerate(online_targets, start=1):
+                phase = 0.2 + 0.5 * ((idx - 1) / max(1, total))
+                _emit_progress(phase, f"Sync {idx}/{total} su {target.ip}")
+                target_client = self._client_for(target)
+                try:
+                    target_client.sync_media(media_url, cleanup=True, timeout=600)
+                    successes.append(target)
+                    _log(f"{target.ip}: sync completato")
+                    if source_manifest:
+                        target_manifest = self._fetch_manifest(target_client)
+                        if self._manifests_match(target_manifest, source_manifest):
+                            _log(f"{target.ip}: inventario allineato ({len(source_manifest)} file)")
+                        else:
+                            _log(f"{target.ip}: attenzione, inventario diverso dopo il sync")
+                except Exception as exc:
+                    reason = str(exc)
+                    failures[target.ip] = reason
+                    _log(f"{target.ip}: sync fallito ({reason})")
+
+            if not successes:
+                raise RuntimeError("Sincronizzazione fallita su tutti i target")
+
+            if playlist_items:
+                _emit_progress(0.8, "Invio playlist ai target clonati")
+                for target in successes:
+                    try:
+                        payload = {"items": playlist_items, "loop": playlist_loop}
+                        self._client_for(target).request("post", "/playlist/apply", json=payload, timeout=40)
+                        _log(f"{target.ip}: playlist applicata ({len(playlist_items)} tracce)")
+                    except Exception as exc:
+                        failures.setdefault(target.ip, f"Playlist: {exc}")
+                        _log(f"{target.ip}: playlist non applicata ({exc})")
+            else:
+                _log("Playlist sorgente vuota: nessun push richiesto")
+
+            _emit_progress(0.98, "Clonazione completata")
+            summary = f"Clone completato su {len(successes)}/{total} player"
+            if failures:
+                summary += f" • errori: {len(failures)}"
+            _log(summary)
+            return {"ok": True, "summary": summary, "success": [p.ip for p in successes], "failed": failures}
+        finally:
+            try:
+                if cleanup_path and cleanup_path.exists():
+                    cleanup_path.unlink()
+                    parent = cleanup_path.parent
+                    if parent.exists() and not any(parent.iterdir()):
+                        parent.rmdir()
+            except Exception:
+                pass
+
+    def _build_media_pull_url(self, relative_path: Path, targets: Iterable[PlayerRecord]) -> tuple[str, str]:
+        rel = relative_path.as_posix().lstrip("./")
+        try:
+            cleaned = re.sub(r"[\x00-\x1f\x7f]", "", rel)
+        except Exception:
+            cleaned = rel
+        cleaned = cleaned.replace("\\", "/")
+        try:
+            segments = [quote(seg, safe="@:!$&'()*+,;=-._~") for seg in cleaned.split("/") if seg]
+            sanitized = "/".join(segments)
+        except Exception:
+            sanitized = cleaned
+        scheme = os.environ.get("MEDIA_SERVER_SCHEME") or getattr(self.state.config.media, "server_scheme", "http") or "http"
+        host_override_env = os.environ.get("MEDIA_SERVER_HOST")
+        host_override_cfg = getattr(self.state.config.media, "server_host_override", None)
+        host = (host_override_env or host_override_cfg or self._host_ip(targets)).strip()
+        port = int(self.state.config.media.server_port)
+        return f"{scheme}://{host}:{port}/{sanitized}", sanitized
+
+    def _build_media_manifest(self, files: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], Path | None]:
+        manifest: dict[str, dict[str, Any]] = {}
+        paths: list[str] = []
+        for entry in files or []:
+            path_str = entry.get("path")
+            if isinstance(path_str, str) and path_str:
+                paths.append(path_str)
+        prefix: Path | None = None
+        if paths:
+            try:
+                prefix = Path(os.path.commonpath(paths))
+            except Exception:
+                try:
+                    prefix = Path(paths[0]).parent
+                except Exception:
+                    prefix = None
+        for entry in files or []:
+            path_str = entry.get("path")
+            rel: str | None = None
+            if prefix and isinstance(path_str, str) and path_str:
+                try:
+                    rel = Path(path_str).relative_to(prefix).as_posix()
+                except Exception:
+                    rel = None
+            if not rel:
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    rel = name
+                elif isinstance(path_str, str) and path_str:
+                    rel = Path(path_str).name
+            if not rel:
+                continue
+            manifest[str(rel)] = {
+                "size": entry.get("size"),
+                "modified": entry.get("modified"),
+            }
+        return manifest, prefix
+
+    def _normalize_playlist_items(self, items: Any, prefix: Path | None) -> list[str]:
+        if not isinstance(items, list):
+            return []
+        normalized: list[str] = []
+        for raw in items:
+            try:
+                value = str(raw).strip()
+            except Exception:
+                continue
+            if not value:
+                continue
+            rel = None
+            if prefix:
+                try:
+                    rel = Path(value).relative_to(prefix).as_posix()
+                except Exception:
+                    rel = None
+            if rel:
+                normalized.append(rel)
+            else:
+                try:
+                    p = Path(value)
+                    if p.is_absolute():
+                        normalized.append(p.name or value)
+                    else:
+                        normalized.append(value)
+                except Exception:
+                    normalized.append(value)
+        # Deduplica mantenendo l'ordine originale
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for entry in normalized:
+            if entry in seen:
+                continue
+            seen.add(entry)
+            ordered.append(entry)
+        return ordered
+
+    def _fetch_manifest(self, client: ApiClient) -> dict[str, dict[str, Any]]:
+        response = client.request("get", "/media", timeout=30)
+        files = response.get("files", []) if isinstance(response, dict) else []
+        manifest, _ = self._build_media_manifest(files)
+        return manifest
+
+    def _manifests_match(self, target_manifest: dict[str, dict[str, Any]], expected: dict[str, dict[str, Any]]) -> bool:
+        if not expected:
+            return not target_manifest
+        if target_manifest.keys() != expected.keys():
+            return False
+        for key, meta in expected.items():
+            target_meta = target_manifest.get(key) or {}
+            try:
+                src_size = int(meta.get("size") or 0)
+                dst_size = int(target_meta.get("size") or 0)
+            except Exception:
+                return False
+            if src_size != dst_size:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
     # Playlist orchestration
     # ------------------------------------------------------------------
     def push_playlist(self, items: list[str], targets: Iterable[PlayerRecord], *, loop: bool = True, clear_before: bool = False) -> None:
@@ -1199,6 +1484,18 @@ class ApplicationController(QObject):
             self.logMessage.emit("Playlist vuota: nulla da inviare")
             return
         self._executor.submit(self._perform_push_playlist, items, targets_list, loop, clear_before)
+
+    def apply_playlist_only(self, items: list[str], targets: Iterable[PlayerRecord], *, loop: bool = True) -> None:
+        targets_list = list(targets)
+        if not targets_list:
+            self.logMessage.emit("Nessun player selezionato per applicare la playlist")
+            return
+        if not items:
+            self.logMessage.emit("Playlist vuota: nulla da applicare")
+            return
+        self.playlistPhaseChanged.emit("applying")
+        for player in targets_list:
+            self._executor.submit(self._invoke_apply_playlist, player, items, loop)
 
     def _perform_push_playlist(self, items: list[str], targets_list: list[PlayerRecord], loop: bool, clear_before: bool) -> None:
         root = self.state.config.media.media_root
@@ -1275,12 +1572,14 @@ class ApplicationController(QObject):
         client = self._client_for(player)
         try:
             response = self._execute_command(client, command, payload or {})
+            if isinstance(response, dict):
+                response.setdefault("_command", command)
             self.commandCompleted.emit(player.ip, response)
         except requests.HTTPError as exc:  # pragma: no cover
             # Graceful fallbacks for optional endpoints on older players
             status = getattr(exc.response, "status_code", None)
             if status == 404 and command in {"faststart_prepare", "faststart_go", "overlay_fade_at", "play_at", "test_on", "test_off"}:
-                self.commandCompleted.emit(player.ip, {"ok": False, "error": f"{command} non supportato sul device (404)"})
+                self.commandCompleted.emit(player.ip, {"ok": False, "error": f"{command} non supportato sul device (404)", "_command": command})
             else:
                 self.logMessage.emit(f"Command {command} su {player.ip} fallito: {exc}")
         except Exception as exc:  # pragma: no cover
@@ -1341,6 +1640,8 @@ class ApplicationController(QObject):
                     return
                 except requests.HTTPError as exc:
                     reason = _describe_http_error(exc)
+                    if self._should_attempt_permission_fix(exc, reason) and self._maybe_fix_permissions(player, reason):
+                        continue
                     fatal = getattr(exc.response, "status_code", None) in {400, 403, 404}
                     self.logMessage.emit(
                         f"Upload pull fallito su {player.ip} (tentativo {attempt}/{max_attempts}): {reason}" + (" (non ritento)" if fatal else "")
@@ -1370,6 +1671,8 @@ class ApplicationController(QObject):
                     return
                 except requests.HTTPError as exc2:
                     reason = _describe_http_error(exc2)
+                    if self._should_attempt_permission_fix(exc2, reason) and self._maybe_fix_permissions(player, reason):
+                        continue
                     fatal = getattr(exc2.response, "status_code", None) in {400, 403, 404}
                     self.logMessage.emit(
                         f"Upload push fallito su {player.ip} (tentativo {p_try}/{push_attempts}): {reason}" + (" (non ritento)" if fatal else "")
@@ -1388,6 +1691,42 @@ class ApplicationController(QObject):
         # Failure path: mark done and decrement
         self._uploads_mark_done(1)
         self._uploads_dec(1)
+
+    def _should_attempt_permission_fix(self, error: requests.HTTPError, message: str | None) -> bool:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+        if status != 403:
+            return False
+        blob = (message or "").lower()
+        if response is not None:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                blob += f" {(payload.get('error') or payload.get('message') or '')}".lower()
+            else:
+                try:
+                    blob += f" {response.text}".lower()
+                except Exception:
+                    pass
+        return "fix_permissions" in blob or "permesso negato" in blob
+
+    def _maybe_fix_permissions(self, player: PlayerRecord, reason: str | None = None) -> bool:
+        ip = player.ip
+        if ip in self._permission_fix_attempted:
+            return False
+        self._permission_fix_attempted.add(ip)
+        hint = reason or "HTTP 403"
+        self.logMessage.emit(f"HTTP 403 su {ip}: provo automaticamente /maintenance/fix_permissions ({hint})")
+        try:
+            client = self._client_for(player)
+            client.request("post", "/maintenance/fix_permissions", timeout=60)
+            self.logMessage.emit(f"Fix permissions completato su {ip}, ritento l'upload")
+            return True
+        except Exception as exc:
+            self.logMessage.emit(f"Fix permissions automatico fallito su {ip}: {exc}")
+            return False
 
     def _invoke_autoplay_toggle(
         self,
@@ -1728,6 +2067,23 @@ class ApplicationController(QObject):
             if "in_time" in payload:
                 params["in_time"] = payload["in_time"]
             return client.request("post", "/visual/brightness", params=params)
+        if cmd == "display_center":
+            enabled_flag = payload.get("on")
+            if enabled_flag is None:
+                enabled_flag = payload.get("enabled")
+            enabled_bool = bool(enabled_flag)
+            return client.request("post", "/display/center", params={"on": 1 if enabled_bool else 0})
+        if cmd in {"image_duration_set", "image_duration"}:
+            seconds_value = payload.get("seconds")
+            if seconds_value is None:
+                raise ValueError("Command image_duration_set richiede 'seconds'")
+            try:
+                seconds_float = float(seconds_value)
+            except Exception as exc:
+                raise ValueError(f"Valore seconds non valido: {seconds_value}") from exc
+            return client.request("post", "/visual/image_duration", params={"seconds": seconds_float})
+        if cmd in {"image_duration_get", "image_duration_refresh"}:
+            return client.request("get", "/visual/image_duration")
         if cmd == "change_framework":
             name = payload.get("name")
             if not name:

@@ -185,6 +185,14 @@ class OffBackend:
             print(f"[OFF-BACKEND] /loop FAILED: {exc}", flush=True)
             raise
 
+    def set_center_video(self, enabled: bool) -> None:
+        try:
+            res = self._post("/display/center", params={"on": "1" if enabled else "0"})
+            print(f"[OFF-BACKEND] /display/center -> {res}", flush=True)
+        except Exception as exc:
+            print(f"[OFF-BACKEND] /display/center FAILED: {exc}", flush=True)
+            raise
+
     def is_playing(self) -> bool:
         try:
             st = self._get("/status")
