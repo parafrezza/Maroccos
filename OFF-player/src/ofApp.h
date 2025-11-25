@@ -106,6 +106,7 @@ private:
     DisplayInfo detectDisplayInfo() const;
     DisplayInfo getDisplayInfoCached() const;
     std::string formatDisplayInfo(const DisplayInfo& info) const;
+    std::string detectAppVersion() const;
 
     AppConfig cfg;
     std::vector<PlaylistItem> playlist;
@@ -142,6 +143,7 @@ private:
     HudMode hudMode = HudMode::Hidden;
     ofTrueTypeFont overlayFont;
     bool overlayFontLoaded = false;
+    std::string appVersion = "unknown";
     mutable DisplayInfo displayInfoCache;
     mutable float displayInfoLastProbe = 0.0f;
     struct LedTestState {
