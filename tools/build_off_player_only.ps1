@@ -4,6 +4,78 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Test-FileUnlocked {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $true }
+    $temp = "$Path.lockcheck"
+    try {
+        Move-Item -Path $Path -Destination $temp -Force
+        Move-Item -Path $temp -Destination $Path -Force
+        return $true
+    } catch {
+        try {
+            if (Test-Path $temp) {
+                Move-Item -Path $temp -Destination $Path -Force
+            }
+        } catch {}
+        return $false
+    }
+}
+
+function Stop-OffPlayerProcesses {
+    param(
+        [string[]]$ProcessNames = @('OFF-player'),
+        [int]$TimeoutSeconds = 5,
+        [string]$ExePath = $null
+    )
+    $zombieDetected = $false
+    foreach ($name in $ProcessNames) {
+        try {
+            $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
+            if ($null -eq $procs -or $procs.Count -eq 0) {
+                continue
+            }
+            foreach ($proc in $procs) {
+                Write-Host ("Chiudo processo bloccante {0} (PID {1})" -f $proc.ProcessName, $proc.Id) -ForegroundColor Yellow
+                try {
+                    Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                } catch {
+                    Write-Warning ("Impossibile terminare PID {0}: {1}" -f $proc.Id, $_.Exception.Message)
+                }
+            }
+            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+            while ((Get-Process -Name $name -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 250
+            }
+            $remaining = Get-Process -Name $name -ErrorAction SilentlyContinue
+            if ($null -ne $remaining -and $remaining.Count -gt 0) {
+                foreach ($proc in $remaining) {
+                    Write-Warning ("Processo {0} (PID {1}) ancora attivo, forzo con taskkill." -f $proc.ProcessName, $proc.Id)
+                    try {
+                        & taskkill.exe /PID $proc.Id /F /T | Out-Null
+                    } catch {
+                        Write-Warning ("taskkill fallito per PID {0}: {1}" -f $proc.Id, $_.Exception.Message)
+                    }
+                }
+                Start-Sleep -Seconds 1
+                if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
+                    $zombieDetected = $true
+                }
+            }
+        } catch {
+            Write-Warning ("Errore durante l'arresto dei processi {0}: {1}" -f $name, $_.Exception.Message)
+        }
+    }
+    if ($ExePath) {
+        if (-not (Test-FileUnlocked -Path $ExePath)) {
+            throw "OFF-player.exe risulta ancora in uso (massimo). Chiudi manualmente il programma e riprova."
+        }
+    }
+    if ($zombieDetected) {
+        Write-Warning "Rilevati processi OFF-player zombie (non terminabili) ma l'eseguibile non è bloccato; continuo la build."
+    }
+}
+
 function Find-OFRoot {
     param([string]$offRootDir)
     if (-not (Test-Path $offRootDir)) {
@@ -54,6 +126,9 @@ $ofRoot = Find-OFRoot -offRootDir $offRootDir
 
 $cpu = [Environment]::ProcessorCount
 $jobs = [Math]::Max(1, $cpu - 1)
+
+$offPlayerExe = Join-Path $repoRoot 'OFF-player\bin\OFF-player.exe'
+Stop-OffPlayerProcesses -ExePath $offPlayerExe
 
 Write-Host "[1/2] Compilazione OFF-player ($jobs job) usando OF_ROOT: $ofRoot" -ForegroundColor Cyan
 Invoke-BashBuild -MsysRoot $MsysRoot -RepoRoot $repoRoot -OFRoot $ofRoot -Jobs $jobs -Config 'Release'

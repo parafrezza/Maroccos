@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 import os
 
 import pytest
@@ -23,7 +24,7 @@ def qapp() -> QApplication:
 
 
 @pytest.fixture()
-def panel(qapp: QApplication) -> PlayerPanel:
+def panel(qapp: QApplication) -> Generator[PlayerPanel, None, None]:
     w = PlayerPanel()
     yield w
     w.deleteLater()
@@ -31,11 +32,11 @@ def panel(qapp: QApplication) -> PlayerPanel:
 
 def _get_status_item(panel: PlayerPanel, ip: str):
     table = panel._table  # type: ignore[attr-defined]
-    # status column index 5
+    # Status column (index 6)
     for row in range(table.rowCount()):
         item_ip = table.item(row, 1)
         if item_ip and item_ip.text() == ip:
-            return table.item(row, 5)
+            return table.item(row, 6)
     return None
 
 
@@ -105,3 +106,35 @@ def test_status_badge_restarting_and_planned(panel: PlayerPanel, qapp: QApplicat
     assert "Aggiornamento: planned" in tip2
     brush2 = item2.data(Qt.BackgroundRole)
     assert brush2 is not None
+
+
+def test_update_player_does_not_emit_inline_name(panel: PlayerPanel, qapp: QApplication) -> None:
+    emitted: list[tuple[str, str]] = []
+    panel.deviceNameEdited.connect(lambda ip, name: emitted.append((ip, name)))
+
+    rec = PlayerRecord(name="Pn", ip="10.0.1.10")
+    panel.update_player(rec)
+    qapp.processEvents()
+
+    assert emitted == []
+
+
+def test_inline_name_edit_debounced(panel: PlayerPanel, qapp: QApplication) -> None:
+    emitted: list[tuple[str, str]] = []
+    panel.deviceNameEdited.connect(lambda ip, name: emitted.append((ip, name)))
+
+    rec = PlayerRecord(name="Px", ip="10.0.1.20")
+    panel.update_player(rec)
+    qapp.processEvents()
+
+    table = panel._table  # type: ignore[attr-defined]
+    item = table.item(0, 0)
+    assert item is not None
+    item.setText("Sala Principale")
+    qapp.processEvents()
+
+    # Debounce: nessun segnale finché il timer non scade
+    assert emitted == []
+    panel._emit_pending_name(rec.ip)
+    qapp.processEvents()
+    assert emitted == [(rec.ip, "Sala Principale")]

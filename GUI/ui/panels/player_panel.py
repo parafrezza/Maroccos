@@ -5,7 +5,9 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from functools import partial
+
+from PySide6.QtCore import QEvent, Qt, Signal, QTimer, QSignalBlocker
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -95,20 +97,27 @@ class PlayerPanel(QWidget):
         self._records: dict[str, PlayerRecord] = {}
         self._sync_lock_reason: str | None = None
         self._sync_status_tip: str | None = None
+        self._name_edit_timers: dict[str, QTimer] = {}
+        self._pending_name_edits: dict[str, str] = {}
+        self._name_edit_debounce_ms = 400
 
     def update_player(self, record: PlayerRecord) -> None:
         """Insert or refresh a player's row."""
-        last_seen = datetime.fromtimestamp(record.last_seen).strftime("%H:%M:%S")
-        self._table.upsert_record(
-            name=record.name,
-            ip=record.ip,
-            state=record.state,
-            last_seen=last_seen,
-            version=record.version or "-",
-            status_text=record.status_text or "",
-            playlist_state=self._playlist_state_for(record),
-            playlist_tip=self._playlist_tip_for(record),
-        )
+        blocker = QSignalBlocker(self._table)
+        try:
+            last_seen = datetime.fromtimestamp(record.last_seen).strftime("%H:%M:%S")
+            self._table.upsert_record(
+                name=record.name,
+                ip=record.ip,
+                state=record.state,
+                last_seen=last_seen,
+                version=record.version or "-",
+                status_text=record.status_text or "",
+                playlist_state=self._playlist_state_for(record),
+                playlist_tip=self._playlist_tip_for(record),
+            )
+        finally:
+            del blocker
         self._records[record.ip] = record
         try:
             row = self._table._find_row(record.ip)
@@ -270,6 +279,14 @@ class PlayerPanel(QWidget):
         if had_focus:
             # Propaga la nuova selezione dopo la rimozione
             self.selectionChanged.emit(self.selected_ips())
+        timer = self._name_edit_timers.pop(ip, None)
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._pending_name_edits.pop(ip, None)
 
     # --------------------------
     # Highlight helpers (version cell)
@@ -303,7 +320,33 @@ class PlayerPanel(QWidget):
         ip = ip_item.text() if ip_item else ""
         if not ip or not new_name:
             return
-        self.deviceNameEdited.emit(ip, new_name)
+        self._pending_name_edits[ip] = new_name
+        self._schedule_name_edit(ip)
+
+    def _schedule_name_edit(self, ip: str) -> None:
+        timer = self._name_edit_timers.get(ip)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(partial(self._emit_pending_name, ip))
+            self._name_edit_timers[ip] = timer
+        try:
+            timer.start(self._name_edit_debounce_ms)
+        except Exception:
+            # fallback: emetti subito
+            self._emit_pending_name(ip)
+
+    def _emit_pending_name(self, ip: str) -> None:
+        value = (self._pending_name_edits.pop(ip, "") or "").strip()
+        if not value:
+            return
+        timer = self._name_edit_timers.get(ip)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self.deviceNameEdited.emit(ip, value)
 
     def _on_selection_changed(self, *_args) -> None:
         self.selectionChanged.emit(self.selected_ips())

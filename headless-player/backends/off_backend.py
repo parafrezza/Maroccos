@@ -58,8 +58,10 @@ class OffBackend:
         return base + (path if path.startswith("/") else "/" + path)
 
     def _post(self, path: str, params: dict[str, Any] | None = None, timeout: float = 1.5) -> Any:
+        """Send form-encoded payloads (POST) to OFF-player."""
         try:
-            r = self._session.post(self._url(path), params=params or {}, timeout=timeout)
+            payload = params or {}
+            r = self._session.post(self._url(path), data=payload, timeout=timeout)
             r.raise_for_status()
             if r.headers.get("content-type", "").startswith("application/json"):
                 return r.json()

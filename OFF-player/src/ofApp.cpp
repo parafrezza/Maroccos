@@ -120,6 +120,11 @@ void ofApp::loadConfig(){
 void ofApp::setup(){
     ofSetLogLevel(OF_LOG_NOTICE);
     loadConfig();
+    appVersion = detectAppVersion();
+    if(appVersion.empty()){
+        appVersion = "unknown";
+    }
+    ofLogNotice() << "OFF-player version: " << appVersion;
 
     try{
         std::string logDirPath = ofFilePath::join(cfg.mediaDir, "_logs");
@@ -854,7 +859,7 @@ void ofApp::draw(){
         }
     }
 
-    auto drawHudBlock = [&](const std::string& text){
+    auto drawHudBlock = [&](const std::string& text, bool emphasizeIp){
         if(text.empty()){ return; }
         std::vector<std::string> lines = ofSplitString(text, "\n", true, true);
         if(lines.empty()){ return; }
@@ -862,19 +867,26 @@ void ofApp::draw(){
             const float lineHeight = overlayFont.getLineHeight() * 1.15f;
             std::vector<float> scales(lines.size(), 1.0f);
             int ipIndex = -1;
-            for(size_t i = 0; i < lines.size(); ++i){
-                if(ofIsStringInString(lines[i], "IP:") && lines[i].find("IP:") == 0){
-                    ipIndex = static_cast<int>(i);
-                    break;
+            if(emphasizeIp && !lines.empty()){
+                ipIndex = 0;
+            }else{
+                for(size_t i = 0; i < lines.size(); ++i){
+                    if(ofIsStringInString(lines[i], "IP:") && lines[i].find("IP:") == 0){
+                        ipIndex = static_cast<int>(i);
+                        break;
+                    }
                 }
             }
             if(ipIndex >= 0){
                 float width = overlayFont.stringWidth(lines[ipIndex]);
                 if(width > 1.0f){
-                    const float maxAllowed = std::max(120.0f, ofGetWidth() - 64.0f);
-                    float scale = std::min(maxAllowed / width, 12.0f);
-                    scale = std::max(scale, 1.5f);
-                    scale *= 0.97f;
+                    const float screenW = ofGetWidth();
+                    const float maxAllowed = std::max(120.0f, screenW - 96.0f);
+                    const float desired = maxAllowed * 0.9f;
+                    const float baseScale = desired / width;
+                    const float minScale = emphasizeIp ? std::max(4.0f, ofGetHeight() / 220.0f) : 1.5f;
+                    const float maxScale = emphasizeIp ? 30.0f : 12.0f;
+                    float scale = ofClamp(baseScale, minScale, maxScale);
                     scales[static_cast<size_t>(ipIndex)] = scale;
                 }
             }
@@ -924,6 +936,9 @@ void ofApp::draw(){
             std::vector<float> widths(lines.size(), 0.0f);
             std::vector<float> scales(lines.size(), 1.0f);
             int ipIndex = -1;
+            if(emphasizeIp && !lines.empty()){
+                ipIndex = 0;
+            }
             for(size_t i = 0; i < lines.size(); ++i){
                 widths[i] = bitmapFont.getBoundingBox(lines[i], 0, 0).getWidth();
                 if(ipIndex < 0 && lines[i].rfind("IP:", 0) == 0){
@@ -931,10 +946,13 @@ void ofApp::draw(){
                 }
             }
             if(ipIndex >= 0 && widths[ipIndex] > 1.0f){
-                const float maxAllowed = std::max(120.0f, ofGetWidth() - 64.0f);
-                float scale = std::min(maxAllowed / widths[ipIndex], 12.0f);
-                scale = std::max(scale, 1.5f);
-                scale *= 0.97f;
+                const float screenW = ofGetWidth();
+                const float maxAllowed = std::max(120.0f, screenW - 96.0f);
+                const float desired = maxAllowed * 0.9f;
+                const float baseScale = desired / widths[ipIndex];
+                const float minScale = emphasizeIp ? std::max(4.0f, ofGetHeight() / 220.0f) : 1.5f;
+                const float maxScale = emphasizeIp ? 30.0f : 12.0f;
+                float scale = ofClamp(baseScale, minScale, maxScale);
                 scales[static_cast<size_t>(ipIndex)] = scale;
             }
             float maxWidth = 0.0f;
@@ -978,9 +996,9 @@ void ofApp::draw(){
     };
 
     if(hudMode == HudMode::Minimal){
-        drawHudBlock(overlayInfo.minimalText);
+        drawHudBlock(overlayInfo.minimalText, true);
     }else if(hudMode == HudMode::Full){
-        drawHudBlock(overlayInfo.fullText);
+        drawHudBlock(overlayInfo.fullText, false);
     }
 }
 
@@ -1367,6 +1385,55 @@ std::string ofApp::formatDisplayInfo(const DisplayInfo& info) const{
     return ss.str();
 }
 
+std::string ofApp::detectAppVersion() const{
+    auto readCandidate = [](const std::string& path) -> std::string {
+        if(path.empty()){
+            return {};
+        }
+        try{
+            ofFile file(path);
+            if(!file.exists() || !file.isFile()){
+                return {};
+            }
+            ofBuffer buf = file.readToBuffer();
+            std::string text = buf.getText();
+            text = ofTrim(text);
+            return text;
+        }catch(...){
+            return {};
+        }
+    };
+
+    std::vector<std::string> candidates;
+    candidates.push_back(ofToDataPath("VERSION", true));
+    candidates.push_back(ofToDataPath("version.txt", true));
+    std::string cwd = ofFilePath::getCurrentWorkingDirectory();
+    auto addPaths = [&](const std::string& dir){
+        if(dir.empty()){ return; }
+        candidates.push_back(ofFilePath::join(dir, "VERSION"));
+        candidates.push_back(ofFilePath::join(dir, "version.txt"));
+        candidates.push_back(ofFilePath::join(dir, "headless-player/VERSION"));
+        candidates.push_back(ofFilePath::join(dir, "GUI/VERSION"));
+        candidates.push_back(ofFilePath::join(dir, "OFF-player/VERSION"));
+    };
+    std::string dir = cwd;
+    for(int i = 0; i < 6 && !dir.empty(); ++i){
+        addPaths(dir);
+        std::string parent = ofFilePath::getEnclosingDirectory(dir);
+        if(parent == dir){
+            break;
+        }
+        dir = parent;
+    }
+    for(const auto& candidate : candidates){
+        std::string value = readCandidate(candidate);
+        if(!value.empty()){
+            return value;
+        }
+    }
+    return {};
+}
+
 void ofApp::updateOverlayInfo(bool force){
     float now = ofGetElapsedTimef();
     if(!force && (now - overlayInfo.lastUpdate) < overlayInfo.updateInterval){
@@ -1385,22 +1452,25 @@ void ofApp::updateOverlayInfo(bool force){
     }
     std::ostringstream oss;
     const std::string displayIp = ips.empty() ? std::string("127.0.0.1") : ips.front();
+    constexpr int kCommandHttpPort = 8080;
+    constexpr int kCommandUdpPort = 7777;
     oss << ipSummary;
     oss << "\nStatus: " << statusLine;
-    oss << "\nHTTP: http://" << displayIp << ":" << cfg.httpPort;
-    oss << "\nUDP: " << displayIp << ":" << 7777 << " (comandi UDP)";
-    // oss << "\nUDP: " << displayIp << ":" << cfg.udpPort << " (comandi UDP)";
-    oss << "\ncartella media: " << cfg.mediaDir;
+    oss << "\nHTTP comandi: http://" << displayIp << ":" << kCommandHttpPort;
+    oss << "\nUDP comandi: " << displayIp << ":" << kCommandUdpPort;
+    oss << "\nCartella media: " << cfg.mediaDir;
     DisplayInfo disp = getDisplayInfoCached();
     if(disp.valid){
-        oss << "\nDisplay: " << formatDisplayInfo(disp);
+        oss << "\nDisplay: " << formatDisplayInfo(disp) << " | Software: OFF-player " << appVersion;
+    }else{
+        oss << "\nSoftware: OFF-player " << appVersion;
     }
     overlayInfo.fullText = oss.str();
 
     std::ostringstream minimal;
     minimal << ipSummary;
-    minimal << "\nHTTP: http://" << displayIp << ":" << cfg.httpPort;
-    minimal << "\nUDP: " << displayIp << ":" << cfg.udpPort;
+    minimal << "\nHTTP comandi: http://" << displayIp << ":" << kCommandHttpPort;
+    minimal << "\nUDP comandi: " << displayIp << ":" << kCommandUdpPort;
     overlayInfo.minimalText = minimal.str();
 }
 

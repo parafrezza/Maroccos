@@ -343,9 +343,27 @@ class PlayerRegistry(QObject):
                     ip = addr[0]
                 if not isinstance(ip, str) or not ip:
                     continue
+                device_id = payload.get("device_id")
+                if isinstance(device_id, str):
+                    device_id = device_id.strip() or None
+                else:
+                    device_id = None
                 # Inserisci/aggiorna record
                 with self._lock:
                     rec = self._players.get(ip)
+                    if not rec and device_id:
+                        # Ricerca record esistente per device_id e riutilizzalo
+                        for existing_ip, existing in list(self._players.items()):
+                            if existing.device_id and existing.device_id == device_id:
+                                rec = existing
+                                if existing_ip != ip:
+                                    try:
+                                        del self._players[existing_ip]
+                                    except Exception:
+                                        pass
+                                    rec.ip = ip
+                                self._players[ip] = rec
+                                break
                     if not rec:
                         rec = PlayerRecord(name=name or ip, ip=ip, port=http_port or self._settings.player_port, discovered_via="beacon")
                         self._players[ip] = rec
@@ -357,6 +375,8 @@ class PlayerRegistry(QObject):
                         rec.version = version
                     if http_port:
                         rec.port = http_port
+                    if device_id:
+                        rec.device_id = device_id
                     rec.state = "online"
                     rec.status_text = rec.status_text or "online"
                 # Notifica UI

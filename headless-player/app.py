@@ -690,6 +690,10 @@ def _emit_discovery_beacon(reason: str = "startup", retries: int = 3, delay: flo
             "reason": reason,
         }
         try:
+            payload["device_id"] = _ensure_device_id()
+        except Exception:
+            payload["device_id"] = None
+        try:
             payload["ip"] = get_ip()
         except Exception:
             payload["ip"] = None
