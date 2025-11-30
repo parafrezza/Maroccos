@@ -107,6 +107,7 @@ private:
     DisplayInfo getDisplayInfoCached() const;
     std::string formatDisplayInfo(const DisplayInfo& info) const;
     std::string detectAppVersion() const;
+    std::string detectPlayerName() const;
 
     AppConfig cfg;
     std::vector<PlaylistItem> playlist;
@@ -144,6 +145,7 @@ private:
     ofTrueTypeFont overlayFont;
     bool overlayFontLoaded = false;
     std::string appVersion = "unknown";
+    std::string playerName;
     mutable DisplayInfo displayInfoCache;
     mutable float displayInfoLastProbe = 0.0f;
     struct LedTestState {

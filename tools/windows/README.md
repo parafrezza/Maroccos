@@ -5,6 +5,7 @@ Questa cartella contiene uno script PowerShell per ottimizzare un Windows 11 "pl
 Contenuti:
 - `provision_player.ps1`: provisioning completo, molto documentato e con output passo-passo.
 - `setup.bat`: copia lo script in `C:\PlayerSetup` e chiede se eseguirlo subito o al prossimo avvio (RunOnce).
+- `headless_task_helpers.ps1`: funzioni condivise usate da provisioning e registrazione task per l'autostart del player headless.
 - `rollback_player.ps1`: rollback best‑effort per ripristinare Windows Update/servizi, DHCP su Ethernet e impostazioni visive/energetiche.
 
 ## Requisiti

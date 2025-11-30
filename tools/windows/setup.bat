@@ -27,8 +27,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
+copy /Y "%SRC%headless_task_helpers.ps1" "%DEST%\headless_task_helpers.ps1" >nul
+if errorlevel 1 (
+  echo [ERRORE] Copia di headless_task_helpers.ps1 fallita
+  pause
+  exit /b 1
+)
+
 echo.
-echo Script copiato in %DEST%\provision_player.ps1
+echo Script copiato in %DEST%\provision_player.ps1 (helper incluso)
 echo.
 echo Scegli un'opzione:
 echo   [1] Esegui ORA il provisioning

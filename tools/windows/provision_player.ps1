@@ -30,6 +30,10 @@ param(
     [string]$TigerVNCPassword = 'extra',
     [string]$ScheduledTaskName,
     [string]$HeadlessTaskUser = 'extra',
+    [string]$HeadlessTaskName = 'MaroccosHeadless',
+    [ValidateSet('Logon','Startup')]
+    [string]$HeadlessTaskTrigger = 'Logon',
+    [int]$HeadlessTaskDelaySeconds = 15,
     [string]$InstallRoot = 'C:\Program Files\marocco-player',
     [switch]$SkipMediaShare = $false,
     [switch]$SkipHostnameSync,
@@ -40,6 +44,10 @@ $ErrorActionPreference = 'Stop'
 $script:RebootRequired = $false
 $script:ScriptPath = $MyInvocation.MyCommand.Path
 $script:ScriptPathLog = if ([string]::IsNullOrWhiteSpace($script:ScriptPath)) { '<unknown>' } else { $script:ScriptPath }
+$script:ToolsRoot = if ([string]::IsNullOrWhiteSpace($script:ScriptPath)) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { Split-Path -Parent $script:ScriptPath }
+$script:HeadlessHelperPath = if ($script:ToolsRoot) { Join-Path $script:ToolsRoot 'headless_task_helpers.ps1' } else { 'headless_task_helpers.ps1' }
+$script:HeadlessHelperLoaded = $false
+$script:HeadlessHelperSearchPaths = @()
 
 $desktopMedia = Join-Path ([Environment]::GetFolderPath('Desktop')) 'media'
 $LogDir = Join-Path $desktopMedia '_logs'
@@ -89,6 +97,39 @@ function Write-ProvisionLog([string]$Level, [string]$Message) {
     }
 }
 
+function Import-HeadlessTaskHelper {
+    param([string]$InstallRoot)
+
+    if ($script:HeadlessHelperLoaded) { return $true }
+
+    $candidates = @()
+    if ($script:HeadlessHelperPath) { $candidates += $script:HeadlessHelperPath }
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $candidates += (Join-Path $InstallRoot 'tools\windows\headless_task_helpers.ps1')
+        $candidates += (Join-Path $InstallRoot 'headless_task_helpers.ps1')
+    }
+    if ($script:ToolsRoot) {
+        $candidates += (Join-Path $script:ToolsRoot 'headless_task_helpers.ps1')
+    }
+    $script:HeadlessHelperSearchPaths = $candidates | Where-Object { $_ } | Select-Object -Unique
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($path in $script:HeadlessHelperSearchPaths) {
+        if (-not $path) { continue }
+        if (-not $seen.Add($path)) { continue }
+        if (Test-Path -LiteralPath $path) {
+            try {
+                $resolved = (Resolve-Path -LiteralPath $path -ErrorAction Stop).ProviderPath
+                . "$resolved"
+                $script:HeadlessHelperLoaded = $true
+                return $true
+            } catch {
+                Write-Warn ("Impossibile caricare helper da {0}: {1}" -f $path, $_.Exception.Message)
+            }
+        }
+    }
+    return $false
+}
+
 function Write-Step([string]$Message) {
     Write-Host "`n=== $Message ===" -ForegroundColor Cyan
     Write-ProvisionLog 'STEP' $Message
@@ -109,6 +150,189 @@ function Write-Warn([string]$Message) {
 function Write-Fail([string]$Message) {
     Write-Host "[FAIL] $Message" -ForegroundColor Red
     Write-ProvisionLog 'FAIL' $Message
+}
+
+function Resolve-FullPathSafe {
+    param([string]$InputPath)
+    if ([string]::IsNullOrWhiteSpace($InputPath)) { return $null }
+    $expanded = [Environment]::ExpandEnvironmentVariables($InputPath)
+    try {
+        return (Resolve-Path -LiteralPath $expanded -ErrorAction Stop).ProviderPath
+    } catch {
+        try {
+            return [System.IO.Path]::GetFullPath($expanded)
+        } catch {
+            return $expanded
+        }
+    }
+}
+
+function Get-ShortcutDetails {
+    param([Parameter(Mandatory = $true)][string]$ShortcutPath)
+
+    if (-not (Test-Path -LiteralPath $ShortcutPath)) { return $null }
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($ShortcutPath)
+        if (-not $shortcut) { return $null }
+        $target = $shortcut.TargetPath
+        if ($target) { $target = [Environment]::ExpandEnvironmentVariables($target) }
+        return [pscustomobject]@{
+            Path             = $ShortcutPath
+            TargetPath       = $target
+            Arguments        = $shortcut.Arguments
+            WorkingDirectory = $shortcut.WorkingDirectory
+            IconLocation     = $shortcut.IconLocation
+            Description      = $shortcut.Description
+        }
+    } catch {
+        return $null
+    } finally {
+        if ($shortcut) {
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) | Out-Null } catch {}
+        }
+        if ($shell) {
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null } catch {}
+        }
+    }
+}
+
+function New-ShortcutFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [string]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$IconLocation,
+        [string]$Description = 'Maroccos player'
+    )
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($DestinationPath)
+        $shortcut.TargetPath = $TargetPath
+        if ($Arguments) { $shortcut.Arguments = $Arguments }
+        if ($WorkingDirectory) { $shortcut.WorkingDirectory = $WorkingDirectory }
+        if ($IconLocation -and (Test-Path -LiteralPath $IconLocation)) {
+            $shortcut.IconLocation = $IconLocation
+        }
+        if ($Description) { $shortcut.Description = $Description }
+        $shortcut.Save()
+        return $DestinationPath
+    } finally {
+        if ($shortcut) {
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) | Out-Null } catch {}
+        }
+        if ($shell) {
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null } catch {}
+        }
+    }
+}
+
+function Find-PlayerShortcut {
+    param([string]$InstallRoot)
+
+    $targetPaths = @()
+    $headlessExe = Join-Path $InstallRoot 'headless-player\headless-player.exe'
+    if (Test-Path -LiteralPath $headlessExe) { $targetPaths += (Resolve-FullPathSafe $headlessExe) }
+    $offPlayerExe = Join-Path $InstallRoot 'OFF-player\bin\OFF-player.exe'
+    if (Test-Path -LiteralPath $offPlayerExe) { $targetPaths += (Resolve-FullPathSafe $offPlayerExe) }
+    $installRootFull = Resolve-FullPathSafe $InstallRoot
+
+    $desktopDirs = @()
+    $publicDesktop = Join-Path $Env:PUBLIC 'Desktop'
+    if ($publicDesktop -and (Test-Path -LiteralPath $publicDesktop)) { $desktopDirs += $publicDesktop }
+    $userDesktop = [Environment]::GetFolderPath('Desktop')
+    if ($userDesktop -and (Test-Path -LiteralPath $userDesktop)) { $desktopDirs += $userDesktop }
+    $desktopDirs = $desktopDirs | Where-Object { $_ } | Select-Object -Unique
+
+    $fallback = $null
+    foreach ($dir in $desktopDirs) {
+        $links = @(Get-ChildItem -LiteralPath $dir -Filter '*.lnk' -File -ErrorAction SilentlyContinue)
+        foreach ($lnk in $links) {
+            $info = Get-ShortcutDetails -ShortcutPath $lnk.FullName
+            if (-not $info) { continue }
+            $target = Resolve-FullPathSafe $info.TargetPath
+            if ($target -and $targetPaths) {
+                foreach ($candidate in $targetPaths) {
+                    if ($candidate -and $target -and ($candidate -ieq $target)) {
+                        return $info
+                    }
+                }
+            }
+            if (-not $fallback -and $target -and $installRootFull -and $target.StartsWith($installRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $fallback = $info
+            } elseif (-not $fallback -and $lnk.Name -match '(?i)player') {
+                $fallback = $info
+            }
+        }
+    }
+    return $fallback
+}
+
+function Ensure-PlayerShortcutReplica {
+    param(
+        [string]$InstallRoot = 'C:\Program Files\marocco-player',
+        [string]$LogDirectory,
+        [string]$ShortcutName = 'Player.lnk'
+    )
+
+    Write-Step 'Replica collegamento Player in media\_logs'
+    $targetDir = if ($LogDirectory) { $LogDirectory } else { $LogDir }
+    if (-not $targetDir) {
+        Write-Warn 'Percorso media\_logs non disponibile: salto replica collegamento'
+        return
+    }
+
+    try {
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        }
+    } catch {
+        $warnMsg = "Impossibile preparare la cartella {0}: {1}" -f $targetDir, $_.Exception.Message
+        Write-Warn $warnMsg
+        $script:ProvisionFailures += $warnMsg
+        return
+    }
+
+    $shortcutInfo = Find-PlayerShortcut -InstallRoot $InstallRoot
+    $destName = if ($ShortcutName) { $ShortcutName } elseif ($shortcutInfo) { Split-Path -Leaf $shortcutInfo.Path } else { 'Player.lnk' }
+    $destPath = Join-Path $targetDir $destName
+
+    if ($shortcutInfo) {
+        try {
+            Copy-Item -LiteralPath $shortcutInfo.Path -Destination $destPath -Force
+            Write-Ok ("Collegamento '{0}' replicato in {1}" -f (Split-Path -Leaf $shortcutInfo.Path), $destPath)
+        } catch {
+            $warnMsg = "Impossibile copiare il collegamento {0} in {1}: {2}" -f $shortcutInfo.Path, $destPath, $_.Exception.Message
+            Write-Warn $warnMsg
+            $script:ProvisionFailures += $warnMsg
+        }
+        return
+    }
+
+    $headlessExe = Join-Path $InstallRoot 'headless-player\headless-player.exe'
+    if (-not (Test-Path -LiteralPath $headlessExe)) {
+        $warnMsg = "Nessun collegamento player trovato e headless-player.exe mancante ({0})" -f $headlessExe
+        Write-Warn $warnMsg
+        $script:ProvisionFailures += $warnMsg
+        return
+    }
+
+    $iconCandidate = Join-Path $InstallRoot 'assets\marocco-player.ico'
+    $workingDir = Split-Path -Parent $headlessExe
+    try {
+        New-ShortcutFile -TargetPath $headlessExe -DestinationPath $destPath -WorkingDirectory $workingDir -IconLocation ($iconCandidate) -Description 'Avvia Maroccos player'
+        Write-Ok ("Collegamento creato direttamente in {0}" -f $destPath)
+    } catch {
+        $warnMsg = "Impossibile creare il collegamento {0}: {1}" -f $destPath, $_.Exception.Message
+        Write-Warn $warnMsg
+        $script:ProvisionFailures += $warnMsg
+    }
 }
 
 function Mark-ProvisionComplete {
@@ -1098,6 +1322,34 @@ function Ensure-HeadlessPermissions {
     }
 }
 
+function Ensure-HeadlessAutostartTask {
+    param(
+        [string]$InstallRoot = 'C:\Program Files\marocco-player',
+        [string]$TaskName = 'MaroccosHeadless',
+        [ValidateSet('Logon','Startup')][string]$Trigger = 'Logon',
+        [int]$DelaySeconds = 15,
+        [string]$RunAsUser = 'extra'
+    )
+
+    Write-Step 'Registrazione attività pianificata headless-player'
+    if (-not (Import-HeadlessTaskHelper -InstallRoot $InstallRoot)) {
+        $searched = if ($script:HeadlessHelperSearchPaths -and $script:HeadlessHelperSearchPaths.Count -gt 0) { $script:HeadlessHelperSearchPaths -join '; ' } else { $script:HeadlessHelperPath }
+        $msg = "Helper headless_task_helpers.ps1 non trovato. Percorsi verificati: $searched"
+        Write-Warn $msg
+        $script:ProvisionFailures += $msg
+        return
+    }
+    try {
+        Register-HeadlessAutostartTask -InstallRoot $InstallRoot -TaskName $TaskName -Trigger $Trigger -DelaySeconds $DelaySeconds -RunAsUser $RunAsUser | Out-Null
+        Write-Ok ("Task '{0}' configurata (trigger {1}, delay {2}s)" -f $TaskName, $Trigger, $DelaySeconds)
+    } catch {
+        $msg = "Registrazione task '{0}' fallita: {1}" -f $TaskName, $_.Exception.Message
+        Write-Fail $msg
+        $script:ProvisionFailures += $msg
+        throw
+    }
+}
+
 function Apply-PreferredResolution {
     Write-Step 'Forzo risoluzione 1280x720 @ 50Hz (se supportata)'
     $relativeCandidates = @(
@@ -1748,9 +2000,11 @@ function Main {
     Install-TigerVNC
     Configure-OpenSSH
     Configure-MediaShare
+    Ensure-PlayerShortcutReplica -InstallRoot $InstallRoot -LogDirectory $LogDir -ShortcutName 'Player.lnk'
     Apply-PreferredResolution
     Rename-ComputerFromConfig
     Ensure-HeadlessPermissions -InstallRoot $InstallRoot -RunAsUser $HeadlessTaskUser
+    Ensure-HeadlessAutostartTask -InstallRoot $InstallRoot -TaskName $HeadlessTaskName -Trigger $HeadlessTaskTrigger -DelaySeconds $HeadlessTaskDelaySeconds -RunAsUser $HeadlessTaskUser
     Ensure-RunOnLogin -InstallRoot $InstallRoot
     Write-TaskbarPinConfig -InstallRoot $InstallRoot -PinApps $TaskbarPinApps
     Mark-ProvisionComplete -InstallRoot $InstallRoot

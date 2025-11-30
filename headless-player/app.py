@@ -3005,6 +3005,10 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
             env["MEDIA_DIR"] = str(MEDIA_DIR)
         except Exception:
             pass
+        try:
+            env["OFF_VERSION"] = VERSION
+        except Exception:
+            pass
         # Determina il comando di lancio (fallback headless con xvfb se DISPLAY assente)
         cmd = [exe]
         want_egl = False
@@ -3038,14 +3042,21 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
         except Exception:
             pass
         # Avvia OFF-player catturando stdout per inoltro log alla GUI
-        proc = subprocess.Popen(cmd, cwd=str(bin_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, env=env)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(bin_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            env=env,
+            **SUBPROCESS_TEXT,
+        )
         off_proc.update({"p": proc, "port": p, "path": exe, "reader": None, "requested_stop_ts": None})
         # Thread che inoltra le righe di log verso la GUI (come per CVLC)
         def _reader():
             log_file = None
             try:
-                import io
-                f = io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="ignore") if proc.stdout else None
+                f = proc.stdout
                 log_path = MEDIA_LOG_DIR / "off-player.log"
                 try:
                     log_file = open(log_path, "a", encoding="utf-8", buffering=1)
@@ -3126,13 +3137,19 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
                             "-screen 0 1280x720x24",
                             exe,
                         ]
-                        proc2 = subprocess.Popen(cmd_fb, cwd=str(bin_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+                        proc2 = subprocess.Popen(
+                            cmd_fb,
+                            cwd=str(bin_dir),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            bufsize=1,
+                            **SUBPROCESS_TEXT,
+                        )
                         off_proc.update({"p": proc2, "requested_stop_ts": None})
                         # Ricollega il lettore log al nuovo processo
                         def _reader2():
                             try:
-                                import io
-                                f2 = io.TextIOWrapper(proc2.stdout, encoding="utf-8", errors="ignore") if proc2.stdout else None
+                                f2 = proc2.stdout
                                 while proc2.poll() is None and f2:
                                     line = f2.readline()
                                     if not line:

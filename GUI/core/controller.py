@@ -866,7 +866,10 @@ class ApplicationController(QObject):
         payload: dict[str, Any] | None,
         targets: Iterable[PlayerRecord],
     ) -> None:
-        self._submit_command(command, payload, targets)
+        filtered = self._filter_reachable_targets(targets, f"command {command}")
+        if not filtered:
+            return
+        self._submit_command(command, payload, filtered)
 
     def send_misc_command(
         self,
@@ -874,7 +877,10 @@ class ApplicationController(QObject):
         payload: dict[str, Any] | None,
         targets: Iterable[PlayerRecord],
     ) -> None:
-        self._submit_command(command, payload, targets)
+        filtered = self._filter_reachable_targets(targets, f"command {command}")
+        if not filtered:
+            return
+        self._submit_command(command, payload, filtered)
 
     def open_vnc_viewer(self, player: PlayerRecord) -> None:
         viewer = self._resolve_vnc_viewer()
@@ -1020,6 +1026,42 @@ class ApplicationController(QObject):
         except Exception:
             return None
 
+    # ------------------------------------------------------------------
+    # Helpers: target filtering (avoid hammering offline/red players)
+    # ------------------------------------------------------------------
+    def _player_label(self, player: PlayerRecord) -> str:
+        try:
+            name = (getattr(player, "name", "") or "").strip()
+        except Exception:
+            name = ""
+        return name or getattr(player, "ip", "") or "?"
+
+    def _is_offline(self, player: PlayerRecord) -> bool:
+        try:
+            return str(getattr(player, "state", "")).lower() == "offline"
+        except Exception:
+            return False
+
+    def _filter_reachable_targets(self, targets: Iterable[PlayerRecord], action: str) -> list[PlayerRecord]:
+        selected = []
+        skipped = []
+        for p in list(targets):
+            if self._is_offline(p):
+                skipped.append(p)
+            else:
+                selected.append(p)
+        if skipped:
+            labels = ", ".join(self._player_label(p) for p in skipped)
+            self.logMessage.emit(f"[SKIP] {action}: {len(skipped)} player offline (rosso) -> {labels}")
+        return selected
+
+    def _skip_if_offline(self, player: PlayerRecord, action: str, *, log: bool = True) -> bool:
+        if not self._is_offline(player):
+            return False
+        if log:
+            self.logMessage.emit(f"[SKIP] {action}: {self._player_label(player)} offline (rosso)")
+        return True
+
     def set_autoplay(
         self,
         *,
@@ -1028,7 +1070,7 @@ class ApplicationController(QObject):
         restart: bool = True,
         delay: float | None = None,
     ) -> None:
-        selected = list(targets)
+        selected = self._filter_reachable_targets(targets, "autoplay")
         if not selected:
             self.logMessage.emit("Nessun player selezionato per autoplay")
             return
@@ -1036,21 +1078,31 @@ class ApplicationController(QObject):
             self._executor.submit(self._invoke_autoplay_toggle, player, enabled, restart, delay)
 
     def refresh_autoplay_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "autoplay status", log=False):
+            return
         self._executor.submit(self._invoke_autoplay_status, player)
 
     def refresh_framework_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "framework status", log=False):
+            return
         self._executor.submit(self._invoke_framework_status, player)
 
     def refresh_status(self, player: PlayerRecord) -> None:
         """Fetch general /status from a player."""
+        if self._skip_if_offline(player, "status", log=False):
+            return
         self._executor.submit(self._invoke_status, player)
 
     def refresh_device_media(self, player: PlayerRecord) -> None:
         """Fetch /media listing from a player."""
+        if self._skip_if_offline(player, "device media", log=False):
+            return
         self._executor.submit(self._invoke_device_media, player)
 
     def refresh_playlist_status(self, player: PlayerRecord) -> None:
         """Fetch /playlist/status from a player."""
+        if self._skip_if_offline(player, "playlist status", log=False):
+            return
         self._executor.submit(self._invoke_playlist_status, player)
         # Se backend OFF attivo, prova anche /off/playlist per dettagli nativi OFF
         self._executor.submit(self._invoke_off_playlist_status, player)
@@ -1059,6 +1111,8 @@ class ApplicationController(QObject):
     # Live log streaming (CVLC)
     # ------------------------------------------------------------------
     def start_log_live(self, player: PlayerRecord, *, lines: int = 50) -> None:
+        if self._skip_if_offline(player, "log live"):
+            return
         # Stop any previous
         self.stop_log_live()
         # Enable/point UDP framework logs to this GUI before starting SSE log stream (for CVLC)
@@ -1091,6 +1145,9 @@ class ApplicationController(QObject):
         self.logLiveStatusChanged.emit(False)
 
     def _log_live_worker(self, player: PlayerRecord, lines: int) -> None:
+        if self._skip_if_offline(player, "log live", log=False):
+            self.logLiveStatusChanged.emit(False)
+            return
         client = self._client_for(player)
         base = client.base_url.rstrip("/")
         # Determina endpoint log in base al framework corrente
@@ -1170,6 +1227,8 @@ class ApplicationController(QObject):
         """Configure headless to send framework logs over UDP to the GUI.
         Falls back silently if /settings/reload doesn't support these keys.
         """
+        if self._skip_if_offline(player, "log udp settings", log=False):
+            return
         client = self._client_for(player)
         payload: dict[str, Any] = {"log_udp_enabled": bool(enabled)}
         if enabled and host and port:
@@ -1181,7 +1240,7 @@ class ApplicationController(QObject):
             pass
 
     def upload_media(self, media_path: Path, targets: Iterable[PlayerRecord]) -> None:
-        target_list = list(targets)
+        target_list = self._filter_reachable_targets(targets, f"upload {media_path.name}")
         if not target_list:
             self.logMessage.emit("Nessun player selezionato per upload")
             return
@@ -1476,7 +1535,7 @@ class ApplicationController(QObject):
     # ------------------------------------------------------------------
     def push_playlist(self, items: list[str], targets: Iterable[PlayerRecord], *, loop: bool = True, clear_before: bool = False) -> None:
         """Chain clear (optional), uploads, and apply in background; UI stays responsive."""
-        targets_list = list(targets)
+        targets_list = self._filter_reachable_targets(targets, "push playlist")
         if not targets_list:
             self.logMessage.emit("Nessun player selezionato per push playlist")
             return
@@ -1486,7 +1545,7 @@ class ApplicationController(QObject):
         self._executor.submit(self._perform_push_playlist, items, targets_list, loop, clear_before)
 
     def apply_playlist_only(self, items: list[str], targets: Iterable[PlayerRecord], *, loop: bool = True) -> None:
-        targets_list = list(targets)
+        targets_list = self._filter_reachable_targets(targets, "apply playlist")
         if not targets_list:
             self.logMessage.emit("Nessun player selezionato per applicare la playlist")
             return
@@ -1498,6 +1557,9 @@ class ApplicationController(QObject):
             self._executor.submit(self._invoke_apply_playlist, player, items, loop)
 
     def _perform_push_playlist(self, items: list[str], targets_list: list[PlayerRecord], loop: bool, clear_before: bool) -> None:
+        if not targets_list:
+            self.logMessage.emit("Nessun player online per push playlist")
+            return
         root = self.state.config.media.media_root
         # Phase 1: optional clear with wait
         if clear_before:
@@ -1565,6 +1627,8 @@ class ApplicationController(QObject):
         targets: Iterable[PlayerRecord],
     ) -> None:
         for player in targets:
+            if self._skip_if_offline(player, f"command {command}"):
+                continue
             cloned = payload.copy() if payload else None
             self._executor.submit(self._invoke_command, player, command, cloned)
 
@@ -1586,6 +1650,13 @@ class ApplicationController(QObject):
             self.logMessage.emit(f"Command {command} su {player.ip} fallito: {exc}")
 
     def _invoke_upload(self, player: PlayerRecord, media_url: str | None, target: str, local_path: Path | None = None) -> None:
+        if self._skip_if_offline(player, "upload", log=False):
+            # Keep counters balanced if task was queued before the player turned red
+            self._uploads_mark_done(1)
+            self._uploads_dec(1)
+            return
+        if self._skip_if_offline(player, "off playlist status", log=False):
+            return
         client = self._client_for(player)
         target_name = Path(target).name if target else None
 
@@ -1735,6 +1806,8 @@ class ApplicationController(QObject):
         restart: bool,
         delay: float | None,
     ) -> None:
+        if self._skip_if_offline(player, "autoplay", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.set_autoplay(enabled=enabled, restart=restart, delay=delay)
@@ -1786,6 +1859,8 @@ class ApplicationController(QObject):
             pass
 
     def _invoke_autoplay_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "autoplay status", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.get_autoplay()
@@ -1796,6 +1871,8 @@ class ApplicationController(QObject):
         self.autoplayStatusReceived.emit(player.ip, payload)
 
     def _invoke_framework_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "framework status", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.request("get", "/framework")
@@ -1806,6 +1883,8 @@ class ApplicationController(QObject):
         self.frameworkStatusReceived.emit(player.ip, payload)
 
     def _invoke_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "status", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.get_status()
@@ -1886,6 +1965,8 @@ class ApplicationController(QObject):
             pass
 
     def _invoke_device_media(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "device media", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.request("get", "/media", timeout=10)
@@ -1896,6 +1977,8 @@ class ApplicationController(QObject):
         self.deviceMediaReceived.emit(player.ip, payload)
 
     def _invoke_playlist_status(self, player: PlayerRecord) -> None:
+        if self._skip_if_offline(player, "playlist status", log=False):
+            return
         client = self._client_for(player)
         try:
             response = client.request("get", "/playlist/status", timeout=5)

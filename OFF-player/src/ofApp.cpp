@@ -124,6 +124,7 @@ void ofApp::setup(){
     if(appVersion.empty()){
         appVersion = "unknown";
     }
+    playerName = detectPlayerName();
     ofLogNotice() << "OFF-player version: " << appVersion;
 
     try{
@@ -1197,6 +1198,12 @@ void ofApp::keyPressed(int key){
     if(key==' '){ isPlaying ? stop() : play(); }
     if(key==OF_KEY_RIGHT) next();
     if(key==OF_KEY_LEFT) prev();
+    if(key=='s' || key=='S'){
+        // Toggle brightness overlay between 0% and 100% (instant)
+        float target = (brightnessCur_ <= 0.0f) ? 1.0f : 0.0f;
+        setBrightness(target, 0.0f);
+        return;
+    }
     if(key=='c' || key=='C'){
         setCenterVideo(!cfg.centerVideo);
         return;
@@ -1386,6 +1393,14 @@ std::string ofApp::formatDisplayInfo(const DisplayInfo& info) const{
 }
 
 std::string ofApp::detectAppVersion() const{
+    // 1) Prefer an explicit environment variable (set by headless launcher)
+    if(const char* envVer = std::getenv("OFF_VERSION")){
+        std::string val = ofTrim(std::string(envVer));
+        if(!val.empty()){
+            return val;
+        }
+    }
+
     auto readCandidate = [](const std::string& path) -> std::string {
         if(path.empty()){
             return {};
@@ -1434,6 +1449,35 @@ std::string ofApp::detectAppVersion() const{
     return {};
 }
 
+std::string ofApp::detectPlayerName() const{
+    auto fromEnv = [](const char* key) -> std::string {
+        const char* v = std::getenv(key);
+        if(v && v[0] != '\0'){
+            std::string s = ofTrim(std::string(v));
+            if(!s.empty()){
+                return s;
+            }
+        }
+        return {};
+    };
+    // Try env overrides first
+    for(const char* key : {"PLAYER_NAME", "OFF_PLAYER_NAME", "DEVICE_NAME"}){
+        std::string val = fromEnv(key);
+        if(!val.empty()){
+            return val;
+        }
+    }
+    // Fallback: hostname
+    char hostname[256] = {0};
+    if(gethostname(hostname, sizeof(hostname)) == 0){
+        std::string h = ofTrim(std::string(hostname));
+        if(!h.empty()){
+            return h;
+        }
+    }
+    return "unknown";
+}
+
 void ofApp::updateOverlayInfo(bool force){
     float now = ofGetElapsedTimef();
     if(!force && (now - overlayInfo.lastUpdate) < overlayInfo.updateInterval){
@@ -1449,6 +1493,9 @@ void ofApp::updateOverlayInfo(bool force){
         ipSummary += "127.0.0.1";
     }else{
         ipSummary += ofJoinString(ips, ", ");
+    }
+    if(!playerName.empty()){
+        ipSummary += " | Player: " + playerName;
     }
     std::ostringstream oss;
     const std::string displayIp = ips.empty() ? std::string("127.0.0.1") : ips.front();

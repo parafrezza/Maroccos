@@ -143,6 +143,8 @@ Source: "{#SourcePath}\\..\\headless-player\\dist\\{#HeadlessDirName}\\*"; DestD
 Source: "{#SourcePath}\\..\\tools\\windows\\provision_player.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\\..\\tools\\windows\\apply_user_settings.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 Source: "{#SourcePath}\\..\\tools\\windows\\create_provision_task.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
+Source: "{#SourcePath}\\..\\tools\\windows\\headless_task_helpers.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
+Source: "{#SourcePath}\\..\\tools\\windows\\idealTask\\*"; DestDir: "{app}\\tools\\windows\\idealTask"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourcePath}\\..\\tools\\windows\\register_headless_task.ps1"; DestDir: "{app}\\tools\\windows"; Flags: ignoreversion
 
 ; Opzionale: K-Lite installer (mettere il file in installer\assets)
@@ -186,7 +188,7 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'; Set-ItemProperty -Path $path -Name 'DefaultUserName' -Value '{#ExtraUserName}'; Set-ItemProperty -Path $path -Name 'DefaultPassword' -Value '{#ExtraPassword}'; Set-ItemProperty -Path $path -Name 'DefaultDomainName' -Value $env:COMPUTERNAME; Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '1'; Set-ItemProperty -Path $path -Name 'ForceAutoLogon' -Value '1'"""; Flags: runhidden waituntilterminated; Tasks: auto_logon_extra
 
 ; Crea attività pianificate per avvio headless automatico (se presente l'eseguibile)
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\register_headless_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -DelaySeconds 15"; Flags: runhidden waituntilterminated; Tasks: register_headless_task; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
+Filename: "{sys}\\WindowsPowerShell\\v1.0\\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\windows\register_headless_task.ps1"" -InstallRoot ""{app}"" -TaskName ""{#HeadlessTaskName}"" -Trigger Logon -DelaySeconds 15"; Flags: runhidden waituntilterminated 64bit; Tasks: register_headless_task; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))
 #if SilentBuild = 0
 ; Checkbox finale "Avvia ora?" che propone l'avvio immediato dopo l'installazione
 Filename: "{app}\{#HeadlessDirName}\{#HeadlessExeName}"; Description: "Avvia ora?"; Flags: postinstall nowait skipifsilent; Check: FileExists(ExpandConstant('{app}\{#HeadlessDirName}\{#HeadlessExeName}'))

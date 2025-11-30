@@ -2,28 +2,18 @@
 # Controlla se l'attività pianificata "MaroccosHeadless" esiste ed è configurata correttamente
 
 [CmdletBinding()]
-param()
 
-$ErrorActionPreference = 'Continue'
-
-function Write-Step([string]$Message) {
-    Write-Host "`n=== $Message ===" -ForegroundColor Cyan
-}
-function Write-Ok([string]$Message) {
-    Write-Host "[OK]  $Message" -ForegroundColor Green
-}
-function Write-Warn([string]$Message) {
-    Write-Warning $Message
-}
-function Write-Info([string]$Message) {
-    Write-Host "[INFO] $Message" -ForegroundColor Gray
-}
-
-Write-Step 'Verifica autopartenza headless-player'
-
-# 1. Verifica attività pianificate
-$taskDefinitions = @(
-    @{ Name = 'MaroccosHeadless'; Required = $true },
+    } catch {
+        if ($taskDef.Required) {
+            Write-Warn "Attività pianificata '$taskName' NON trovata"
+            Write-Info "Per configurarla puoi eseguire:"
+            Write-Info "  powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\Program Files\marocco-player\tools\windows\register_headless_task.ps1'"
+            Write-Info "oppure creare manualmente l'attività con:"
+            Write-Info "  schtasks.exe /Create /TN ""MaroccosHeadless"" /SC ONLOGON /RL HIGHEST /F /DELAY 0000:15 /RU extra /TR ""C:\Program Files\marocco-player\headless-player\headless-autostart.cmd"""
+        } else {
+            Write-Info "Attività opzionale '$taskName' non presente (avvio al boot non configurato)"
+        }
+    }
     @{ Name = 'MaroccosHeadlessBoot'; Required = $false }
 )
 foreach ($taskDef in $taskDefinitions) {
@@ -65,6 +55,17 @@ foreach ($taskDef in $taskDefinitions) {
             Write-Info "Per configurarla, esegui l'installer con l'opzione 'Avvia headless all'avvio'"
             Write-Info "oppure crea manualmente l'attività con:"
             Write-Info "  schtasks.exe /Create /TN ""MaroccosHeadless"" /SC ONLOGON /RL HIGHEST /F /TR ""C:\Program Files\marocco-player\headless-player\headless-player.exe"""
+        } else {
+            Write-Info "Attività opzionale '$taskName' non presente (avvio al boot non configurato)"
+        }
+    }
+    } catch {
+        if ($taskDef.Required) {
+            Write-Warn "Attività pianificata '$taskName' NON trovata"
+            Write-Info "Per configurarla puoi eseguire:"
+            Write-Info "  powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\\Program Files\\marocco-player\\tools\\windows\\register_headless_task.ps1'"
+            Write-Info "oppure creare manualmente l'attività con:"
+            Write-Info "  schtasks.exe /Create /TN ""MaroccosHeadless"" /SC ONLOGON /RL HIGHEST /F /DELAY 0000:15 /RU extra /TR ""C:\\Program Files\\marocco-player\\headless-autostart.cmd"""
         } else {
             Write-Info "Attività opzionale '$taskName' non presente (avvio al boot non configurato)"
         }
