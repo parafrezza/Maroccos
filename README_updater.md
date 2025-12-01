@@ -135,6 +135,12 @@ python massive_update.py --serve-port 9000
 python massive_update.py --api-key "your-secret-key"
 ```
 
+### Reboot completo del sistema dopo l'apply
+```bash
+python massive_update.py --system-reboot
+```
+Richiede al player di riavviare l'intero sistema operativo al termine dell'apply, utile per garantire che il nuovo servizio venga caricato all'avvio.
+
 ### Verifica post-update
 ```bash
 # Verifica che tutti i player abbiano la nuova versione
@@ -204,8 +210,8 @@ Il sistema implementa un update a **2 fasi**:
 
 ### Fase 2: Apply Update
 - **Endpoint**: `POST /update`  
-- **Payload**: `{"restart": true}`
-- **Risultato**: Il player applica l'update e si riavvia automaticamente
+- **Payload**: `{"restart": true}` (aggiungi `"system_reboot": true` per chiedere il riavvio dell'intero sistema)
+- **Risultato**: Il player applica l'update e si riavvia automaticamente (o riavvia la macchina se richiesto)
 
 ## 📈 Monitoraggio Progresso
 
@@ -293,6 +299,7 @@ headless-player/          # Directory dell'applicazione
 | `--verify` | false | Verifica versioni post-update |
 | `--verify-timeout` | 120 | Timeout verifica per player |
 | `--verbose` | false | Output dettagliato debug |
+| `--system-reboot` | false | Richiede il riavvio completo della macchina dopo l'apply |
 
 ## 🎨 Output Esempi
 

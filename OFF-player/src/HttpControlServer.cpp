@@ -152,6 +152,9 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
         if (api_.fnBrightness) {
             api_.fnBrightness(v01, sec);
             sendOK(response);
+        } else {
+            sendBad(response, "{\"error\":\"brightness not supported\"}");
+        }
     } else if (path == "/display/center") {
         bool handled = false;
         bool enabled = false;
@@ -175,9 +178,6 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
             sendOK(response, oss.str());
         } else {
             sendBad(response, "{\"error\":\"center video control not supported\"}");
-        }
-        } else {
-            sendBad(response, "{\"error\":\"brightness not supported\"}");
         }
     } else if (path == "/go_to_start") {
         if (api_.fnGoToStart) {

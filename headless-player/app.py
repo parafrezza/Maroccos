@@ -49,6 +49,11 @@ from PIL import Image, ImageDraw, ImageFont
 import netifaces
 import json
 import re
+try:
+    from version_utils import _parse_off_version_from_json, _parse_off_version_from_status
+except Exception:
+    # If relative imports fail, fallback to app-relative import path
+    from .version_utils import _parse_off_version_from_json, _parse_off_version_from_status
 
 SUBPROCESS_TEXT = {"text": True, "encoding": "utf-8", "errors": "ignore"}
 
@@ -1244,6 +1249,11 @@ def load_persisted_framework():
             # UDP_ENABLED rimosso: UDP è sempre attivo (default True)
             # UDP_ENABLED = bool(data.get("udp_enabled", data.get("UDP_ENABLED", True)))
             autoplay["enabled"] = bool(data.get("autoplay_enabled", data.get("AUTOPLAY_ENABLED", False)))
+            try:
+                autoplay_meta.update({"source": "config", "ts": time.time(), "enabled": autoplay["enabled"]})
+                print(f"[CONFIG] Autoplay persistito: {autoplay['enabled']} (file={CONFIG_FILE})", flush=True)
+            except Exception:
+                pass
             if password := data.get("vlc_password"):
                 VLC_HTTP_PASSWORD = str(password)
             if name := data.get("device_name"):
@@ -1259,10 +1269,6 @@ def load_persisted_framework():
                 pass
             try:
                 globals()["STOP_AT_END"] = bool(data.get("stop_at_end", data.get("STOP_AT_END", STOP_AT_END)))
-            except Exception:
-                pass
-            try:
-                globals()["BOOTSTRAP_PLAYLIST"] = bool(data.get("bootstrap_playlist", data.get("BOOTSTRAP_PLAYLIST", BOOTSTRAP_PLAYLIST)))
             except Exception:
                 pass
             # Autoplay fade seconds (optional)
@@ -1390,7 +1396,6 @@ def persist_settings(extra: dict | None = None):
             "overlay_fade_out_on_play_s": OVERLAY_FADE_OUT_ON_PLAY_S,
             "overlay_fade_in_on_stop_s": OVERLAY_FADE_IN_ON_STOP_S,
             "stop_at_end": bool(STOP_AT_END),
-            "bootstrap_playlist": bool(BOOTSTRAP_PLAYLIST),
             "autoplay_fade_seconds": AUTOPLAY_FADE_SECONDS,
             "OFF_UDP_PORT": OFF_UDP_PORT,
             "OFF_HOST": OFF_HOST,
@@ -1981,7 +1986,7 @@ def _udp_handle_plain_text(
 
         def _do_autoplay(enabled=enabled, restart=restart, delay=delay):
             try:
-                _autoplay_set_enabled(enabled, restart=restart, delay=delay)
+                _autoplay_set_enabled(enabled, restart=restart, delay=delay, source="udp")
             except Exception as exc:
                 print(f"[UDP] AUTOPLAY error: {exc}", flush=True)
 
@@ -2439,7 +2444,7 @@ playlist = {"items": [], "index": -1, "loop": True}
 splash = {"pipeline": None, "src": None, "vb": None, "active": False}  # Tracking splash (se attivo copre lo schermo)
 preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipeline pre-caricata per prossimo elemento playlist
 STOP_AT_END = os.environ.get("STOP_AT_END", "0").lower() in {"1", "true", "yes", "on"}
-BOOTSTRAP_PLAYLIST = os.environ.get("BOOTSTRAP_PLAYLIST", "0").lower() in {"1", "true", "yes", "on"}
+BOOTSTRAP_PLAYLIST = False  # Disabilitato: nessuna playlist iniziale automatica quando autoplay è off
 IMAGE_DURATION_MIN_SECONDS = 1.0
 IMAGE_DURATION_MAX_SECONDS = 600.0
 try:
@@ -3631,12 +3636,22 @@ def _autoplay_on_play_started(path: str) -> None:
     _autoplay_log(f"Riproduzione {name}")
 
 
-def _autoplay_set_enabled(enabled: bool, restart: bool = True, delay: float | None = None) -> None:
+autoplay_meta = {"source": "init", "ts": time.time()}
+
+def _autoplay_set_enabled(enabled: bool, restart: bool = True, delay: float | None = None, source: str = "unknown") -> None:
     enabled = bool(enabled)
     if enabled == autoplay.get("enabled") and not restart:
         persist_settings({"autoplay_enabled": enabled})
         return
     autoplay["enabled"] = enabled
+    try:
+        autoplay_meta.update({"source": str(source or "unknown"), "ts": time.time(), "enabled": bool(enabled)})
+    except Exception:
+        pass
+    try:
+        _autoplay_log(f"Set autoplay={enabled} (source={source}, restart={restart}, delay={delay})")
+    except Exception:
+        pass
     if not enabled:
         _autoplay_log("Autoplay disattivato")
         _autoplay_cancel_timer()
@@ -3698,6 +3713,50 @@ def log_update(msg):
             urllib.request.urlopen(req, timeout=2)
         except Exception:
             pass
+
+def _should_spawn_self_restart() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    flag = os.environ.get("HEADLESS_SELF_RESPAWN")
+    if isinstance(flag, str):
+        flag = flag.strip().lower()
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+        if flag in {"0", "false", "no", "off"}:
+            return False
+    try:
+        if os.name == "nt":
+            session = (os.environ.get("SESSIONNAME") or "").strip().lower()
+            if session == "services":
+                return False
+            return True
+        parent = os.getppid()
+        return parent != 1
+    except Exception:
+        return False
+
+def _spawn_self_restart() -> bool:
+    try:
+        argv = list(sys.argv)
+        if not argv:
+            argv = [str(APP_DIR / "app.py")]
+        cmd = [sys.executable] + argv
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(
+            cmd,
+            cwd=str(APP_DIR),
+            close_fds=(os.name != "nt"),
+            creationflags=creationflags,
+        )
+        return True
+    except Exception as exc:
+        try:
+            log_update(f"Self-restart spawn failed: {exc}")
+        except Exception:
+            pass
+        return False
 
 def _sha256_of(path: Path) -> str:
     h = hashlib.sha256()
@@ -6311,8 +6370,16 @@ def on_start():
     # Avvio UDP (sempre attivo)
     threading.Thread(target=_udp_thread, daemon=True).start()
     if autoplay.get("enabled"):
+        try:
+            print(f"[STARTUP] Autoplay attivo (source={autoplay_meta.get('source')}, ts={autoplay_meta.get('ts')})", flush=True)
+        except Exception:
+            pass
         GLib.idle_add(lambda: (_autoplay_schedule_initial(), False)[1])
     else:
+        try:
+            print(f"[STARTUP] Autoplay disattivato, niente playlist automatica (source={autoplay_meta.get('source')})", flush=True)
+        except Exception:
+            pass
         def _manual_bootstrap():
             _autoplay_prepare_manual_bootstrap()
             return False
@@ -6452,6 +6519,7 @@ def status():
         "media_count": media_count,
     "update_status": current_update["status"],
         "autoplay_enabled": autoplay.get("enabled", False),
+        "autoplay_last_change": dict(autoplay_meta),
         "update_progress": current_update.get("progress"),
         "update_error": current_update.get("error"),
     "update_error_type": current_update.get("error_type"),
@@ -6967,6 +7035,40 @@ def _iter_reboot_cmds() -> list[list[str]]:
         return list(_WINDOWS_REBOOT_CMDS + _UNIX_REBOOT_CMDS)
     return list(_UNIX_REBOOT_CMDS + _WINDOWS_REBOOT_CMDS)
 
+def _request_system_reboot(reason: str = "manual", result: Optional[dict] | None = None) -> dict:
+    print(f"[REBOOT] Richiesta reboot di sistema ({reason})", flush=True)
+    target = result or {"ok": False, "message": "", "attempts": []}
+
+    def worker() -> None:
+        for cmd in _iter_reboot_cmds():
+            try:
+                print(f"[REBOOT] Eseguo: {' '.join(cmd)}", flush=True)
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **SUBPROCESS_TEXT)
+                print("[REBOOT] Comando inviato con successo", flush=True)
+                try:
+                    GLib.idle_add(main_loop.quit)
+                except Exception:
+                    pass
+                target.update({"ok": True, "message": "Reboot in corso", "attempts": []})
+                return
+            except subprocess.CalledProcessError as exc:
+                msg = (exc.stderr or exc.stdout or "").strip()
+                print(f"[REBOOT] Comando fallito ({' '.join(cmd)}): {msg}", flush=True)
+                target.setdefault("attempts", []).append({"cmd": cmd, "error": msg})
+            except subprocess.TimeoutExpired:
+                print(f"[REBOOT] Timeout eseguendo {' '.join(cmd)}", flush=True)
+                target.setdefault("attempts", []).append({"cmd": cmd, "error": "timeout"})
+            except FileNotFoundError:
+                print(f"[REBOOT] Comando non trovato: {cmd[0]}", flush=True)
+                target.setdefault("attempts", []).append({"cmd": cmd, "error": "not_found"})
+            except Exception as exc:
+                print(f"[REBOOT] Errore imprevisto con {' '.join(cmd)}: {exc}", flush=True)
+                target.setdefault("attempts", []).append({"cmd": cmd, "error": str(exc)})
+        target.update({"ok": False, "message": "Nessun comando reboot accettato"})
+
+    threading.Thread(target=worker, daemon=True).start()
+    return target
+
 def _build_magic_packet(mac: str) -> bytes:
     clean = mac.replace(":", "")
     if len(clean) != 12:
@@ -7423,6 +7525,36 @@ def change_framework(payload: dict = Body(...)):
     return {"ok": True, "scheduled": bool(in_time), "delay": delay, "target": name, "current": current_framework["name"] if in_time else name}
 
 # ---------- OFF-player process endpoints ----------
+def _parse_off_version_from_json(body: str) -> tuple[object, object]:
+    """Parse a /version-like body and return (off_value, headless_value).
+    Returns (None, None) when parsing failed or fields missing."""
+    import json as _json
+    try:
+        player = _json.loads(body)
+        if isinstance(player, dict):
+            if "off" in player:
+                return player.get("off"), player.get("headless")
+            if "version" in player:
+                return player.get("version"), player.get("headless")
+        return None, None
+    except Exception:
+        return None, None
+
+
+def _parse_off_version_from_status(body: str) -> tuple[object, object]:
+    """Parse a /status body and return (player_version, None) or (None, None)."""
+    import json as _json
+    try:
+        st = _json.loads(body)
+        if isinstance(st, dict) and "player" in st and isinstance(st["player"], dict):
+            if "version" in st["player"]:
+                return st["player"].get("version"), None
+            if "appVersion" in st["player"]:
+                return st["player"].get("appVersion"), None
+        return None, None
+    except Exception:
+        return None, None
+
 @app.get("/off/status")
 def off_status():
     p = off_proc.get("p")
@@ -7472,18 +7604,48 @@ def off_version():
 def version():
     # Aggregate headless and off versions
     res = {"headless": VERSION}
+    # Helpers _parse_off_version_from_json/_parse_off_version_from_status
+    # are defined at module level and used here to extract version info.
+
     try:
-        import urllib.request, json as _json
+        import urllib.request
         url = f"http://{OFF_HOST}:{int(globals().get('OFF_PORT', 8082))}/version"
         with urllib.request.urlopen(url, timeout=0.6) as r:
-            body = r.read().decode("utf-8", errors="ignore")
-        try:
-            player = _json.loads(body)
-            res["off"] = player.get("version") if isinstance(player, dict) else None
-        except Exception:
-            res["off_raw"] = body
+            version_body = r.read().decode("utf-8", errors="ignore")
     except Exception:
-        res["off"] = None
+        version_body = None
+
+    # Minimal query pattern: read /version; if it doesn't yield a value, fetch /status and use it as fallback.
+    try:
+        from version_utils import aggregate_off_responses
+        res = aggregate_off_responses(VERSION, version_body, None)
+        if res.get("off") is None:
+            # try status fallback if /version didn't return an off version
+            try:
+                import urllib.request
+                url = f"http://{OFF_HOST}:{int(globals().get('OFF_PORT', 8082))}/status"
+                with urllib.request.urlopen(url, timeout=0.6) as r:
+                    status_body = r.read().decode("utf-8", errors="ignore")
+            except Exception:
+                status_body = None
+            res = aggregate_off_responses(VERSION, version_body, status_body)
+    except Exception:
+        # Fallback: if our helper isn't available for some reason, keep the behavior simple
+        if version_body:
+            try:
+                import json as _json
+                p = _json.loads(version_body)
+                if isinstance(p, dict):
+                    if "off" in p:
+                        res["off"] = p.get("off")
+                    elif "version" in p:
+                        res["off"] = p.get("version")
+                if "headless" in p:
+                    res["off_headless"] = p.get("headless")
+            except Exception:
+                res["off_raw"] = version_body
+        else:
+            res["off"] = None
     return res
 
 @app.post("/off/start")
@@ -9286,7 +9448,7 @@ def api_settings_reload(data: Optional[dict] = Body(None)):
     if "AUTOPLAY_ENABLED" in data or "autoplay_enabled" in data:
         target = data.get("AUTOPLAY_ENABLED", data.get("autoplay_enabled"))
         restart_auto = data.get("restart_autoplay", True)
-        _autoplay_set_enabled(bool(target), restart=bool(restart_auto))
+        _autoplay_set_enabled(bool(target), restart=bool(restart_auto), source="settings_reload")
         changes["autoplay_enabled"] = autoplay.get("enabled", False)
 
     # Overlay fade durations (accept both snake_case and UPPERCASE)
@@ -9413,7 +9575,7 @@ def api_autoplay_update(payload: dict = Body(...)):
         delay_val = float(delay) if delay is not None else None
     except (TypeError, ValueError):
         delay_val = None
-    _autoplay_set_enabled(enabled, restart=bool(restart), delay=delay_val)
+    _autoplay_set_enabled(enabled, restart=bool(restart), delay=delay_val, source="http_api")
     return api_autoplay_status()
 
 def _safe_media_path(name: str) -> Path:
@@ -9775,12 +9937,13 @@ def api_playlist(loop: bool = Body(True, embed=True)):
 
 @app.post("/playlist/apply")
 def api_playlist_apply(payload: dict = Body(...)):
-    """Applica una playlist esplicita e pre-carica il primo elemento in pausa a t=0.
+    """Applica una playlist esplicita (anche vuota) e pre-carica il primo elemento in pausa a t=0.
 
     Body JSON atteso:
       { "items": ["file1.mp4", "file2.mp4", ...], "loop": true }
 
     - Gli elementi possono essere nomi file dentro media/ oppure percorsi assoluti già dentro media/.
+    - Lista vuota = clear playlist.
     - Non avvia la riproduzione: prepara il primo elemento per fast-start.
     - Espone show_ready=true in /status e invia un evento UDP alla GUI se sottoscritta.
     """
@@ -9788,8 +9951,8 @@ def api_playlist_apply(payload: dict = Body(...)):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Body JSON richiesto"})
     items_in = payload.get("items")
     loop = bool(payload.get("loop", True))
-    if not isinstance(items_in, list) or not items_in:
-        return JSONResponse(status_code=422, content={"ok": False, "error": "Campo 'items' mancante o vuoto"})
+    if not isinstance(items_in, list):
+        return JSONResponse(status_code=422, content={"ok": False, "error": "Campo 'items' mancante o non lista"})
 
     resolved: list[str] = []
     missing: list[str] = []
@@ -9819,7 +9982,17 @@ def api_playlist_apply(payload: dict = Body(...)):
         resolved.append(str(p))
 
     if not resolved:
-        return JSONResponse(status_code=404, content={"ok": False, "error": "Nessun item valido trovato", "missing": missing, "invalid": invalid})
+        # Lista vuota = clear playlist
+        playlist["items"] = []
+        playlist["index"] = -1
+        playlist.pop("fingerprint", None)
+        faststart["prepared_path"] = None
+        globals()["VIDEO_PATH"] = None
+        try:
+            preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
+        except Exception:
+            pass
+        return {"ok": True, "count": 0, "cleared": True, "missing": missing, "invalid": invalid}
 
     # Aggiorna stato playlist ma non avvia
     playlist["items"] = resolved
@@ -10061,15 +10234,68 @@ def api_playlist_loop(on: int = Query(1)):
             pass
     return {"ok": True, "loop": playlist["loop"]}
 
+def _finalize_update_success(restart: bool, system_reboot: bool, response: Optional[dict] = None) -> dict:
+    payload = dict(response or {"ok": True})
+    current_update["system_reboot"] = bool(system_reboot)
+    beacon_reason = "post-update-reboot" if system_reboot else ("post-update-restart" if restart else "post-update")
+    try:
+        _emit_discovery_beacon(reason=beacon_reason)
+    except Exception:
+        pass
+
+    if system_reboot:
+        current_update["stage"] = "rebooting"
+        log_update("Riavvio di sistema richiesto…")
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            log_update("Reboot di sistema skip in ambiente di test")
+            payload["system_reboot_skipped"] = True
+            return payload
+        _request_system_reboot(reason="post-update")
+        try:
+            time.sleep(0.35)
+        except Exception:
+            pass
+        os._exit(0)
+
+    if restart:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            log_update("Riavvio skip in ambiente di test")
+            payload["restart_skipped"] = True
+            return payload
+        log_update("Riavvio servizio…")
+        if _should_spawn_self_restart():
+            if _spawn_self_restart():
+                try:
+                    log_update("Nuovo processo headless avviato, termino quello corrente…")
+                except Exception:
+                    pass
+                try:
+                    time.sleep(0.35)
+                except Exception:
+                    pass
+        os._exit(0)
+
+    return payload
+
 @app.post("/update")
-def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[float] = Body(None, embed=True)):
+def update_apply(
+    restart: bool = Body(True, embed=True),
+    start_at: Optional[float] = Body(None, embed=True),
+    system_reboot: bool = Body(False, embed=True),
+):
     # Determina percorso del pacchetto scaricato
     pkg_path = current_update.get("pkg_path")
     pkg = Path(pkg_path) if pkg_path else (APP_DIR / "update_pkg.bin")
     if not pkg.exists():
         return JSONResponse(status_code=400, content={"ok": False, "error": "Nessun pacchetto scaricato"})
+    restart = bool(restart)
+    system_reboot = bool(system_reboot)
+    if system_reboot:
+        # Il reboot di sistema riavvierà implicitamente il servizio
+        restart = False
     current_update["status"] = "applying"
     current_update["stage"] = "applying"
+    current_update["system_reboot"] = system_reboot
     if start_at:
         delay = max(0.0, float(start_at) - time.time())
         if delay > 0:
@@ -10081,7 +10307,9 @@ def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[floa
         except Exception:
             pkg_size = -1
         suffix = pkg.suffix.lower()
-        log_update(f"Apply start: path={pkg} size={pkg_size}B type={suffix or 'n/a'} restart={restart}")
+        log_update(
+            f"Apply start: path={pkg} size={pkg_size}B type={suffix or 'n/a'} restart={restart} system_reboot={system_reboot}"
+        )
 
         # Path speciale Windows: se il pacchetto è un installer (.exe/.msi), eseguilo in modo silenzioso e termina
         if os.name == "nt" and suffix in (".exe", ".msi"):
@@ -10144,18 +10372,11 @@ def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[floa
                 current_update["stage"] = "ok"
                 log_update("Installer inviato, termino per completare l'aggiornamento…")
                 current_update["last_apply_http"] = 200
-                if restart:
-                    try:
-                        _emit_discovery_beacon(reason="post-update-restart")
-                    except Exception:
-                        pass
-                    os._exit(0)
-                else:
-                    try:
-                        _emit_discovery_beacon(reason="post-update")
-                    except Exception:
-                        pass
-                return {"ok": True, "install": True}
+                return _finalize_update_success(
+                    restart=restart,
+                    system_reboot=system_reboot,
+                    response={"ok": True, "install": True},
+                )
             except Exception as _win_e:
                 current_update["status"] = "error"
                 current_update["stage"] = "error"
@@ -10188,15 +10409,7 @@ def update_apply(restart: bool = Body(True, embed=True), start_at: Optional[floa
         current_update["stage"] = "ok"
         current_update["last_apply_http"] = 200
         log_update("Update applicato con successo")
-        beacon_reason = "post-update-restart" if restart else "post-update"
-        try:
-            _emit_discovery_beacon(reason=beacon_reason)
-        except Exception:
-            pass
-        if restart:
-            log_update("Riavvio servizio…")
-            os._exit(0)
-        return {"ok": True}
+        return _finalize_update_success(restart=restart, system_reboot=system_reboot)
     except Exception as e:
         current_update["status"] = "error"
         current_update["stage"] = "error"
@@ -10356,35 +10569,7 @@ def api_maintenance_status():
 
 @app.post("/system/reboot")
 def system_reboot():
-    print("[REBOOT] Richiesta reboot di sistema", flush=True)
-    result = {"ok": False, "message": "", "attempts": []}
-
-    def worker():
-        for cmd in _iter_reboot_cmds():
-            try:
-                print(f"[REBOOT] Eseguo: {' '.join(cmd)}", flush=True)
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **SUBPROCESS_TEXT)
-                print("[REBOOT] Comando inviato con successo", flush=True)
-                GLib.idle_add(main_loop.quit)
-                result.update({"ok": True, "message": "Reboot in corso", "attempts": []})
-                return
-            except subprocess.CalledProcessError as exc:
-                msg = (exc.stderr or exc.stdout or "").strip()
-                print(f"[REBOOT] Comando fallito ({' '.join(cmd)}): {msg}", flush=True)
-                result["attempts"].append({"cmd": cmd, "error": msg})
-            except subprocess.TimeoutExpired:
-                print(f"[REBOOT] Timeout eseguendo {' '.join(cmd)}", flush=True)
-                result["attempts"].append({"cmd": cmd, "error": "timeout"})
-            except FileNotFoundError:
-                print(f"[REBOOT] Comando non trovato: {cmd[0]}", flush=True)
-                result["attempts"].append({"cmd": cmd, "error": "not_found"})
-
-            except Exception as exc:
-                print(f"[REBOOT] Errore imprevisto con {' '.join(cmd)}: {exc}", flush=True)
-                result["attempts"].append({"cmd": cmd, "error": str(exc)})
-        result.update({"ok": False, "message": "Nessun comando reboot accettato"})
-
-    threading.Thread(target=worker, daemon=True).start()
+    _request_system_reboot(reason="manual")
     return JSONResponse(status_code=202, content={"ok": True, "message": "Reboot richiesto"})
 
 @app.get("/system/disk")

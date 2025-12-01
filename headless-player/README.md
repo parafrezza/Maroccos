@@ -579,9 +579,9 @@ Invoke-RestMethod -Method POST "http://<PLAYER_IP>:8080/update" -ContentType app
   - Se `start_at` è fornito, attende prima di iniziare lo scaricamento.
 
 - `POST /update` applica il pacchetto precedentemente scaricato.
-  - Body JSON: `{ "restart": true|false, "start_at": <epoch|delay>|null }`
-  - Stato: `update_status=applying` → `ok` oppure `error` con `update_error`.
-  - Se `restart=true`, il servizio si riavvia al termine (riappare lo splash e, se idle con CVLC, il nero).
+  - Body JSON: `{ "restart": true|false, "system_reboot": true|false, "start_at": <epoch|delay>|null }`
+  - Stato: `update_status=applying` → `ok` / `rebooting` / `error` con `update_error`.
+  - Se `restart=true`, il servizio si riavvia al termine; con `system_reboot=true` viene richiesto un riavvio completo del sistema operativo (il parametro `restart` viene ignorato).
 
 - `GET /status` espone i campi di tracking (vedi sezione dedicata) per orchestrare download/apply da strumenti esterni.
 
@@ -620,7 +620,7 @@ Extra:
 - Se serve un fade-out sul contenuto attuale prima dello start, passa `fade_out_seconds` nel body: verrà anticipato per concludere all’orario esatto.
 
 ## Deploy sicuro (best practice)
-- Due fasi: 1) `POST /download_update` su tutti i device; 2) attendi che ciascuno riporti `update_status=downloaded` o `update_progress=100`; 3) `POST /update` (eventualmente con `start_at` comune) e, se necessario, `restart=true`.
+- Due fasi: 1) `POST /download_update` su tutti i device; 2) attendi che ciascuno riporti `update_status=downloaded` o `update_progress=100`; 3) `POST /update` (eventualmente con `start_at` comune) e, se necessario, `restart=true` o `system_reboot=true`.
 - In caso di orchestrazione distribuita, preferisci pianificare download/apply con `start_at` epoch condiviso per ridurre jitter.
 
 ## License

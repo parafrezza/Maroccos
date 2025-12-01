@@ -369,12 +369,21 @@ class MainWindow(QMainWindow):
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return
+        # Ripristina geometry solo se coerente con lo schermo corrente
         player_detached = bool(payload.get("player_detached"))
         log_detached = bool(payload.get("log_detached"))
         geometry = self._decode_state_bytes(payload.get("geometry"))
         if geometry is not None:
             try:
+                desktop = QApplication.primaryScreen()
+                avail = desktop.availableGeometry() if desktop else None
                 self.restoreGeometry(geometry)
+                if avail:
+                    rect = self.frameGeometry()
+                    if not avail.contains(rect):
+                        # Se la geometry ripristinata esce dallo schermo, centra e ridimensiona
+                        self.resize(avail.size() * 0.75)
+                        self.move(avail.center() - self.rect().center())
             except Exception:
                 pass
         if bool(payload.get("maximized")):
@@ -517,7 +526,11 @@ class MainWindow(QMainWindow):
             self._save_ui_state()
         except Exception:
             pass
-        super().closeEvent(event)
+        try:
+            super().closeEvent(event)
+        except Exception:
+            # Best-effort close even if Qt raises on invalid geometry/state
+            pass
 
     # ------------------------------------------------------------------
     # Floating detach helpers
@@ -1349,6 +1362,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Autoplay state (use payload as fallback even if /autoplay fetch fails)
+        try:
+            if "autoplay_enabled" in payload:
+                self._update_tab.set_autoplay(bool(payload.get("autoplay_enabled")))
+        except Exception:
+            pass
+
         # Fast-start ready indicator
         fs_ready = False
         fs = payload.get("faststart") or {}
@@ -1416,6 +1436,15 @@ class MainWindow(QMainWindow):
                     center_enabled = bool(enabled_val)
             elif center_payload is not None:
                 center_enabled = bool(center_payload)
+            # Fallback: if OFF-backend provides nested 'player' object with 'centerVideo'
+            if center_enabled is None and isinstance(payload, dict):
+                player_info = payload.get("player")
+                if isinstance(player_info, dict):
+                    # Some backends/players use 'centerVideo' (OFF) naming
+                    if "centerVideo" in player_info:
+                        center_enabled = bool(player_info.get("centerVideo"))
+                    elif "center_video" in player_info:
+                        center_enabled = bool(player_info.get("center_video"))
             self._commands_tab.set_display_center(center_enabled, len(self._selected_players))
         except Exception:
             pass

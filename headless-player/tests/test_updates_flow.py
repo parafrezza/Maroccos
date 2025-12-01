@@ -1,4 +1,4 @@
-import sys, types, time, json
+import sys, types, time, json, copy
 from pathlib import Path
 import pytest
 
@@ -104,6 +104,18 @@ def fastapi_app():
     spec.loader.exec_module(mod)  # type: ignore
     mod.show_splash_until_play = lambda: None
     return mod.app
+
+
+def _prepare_fake_package(mod, tmp_path, filename="pkg.bin", content: bytes = b"stub"):
+    pkg = tmp_path / filename
+    pkg.write_bytes(content)
+    mod.current_update["pkg_path"] = str(pkg)
+    mod.current_update["status"] = "downloaded"
+    mod.current_update["stage"] = "downloaded"
+    mod.current_update["progress"] = 100
+    if not mod.current_update.get("available"):
+        mod.current_update["available"] = "v-test"
+    return pkg
 
 def test_components_endpoint(fastapi_app):
     from fastapi.testclient import TestClient
@@ -352,3 +364,80 @@ def test_windows_zip_elevated_helper_failure_fallback(fastapi_app, tmp_path, mon
         assert applied.get('path'), "Fallback apply_update non eseguito"
         # Non deve essere 'restarting'
         assert body.get('update_stage') == 'ok'
+
+
+def test_update_endpoint_system_reboot_stage_with_pytest_skip(fastapi_app, tmp_path, monkeypatch):
+    """Quando system_reboot è richiesto durante i test, lo stage passa a 'rebooting' ma il reboot viene saltato."""
+    from fastapi.testclient import TestClient
+    import importlib
+
+    mod = importlib.import_module("app_update_module")
+    snapshot = copy.deepcopy(mod.current_update)
+    try:
+        pkg = _prepare_fake_package(mod, tmp_path, filename="pkg_pytest.bin")
+        apply_called = {}
+
+        def fake_apply(path):
+            apply_called["path"] = str(path)
+
+        monkeypatch.setattr(mod, "apply_update", fake_apply, raising=False)
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "test-system-reboot-skip")
+        reboot_calls = {"count": 0}
+
+        def fake_request(reason="manual", result=None):
+            reboot_calls["count"] += 1
+            return {"ok": True}
+
+        monkeypatch.setattr(mod, "_request_system_reboot", fake_request, raising=False)
+
+        with TestClient(fastapi_app) as client:
+            resp = client.post("/update", json={"system_reboot": True})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data.get("system_reboot_skipped") is True
+            assert apply_called.get("path") == str(pkg)
+            status = client.get("/status").json()
+            assert status.get("update_stage") == "rebooting"
+            assert status.get("update_status") == "ok"
+            assert status.get("last_apply_http") == 200
+
+        assert reboot_calls["count"] == 0
+    finally:
+        mod.current_update.clear()
+        mod.current_update.update(snapshot)
+
+
+def test_update_endpoint_system_reboot_triggers_request_without_pytest(fastapi_app, tmp_path, monkeypatch):
+    """Senza PYTEST_CURRENT_TEST, l'apply deve invocare il reboot di sistema e registrare lo stage 'rebooting'."""
+    from fastapi.testclient import TestClient
+    import importlib
+
+    mod = importlib.import_module("app_update_module")
+    snapshot = copy.deepcopy(mod.current_update)
+    try:
+        pkg = _prepare_fake_package(mod, tmp_path, filename="pkg_runtime.bin")
+        monkeypatch.setattr(mod, "apply_update", lambda path: None, raising=False)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+        reboot_reasons: list[str] = []
+
+        def fake_request(reason="manual", result=None):
+            reboot_reasons.append(reason)
+            return {"ok": True}
+
+        monkeypatch.setattr(mod, "_request_system_reboot", fake_request, raising=False)
+        exit_codes: list[int] = []
+        monkeypatch.setattr(mod.os, "_exit", lambda code: exit_codes.append(code), raising=False)
+
+        with TestClient(fastapi_app) as client:
+            resp = client.post("/update", json={"system_reboot": True})
+            assert resp.status_code == 200
+            status = client.get("/status").json()
+            assert status.get("update_stage") == "rebooting"
+            assert status.get("update_status") == "ok"
+
+        assert reboot_reasons == ["post-update"]
+        assert exit_codes == [0]
+    finally:
+        mod.current_update.clear()
+        mod.current_update.update(snapshot)

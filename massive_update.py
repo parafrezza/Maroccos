@@ -315,7 +315,16 @@ def start_file_server(directory: Path, port: int):
 
 # --- Update massivo ---
 
-def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str], api_key: Optional[str], timeout=3.0, verbose: bool = False):
+def apply_update(
+    players: List[Dict],
+    version: str,
+    url: str,
+    sha: Optional[str],
+    api_key: Optional[str],
+    timeout=3.0,
+    verbose: bool = False,
+    system_reboot: bool = False,
+):
     results = []
     headers = {'Content-Type': 'application/json'}
     if api_key:
@@ -406,7 +415,9 @@ def apply_update(players: List[Dict], version: str, url: str, sha: Optional[str]
 
             # FASE 2: Apply update (con retry se il pacchetto non è ancora visibile)
             apply_endpoint = f"http://{ip}:{port}/update"
-            apply_payload = {'restart': True}
+            apply_payload = {'restart': not system_reboot}
+            if system_reboot:
+                apply_payload['system_reboot'] = True
 
             if verbose:
                 log(f"DEBUG UPDATE: FASE 2 - Chiamando {apply_endpoint} (ready={ready})")
@@ -758,6 +769,7 @@ def parse_args():
     ap.add_argument('--verify', action='store_true')
     ap.add_argument('--verify-timeout', type=float, default=120.0)
     ap.add_argument('--verbose', '-v', action='store_true', help='Output verbose per debug')
+    ap.add_argument('--system-reboot', action='store_true', help='Richiedi reboot di sistema dopo l\'apply invece del solo restart del servizio')
     return ap.parse_args()
 
 
@@ -899,7 +911,15 @@ def main():
     else:
         log(f"Uso bundle remoto: {bundle_url}")
 
-    results = apply_update(players, version, bundle_url, sha, args.api_key, verbose=args.verbose)
+    results = apply_update(
+        players,
+        version,
+        bundle_url,
+        sha,
+        args.api_key,
+        verbose=args.verbose,
+        system_reboot=args.system_reboot,
+    )
     # Avvia monitoraggio progressi (MVP sempre attivo)
     stream_progress(players, args.port_player, args.api_key, version, verbose=args.verbose)
 

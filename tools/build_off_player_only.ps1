@@ -1,5 +1,7 @@
 param(
-    [string]$MsysRoot = 'C:\msys64'
+    [string]$MsysRoot = 'C:\msys64',
+    [switch]$BumpVersion,
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -141,4 +143,29 @@ if (Test-Path $copyScript) {
 } else {
     Write-Warning "Script di copia DLL non trovato: $copyScript"
     Write-Host "OFF-player build completata (DLL non sincronizzate)." -ForegroundColor Yellow
+}
+
+# Optional: bump `OFF-player/bin/data/VERSION` after successful build
+if ($BumpVersion -or $Version) {
+    $verToWrite = $Version
+    if (-not $verToWrite -and $BumpVersion) {
+        # prefer headless version file if present
+        $headlessVerFile = Join-Path $repoRoot 'headless-player\VERSION'
+        if (Test-Path $headlessVerFile) {
+            try { $verToWrite = (Get-Content -LiteralPath $headlessVerFile -Raw).Trim() } catch { $verToWrite = $null }
+        }
+    }
+    if ($verToWrite) {
+        $outVerFile = Join-Path $repoRoot 'OFF-player\bin\data\VERSION'
+        $outDir = Split-Path -Parent $outVerFile
+        if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+        try {
+            Set-Content -LiteralPath $outVerFile -Value $verToWrite -Encoding ascii -NoNewline
+            Write-Host "[VERSION] Wrote OFF-player/bin/data/VERSION => $verToWrite" -ForegroundColor Green
+        } catch {
+            Write-Warning "[VERSION] Impossibile scrivere OFF-player/bin/data/VERSION: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warning "[VERSION] Bump version richiesto ma nessun valore determinato: HEADLESS_VERSION/headless-player/VERSION non trovato e -Version non passato"
+    }
 }

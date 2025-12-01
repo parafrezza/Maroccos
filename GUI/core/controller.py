@@ -1576,20 +1576,7 @@ class ApplicationController(QObject):
                 ok_all = ok_all and ok
             if not ok_all:
                 self.logMessage.emit("Alcuni device non hanno completato lo svuotamento media")
-        # Phase 2: uploads
-        self.playlistPhaseChanged.emit("uploading")
-        for rel in items:
-            try:
-                p = Path(rel)
-                local_path: Path
-                if root and not p.is_absolute():
-                    local_path = (root / rel)
-                else:
-                    local_path = p
-                self.upload_media(local_path, targets_list)
-            except Exception as exc:
-                self.logMessage.emit(f"Errore preparando upload per {rel}: {exc}")
-        # Phase 3: apply
+        # Phase 2: apply only (niente upload: si assume che i media siano già presenti)
         self.playlistPhaseChanged.emit("applying")
         for player in targets_list:
             self._executor.submit(self._invoke_apply_playlist, player, items, loop)
@@ -1810,6 +1797,7 @@ class ApplicationController(QObject):
             return
         client = self._client_for(player)
         try:
+            self.logMessage.emit(f"[HTTP] POST /autoplay -> {player.ip} enabled={enabled} restart={restart} delay={delay}")
             response = client.set_autoplay(enabled=enabled, restart=restart, delay=delay)
         except Exception as exc:
             self.logMessage.emit(f"Autoplay su {player.ip} fallito: {exc}")
@@ -1863,6 +1851,7 @@ class ApplicationController(QObject):
             return
         client = self._client_for(player)
         try:
+            self.logMessage.emit(f"[HTTP] GET /autoplay -> {player.ip}")
             response = client.get_autoplay()
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
@@ -2910,5 +2899,5 @@ echo "[remote] Fatto."
         if removed:
             self.logMessage.emit(f"Purgato player {ip}")
         else:
-            self.logMessage.emit(f"Player {ip} non trovato nella lista")
+            self.logMessage.emit(f"Player {ip} non trovato nella lista (forzo rimozione UI)")
         return removed

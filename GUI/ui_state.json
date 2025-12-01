@@ -1,5 +1,5 @@
 {
-  "geometry": "AdnQywADAAAAAAlYAAAAAAAADtAAAASGAAAJWAAAAB8AAA7QAAAEhgAAAAEAAAAAB4AAAAlYAAAAHwAADtAAAASG",
+  "geometry": "AdnQywADAAAAAAq8AAAAAAAADv4AAASGAAAKvAAAAB8AAA7+AAAEhgAAAAEAAAAAB4AAAAq8AAAAHwAADv4AAASG",
   "maximized": false,
   "player_collapsed": false,
   "log_collapsed": false,
@@ -7,16 +7,16 @@
   "log_panel_height": 102,
   "splitter_sizes": [
     0,
-    1385
+    1075
   ],
   "main_splitter_sizes": [
     1106,
     0
   ],
-  "splitter_state": "AAAA/wAAAAEAAAACAAAAAAAABFQB/////wEAAAABAA==",
+  "splitter_state": "AAAA/wAAAAEAAAACAAAAAAAAA+kB/////wEAAAABAA==",
   "main_splitter_state": "AAAA/wAAAAEAAAACAAADvAAAAAABAAAACgEAAAACAA==",
   "player_detached": true,
   "log_detached": true,
   "player_window_geometry": "AdnQywADAAAAAAeAAAAAAgAACvkAAAGPAAAHgAAAACEAAAr5AAABjwAAAAEAAAAAB4AAAAeAAAAAIQAACvkAAAGP",
-  "log_window_geometry": "AdnQywADAAAAAAeDAAABkAAACukAAASGAAAHgwAAAa8AAArpAAAEhgAAAAEAAAAAB4AAAAeDAAABrwAACukAAASG"
+  "log_window_geometry": "AdnQywADAAAAAAeDAAABkAAACtgAAASGAAAHgwAAAa8AAArYAAAEhgAAAAEAAAAAB4AAAAeDAAABrwAACtgAAASG"
 }

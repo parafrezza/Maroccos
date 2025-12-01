@@ -3,6 +3,10 @@ import types
 from pathlib import Path
 
 import pytest
+import os
+
+# Ensure OFF autostart is disabled globally for test runs to avoid starting external binaries
+os.environ["OFF_AUTOSTART"] = "0"
 
 
 def _install_stubs():
@@ -156,6 +160,24 @@ def fastapi_app():
         sys.path.insert(0, str(base))
     app_path = base / "app.py"
     import importlib.util
+    import threading
+    # Prevent app from spawning background threads (autostart, watchdog) during module import
+    orig_thread_class = threading.Thread
+    class _DummyThread:
+        def __init__(self, *args, **kwargs):
+            self._target = kwargs.get('target') if 'target' in kwargs else (args[0] if args else None)
+            self._args = kwargs.get('args', ())
+            self._kwargs = kwargs.get('kwargs', {})
+            self.daemon = kwargs.get('daemon', True)
+        def start(self):
+            # do not run target synchronously; avoid side-effects during import
+            return None
+        def join(self, *a, **k):
+            return None
+    threading.Thread = _DummyThread
+    # Ensure OFF autostart is disabled during tests to avoid launching external binary
+    import os
+    os.environ["OFF_AUTOSTART"] = "0"
     spec = importlib.util.spec_from_file_location("app_module", str(app_path))
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -166,6 +188,8 @@ def fastapi_app():
     os.system = lambda *a, **k: 0
     sys.modules["app_module"] = mod
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    # restore native threading.Thread after module import
+    threading.Thread = orig_thread_class
     # Evita splash al startup
     mod.show_splash_until_play = lambda: None
     try:
@@ -263,6 +287,23 @@ def test_status_exposes_udp_lock(fastapi_app):
         assert udp.get("configured_port") == 7777
         assert udp.get("locked") is True
         assert udp.get("enabled") is True
+
+
+def test_manual_bootstrap_disabled_when_autoplay_off(fastapi_app, monkeypatch):
+    import app_module as app_mod
+
+    # Simula scenario con autoplay disabilitato e media presenti
+    app_mod.autoplay["enabled"] = False
+    app_mod.playlist["items"] = []
+    app_mod.playlist["index"] = -1
+    fake_items = ["file1.mp4", "file2.mp4"]
+    monkeypatch.setattr(app_mod, "_autoplay_collect_media", lambda: list(fake_items))
+
+    app_mod._autoplay_prepare_manual_bootstrap()
+
+    # Poiché BOOTSTRAP_PLAYLIST è disabilitato, la playlist non deve essere popolata
+    assert app_mod.playlist["items"] == []
+    assert app_mod.playlist["index"] == -1
 
 
 def test_settings_reload_toggle_flag(fastapi_app):
@@ -470,3 +511,17 @@ def test_off_version_endpoints(fastapi_app):
             assert p2["headless"] == app_mod.VERSION
             # off could be None or a version string, confirm shape
             assert ("off" in p2 and (p2["off"] is None or isinstance(p2["off"], str))) or ("off_raw" in p2)
+
+    # Verify fallback behavior using aggregate helper directly (without starting OFF process)
+    from version_utils import aggregate_off_responses
+    headless = app_mod.VERSION
+    # prefer /version when available
+    vbody = '{"version":"v5.5.5"}'
+    sbody = '{"player":{"version":"v9.9.9"}}'
+    agg = aggregate_off_responses(headless, vbody, sbody)
+    assert agg["off"] == "v5.5.5"
+    assert agg["off_source"] == "version"
+    # fallback to status if version absent
+    agg2 = aggregate_off_responses(headless, None, sbody)
+    assert agg2["off"] == "v9.9.9"
+    assert agg2["off_source"] == "status"

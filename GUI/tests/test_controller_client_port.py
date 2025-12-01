@@ -36,3 +36,26 @@ def test_client_for_prefers_player_port(qapp: QApplication, tmp_path: Path) -> N
     assert client_default.base_url == "http://10.0.0.2:8080"
 
     controller._executor.shutdown(wait=False)
+
+
+def test_execute_display_center_posts_display_center(qapp: QApplication, tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    controller = ApplicationController(settings_path)
+
+    class DummyClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, *, json=None, params=None, timeout=5):
+            self.calls.append((method, path, json, params, timeout))
+            return {"ok": True, "enabled": bool(params.get("on"))}
+
+    dummy = DummyClient()
+    resp = controller._execute_command(dummy, "display_center", {"on": 1})
+    assert dummy.calls, "Expected a request to be made"
+    method, path, json_payload, params, timeout = dummy.calls[0]
+    assert method.lower() == "post"
+    assert path == "/display/center"
+    assert params.get("on") == 1
+    assert resp.get("enabled") is True
+    controller._executor.shutdown(wait=False)

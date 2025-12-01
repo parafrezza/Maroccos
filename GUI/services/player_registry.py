@@ -7,7 +7,7 @@ import socket
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Dict, Iterable
 
 import requests
@@ -71,6 +71,119 @@ class PlayerRegistry(QObject):
         self._thread: threading.Thread | None = None
         self._beacon_thread: threading.Thread | None = None
 
+    @staticmethod
+    def _ip_rank(ip: str | None) -> int:
+        if not isinstance(ip, str) or not ip:
+            return 100
+        try:
+            if ip == "0.0.0.0" or ip.startswith("127."):
+                return 90
+            if ip.startswith("169.254."):
+                return 80
+            if ip.startswith("192.168."):
+                return 10
+            if ip.startswith("10."):
+                return 11
+            if ip.startswith("172."):
+                parts = ip.split(".")
+                if len(parts) >= 2:
+                    sec = int(parts[1])
+                    if 16 <= sec <= 31:
+                        return 12
+            return 30
+        except Exception:
+            return 100
+
+    @classmethod
+    def _prefer_record(cls, current: PlayerRecord, candidate: PlayerRecord) -> PlayerRecord:
+        cur_rank = cls._ip_rank(current.ip)
+        cand_rank = cls._ip_rank(candidate.ip)
+        if cand_rank < cur_rank:
+            return candidate
+        if cand_rank == cur_rank:
+            if (candidate.port or 0) and not (current.port or 0):
+                return candidate
+            if candidate.last_seen > current.last_seen:
+                return candidate
+        return current
+
+    def _dedupe_records(self, records: Iterable[PlayerRecord]) -> list[PlayerRecord]:
+        device_map: dict[str, PlayerRecord] = {}
+        ip_map: dict[str, PlayerRecord] = {}
+        for rec in records:
+            key = (rec.device_id or "").strip()
+            if key:
+                existing = device_map.get(key)
+                if existing is None:
+                    device_map[key] = rec
+                else:
+                    device_map[key] = self._prefer_record(existing, rec)
+                continue
+            existing_ip = ip_map.get(rec.ip)
+            if existing_ip is None:
+                ip_map[rec.ip] = rec
+            else:
+                ip_map[rec.ip] = self._prefer_record(existing_ip, rec)
+
+        combined: dict[str, PlayerRecord] = {}
+        for rec in list(device_map.values()) + list(ip_map.values()):
+            existing = combined.get(rec.ip)
+            if existing is None:
+                combined[rec.ip] = rec
+            else:
+                combined[rec.ip] = self._prefer_record(existing, rec)
+        return list(combined.values())
+
+    def _copy_record_data(self, target: PlayerRecord, source: PlayerRecord) -> None:
+        for field_meta in dataclass_fields(PlayerRecord):
+            name = field_meta.name
+            if name == "ip":
+                continue
+            try:
+                setattr(target, name, getattr(source, name))
+            except Exception:
+                continue
+
+    def _merge_duplicate_records(self, record: PlayerRecord) -> None:
+        did = (record.device_id or "").strip()
+        if not did:
+            return
+        removed_ips: list[str] = []
+        with self._lock:
+            duplicates: list[tuple[str, PlayerRecord]] = [
+                (ip, rec)
+                for ip, rec in list(self._players.items())
+                if rec is not record and (rec.device_id or "").strip() == did
+            ]
+            if not duplicates:
+                return
+            candidates = [record] + [rec for _, rec in duplicates]
+            best = min(candidates, key=lambda rec: (self._ip_rank(rec.ip), -rec.last_seen))
+            best_ip = best.ip
+            best_port = best.port
+            if best is not record:
+                self._copy_record_data(record, best)
+            for ip, rec in duplicates:
+                try:
+                    del self._players[ip]
+                except KeyError:
+                    pass
+                if ip != best_ip:
+                    removed_ips.append(ip)
+            old_key = record.ip
+            if old_key in self._players and old_key != best_ip:
+                try:
+                    del self._players[old_key]
+                except KeyError:
+                    pass
+                removed_ips.append(old_key)
+            record.ip = best_ip
+            if best_port:
+                record.port = best_port
+            self._players[record.ip] = record
+        for ip in removed_ips:
+            self.playerRemoved.emit(ip)
+
     def start(self) -> None:
         if self._running:
             return
@@ -102,9 +215,10 @@ class PlayerRegistry(QObject):
 
     def sync_players(self, players: Iterable[PlayerRecord]) -> None:
         """Replace tracked players with fresh discovery results."""
+        deduped = self._dedupe_records(players)
         with self._lock:
-            self._players = {p.ip: p for p in players}
-        for player in players:
+            self._players = {p.ip: p for p in deduped}
+        for player in deduped:
             self.playerUpdated.emit(player)
         self.syncCompleted.emit()
 
@@ -161,6 +275,8 @@ class PlayerRegistry(QObject):
                 record.device_id = did
             if isinstance(iid, str) and iid:
                 record.instance_id = iid
+            if record.device_id:
+                self._merge_duplicate_records(record)
         except Exception:
             pass
         # Aggiorna il nome se il backend lo espone
@@ -254,7 +370,7 @@ class PlayerRegistry(QObject):
                 record.update_backup_dir = data.get("update_backup_dir") or None
             # Augment status text with update info
             base_txt = record.status_text or ""
-            if record.update_stage in {"downloading", "applying", "restarting", "staging"}:
+            if record.update_stage in {"downloading", "applying", "restarting", "staging", "rebooting"}:
                 prog = record.update_progress
                 if isinstance(prog, (int, float)):
                     status_txt = f"update: {record.update_stage} {prog:.0f}%"
@@ -438,7 +554,7 @@ class PlayerRegistry(QObject):
         with self._lock:
             for ip, record in list(self._players.items()):
                 state = (record.state or "").lower()
-                if state == "offline":
+                if state in {"offline", "warning"}:
                     removed.append(ip)
                     del self._players[ip]
         for ip in removed:
@@ -458,11 +574,12 @@ class PlayerRegistry(QObject):
         """Remove a specific player by IP."""
         if not ip:
             return False
+        ip = str(ip).strip()
         removed = False
         with self._lock:
             if ip in self._players:
                 del self._players[ip]
                 removed = True
-        if removed:
-            self.playerRemoved.emit(ip)
+        # Anche se non è presente nel registro, emetti comunque l'evento per forzare la rimozione UI
+        self.playerRemoved.emit(ip)
         return removed
