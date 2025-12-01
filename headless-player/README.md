@@ -1,3 +1,8 @@
+## Documentazione
+
+Quando si avvia un processo OFF-player, il server headless ora imposta la variabile d'ambiente `HEADLESS_VERSION` per mostrare la versione headless. L'OFF-player visualizza entrambe le versioni nell'HUD sovrapposto quando `HEADLESS_VERSION` è presente.
+
+Quando si utilizza `OFF`, mostra entrambe le versioni.
 # Headless Video Player (Raspberry Pi 3B)
 
 Riproduttore headless controllato via API FastAPI, backend video pluggable (GStreamer / CVLC / PyQt / MPV) + controlli remoti HTTP e UDP.

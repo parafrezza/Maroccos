@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import json
 from pathlib import Path
+import time
 
 from PySide6.QtCore import QSize, QTimer, Qt, QFileSystemWatcher, QByteArray
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
@@ -179,8 +180,10 @@ class MainWindow(QMainWindow):
         self._device_media_timer.timeout.connect(self._device_media_tick)
         # Playlist status polling timer
         self._playlist_timer = QTimer(self)
-        self._playlist_timer.setInterval(2000)
+        self._playlist_timer.setInterval(4000)
         self._playlist_timer.timeout.connect(self._playlist_tick)
+
+        self._next_status_refresh_ts = 0.0
         # Playlist push tracking
         self._playlist_pending: set[str] = set()
         self._playlist_active: bool = False
@@ -257,6 +260,7 @@ class MainWindow(QMainWindow):
         self._player_panel.deviceNameEdited.connect(self._handle_inline_name_edit)
         self._player_panel.syncMediaRequested.connect(self._handle_sync_media_request)
         self._player_panel.purgeRequested.connect(self._handle_purge_offline)
+        self._player_panel.forcePurgeRequested.connect(self._handle_force_purge)
         self._player_panel.vncRequested.connect(self._handle_open_vnc)
         self._player_panel.detachRequested.connect(self._toggle_player_panel_detach)
 
@@ -891,6 +895,7 @@ class MainWindow(QMainWindow):
                 self._commands_tab.set_hud_state(None, count)
                 # Also show multi-target cue for loop toggles
                 self._commands_tab.set_playback_loop(None, count)
+                self._commands_tab.set_stop_at_end(None, count)
                 self._commands_tab.set_playlist_loop(None, count)
             except Exception:
                 pass
@@ -898,6 +903,7 @@ class MainWindow(QMainWindow):
             self._status_primary = self._selected_players[0].ip
             self._status_timer.start()
             self._controller.refresh_status(self._selected_players[0])
+            self._next_status_refresh_ts = time.monotonic() + self._status_poll_interval_seconds()
             # Start device media polling for primary
             self._device_media_timer.start()
             self._handle_device_media_refresh()
@@ -915,6 +921,7 @@ class MainWindow(QMainWindow):
             self._update_tab.set_framework_state(current=None, available=[])
             self._status_primary = None
             self._status_timer.stop()
+            self._next_status_refresh_ts = 0.0
             self._device_media_timer.stop()
             self._playlist_timer.stop()
             # Stop live logs when no selection
@@ -1215,12 +1222,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"[{ip}] {error}")
 
     def _poll_status_tick(self) -> None:
-        """Tick di polling: usa lo snapshot del registry invece di fare nuove HTTP.
-
-        Il player_registry sta già interrogando /status periodicamente; qui
-        ci limitiamo a riflettere in UI lo stato più recente, evitando
-        richieste duplicate verso i player.
-        """
+        """Tick di polling: mostra l'ultimo snapshot e pianifica refresh HTTP."""
         if not self._selected_players:
             return
         primary = self._selected_players[0]
@@ -1228,8 +1230,25 @@ class MainWindow(QMainWindow):
         # Usa il payload /status cache-ato se disponibile, altrimenti fallback
         # ai soli dati del PlayerRecord per le parti di UI che lo supportano.
         payload = self._controller.get_cached_status(primary.ip) or {}
+        interval_s = self._status_poll_interval_seconds()
+        now = time.monotonic()
         if payload:
             self._handle_status(primary.ip, payload)
+        else:
+            self._controller.refresh_status(primary)
+            self._next_status_refresh_ts = now + interval_s
+            return
+
+        if now >= self._next_status_refresh_ts:
+            self._controller.refresh_status(primary)
+            self._next_status_refresh_ts = now + interval_s
+
+    def _status_poll_interval_seconds(self) -> float:
+        try:
+            ms_val = int(getattr(self._controller.state.config.network, "status_poll_ms", 2000))
+        except Exception:
+            ms_val = 2000
+        return max(0.3, float(ms_val) / 1000.0)
 
     def _handle_status(self, ip: str, payload: dict) -> None:
         # Only reflect the primary selected player's status in the UI
@@ -1318,6 +1337,11 @@ class MainWindow(QMainWindow):
                 self._commands_tab.set_playback_loop(loop_enabled, count)
             else:
                 self._commands_tab.set_playback_loop(None, count)
+            stop_at_end = payload.get("stop_at_end")
+            if isinstance(stop_at_end, bool):
+                self._commands_tab.set_stop_at_end(stop_at_end, count)
+            else:
+                self._commands_tab.set_stop_at_end(None, count)
             if isinstance(pl_loop, bool):
                 self._commands_tab.set_playlist_loop(pl_loop, count)
             else:
@@ -1340,6 +1364,12 @@ class MainWindow(QMainWindow):
             loop_enabled = payload.get("loop_enabled")
             if loop_enabled is not None:
                 self._commands_tab.set_playback_loop(bool(loop_enabled))
+        except Exception:
+            pass
+        try:
+            stop_at_end = payload.get("stop_at_end")
+            if stop_at_end is not None:
+                self._commands_tab.set_stop_at_end(bool(stop_at_end))
         except Exception:
             pass
         try:
@@ -1772,6 +1802,9 @@ class MainWindow(QMainWindow):
     def _handle_purge_offline(self) -> None:
         self._controller.purge_offline_players()
 
+    def _handle_force_purge(self, ip: str) -> None:
+        self._controller.purge_player(ip)
+
     # -----------------------------
     # Media directory watcher helpers
     # -----------------------------
@@ -1860,6 +1893,11 @@ class MainWindow(QMainWindow):
                 return
         self._status_timer.setInterval(ms_val)
         self._controller.set_status_poll_ms(ms_val)
+        try:
+            if self._selected_players:
+                self._next_status_refresh_ts = time.monotonic() + self._status_poll_interval_seconds()
+        except Exception:
+            pass
 
     def _handle_ping_duration_changed(self, ms: int) -> None:
         try:
@@ -1991,28 +2029,117 @@ class MainWindow(QMainWindow):
         ready_all = True
         ready_any = False
         not_ready_ips: list[str] = []
+        reason_counts: dict[str, int] = {}
+        reason_details: dict[str, list[str]] = {}
         for p in self._selected_players:
             rec = self._controller.get_player_record(p.ip)
-            ready = bool(rec and getattr(rec, "playlist_ready", False))
-            if ready and local_hash:
-                ready = rec.playlist_hash == local_hash  # type: ignore[union-attr]
-            if ready:
+            reason = self._classify_playlist_pending(rec, local_hash)
+            if reason is None:
                 ready_any = True
-            else:
-                ready_all = False
-                not_ready_ips.append(p.ip)
+                continue
+            ready_all = False
+            not_ready_ips.append(p.ip)
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            label = None
+            try:
+                label = getattr(rec, "name", None)
+            except Exception:
+                label = None
+            if not label:
+                try:
+                    label = getattr(p, "name", None)
+                except Exception:
+                    label = None
+            reason_details.setdefault(reason, []).append(label or p.ip)
+        badge_text = self._format_playlist_pending_badge(len(not_ready_ips), reason_counts)
+        badge_tip = self._format_playlist_pending_tooltip(reason_details)
         try:
             if ready_all:
                 self._commands_tab.set_playlist_led("green")
                 self._commands_tab.set_action_badge(None)
             elif ready_any:
                 self._commands_tab.set_playlist_led("orange")
-                self._commands_tab.set_action_badge(f"Pending: {len(not_ready_ips)} non pronti")
+                self._commands_tab.set_action_badge(badge_text, tooltip=badge_tip)
             else:
                 self._commands_tab.set_playlist_led("red")
-                self._commands_tab.set_action_badge(f"Pending: {len(not_ready_ips)} non pronti")
+                self._commands_tab.set_action_badge(badge_text, tooltip=badge_tip)
         except Exception:
             pass
+
+    def _classify_playlist_pending(self, record: PlayerRecord | None, local_hash: str | None) -> str | None:
+        """Return a reason key if the player is not ready, otherwise None."""
+        if record is None:
+            return "unknown"
+        try:
+            ready = bool(getattr(record, "playlist_ready", False))
+        except Exception:
+            ready = False
+        try:
+            missing = int(getattr(record, "playlist_missing", 0) or 0)
+        except Exception:
+            missing = 0
+        try:
+            invalid = int(getattr(record, "playlist_invalid", 0) or 0)
+        except Exception:
+            invalid = 0
+        try:
+            remote_hash = getattr(record, "playlist_hash", None)
+        except Exception:
+            remote_hash = None
+        if ready:
+            if local_hash and remote_hash and remote_hash != local_hash:
+                return "hash"
+            return None
+        if missing:
+            return "missing"
+        if invalid:
+            return "invalid"
+        return "not_applied"
+
+    def _format_playlist_pending_badge(self, total: int, reason_counts: dict[str, int]) -> str | None:
+        if total <= 0:
+            return None
+        labels = {
+            "missing": "file mancanti",
+            "invalid": "file invalidi",
+            "hash": "hash diverso",
+            "not_applied": "non applicata",
+            "unknown": "sconosciuto",
+        }
+        order = ["missing", "invalid", "hash", "not_applied", "unknown"]
+        parts: list[str] = []
+        for key in order:
+            count = reason_counts.get(key)
+            if not count:
+                continue
+            parts.append(f"{count} {labels.get(key, key)}")
+        if not parts:
+            return f"Pending: {total} non pronti"
+        return "Pending: " + ", ".join(parts)
+
+    def _format_playlist_pending_tooltip(self, details: dict[str, list[str]]) -> str | None:
+        if not details:
+            return None
+        labels = {
+            "missing": "File mancanti",
+            "invalid": "File invalidi",
+            "hash": "Hash diverso",
+            "not_applied": "Playlist non applicata",
+            "unknown": "Stato sconosciuto",
+        }
+        order = ["missing", "invalid", "hash", "not_applied", "unknown"]
+        lines: list[str] = []
+        for key in order:
+            entries = details.get(key)
+            if not entries:
+                continue
+            sample = ", ".join(entries[:4])
+            extra = len(entries) - 4
+            if extra > 0:
+                lines.append(f"{labels.get(key, key)}: {sample} +{extra}")
+            else:
+                lines.append(f"{labels.get(key, key)}: {sample}")
+        return "\n".join(lines) if lines else None
 
     def _handle_start_show(self, in_time: float | None) -> None:
         """Handle START SHOW button or UDP trigger.

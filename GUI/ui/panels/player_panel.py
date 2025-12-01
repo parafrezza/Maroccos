@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QToolButton,
     QVBoxLayout,
+    QMessageBox,
     QWidget,
 )
 
@@ -29,6 +30,7 @@ class PlayerPanel(QWidget):
     selectionChanged = Signal(list)
     deviceNameEdited = Signal(str, str)  # ip, new_name
     purgeRequested = Signal()
+    forcePurgeRequested = Signal(str)
     vncRequested = Signal(str)
     toggleCollapseRequested = Signal()
     detachRequested = Signal()
@@ -72,6 +74,13 @@ class PlayerPanel(QWidget):
         self._purge_button.setToolTip("Rimuove dalla lista i player contrassegnati come offline")
         self._purge_button.clicked.connect(self.purgeRequested.emit)
         controls_row.addWidget(self._purge_button)
+        self._force_purge_button = QPushButton("Force purge")
+        self._force_purge_button.setToolTip("Rimuove il player selezionato dalla lista (hard reset)")
+        self._force_purge_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: 700;")
+        self._force_purge_button.clicked.connect(self._confirm_force_purge)
+        self._force_purge_button.setFixedHeight(28)
+        self._force_purge_button.setEnabled(False)
+        controls_row.addWidget(self._force_purge_button)
         self._sync_button = QPushButton("Sync media")
         self._sync_button_base_tip = "Clona i media del player selezionato verso tutti gli altri"
         self._sync_button.setToolTip(self._sync_button_base_tip)
@@ -100,6 +109,20 @@ class PlayerPanel(QWidget):
         self._name_edit_timers: dict[str, QTimer] = {}
         self._pending_name_edits: dict[str, str] = {}
         self._name_edit_debounce_ms = 400
+
+    def _confirm_force_purge(self) -> None:
+        ips = self.selected_ips()
+        if not ips:
+            return
+        ip = ips[0]
+        answer = QMessageBox.question(
+            self,
+            "Force purge",
+            f"Rimuovere il player {ip} dalla lista?\n(L'auto-discovery lo riaggiungerà se risponde ai ping/beacon.)",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self.forcePurgeRequested.emit(ip)
 
     def update_player(self, record: PlayerRecord) -> None:
         """Insert or refresh a player's row."""
@@ -351,6 +374,7 @@ class PlayerPanel(QWidget):
     def _on_selection_changed(self, *_args) -> None:
         self.selectionChanged.emit(self.selected_ips())
         self._update_sync_button_state()
+        self._update_force_purge_state()
 
     def _update_sync_button_state(self) -> None:
         ips = self.selected_ips()
@@ -387,6 +411,10 @@ class PlayerPanel(QWidget):
             return
         port = int(record.port) if record.port else 8080
         self.syncMediaRequested.emit(record.ip, port)
+
+    def _update_force_purge_state(self) -> None:
+        has_selection = len(self.selected_ips()) == 1
+        self._force_purge_button.setEnabled(has_selection)
 
     def set_vnc_enabled(self, enabled: bool) -> None:
         self._vnc_button.setEnabled(enabled)

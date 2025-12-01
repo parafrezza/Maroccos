@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer, QDateTime, QMimeData, QSize, QTime, QEvent
 import time as _time
-from PySide6.QtGui import QColor, QBrush, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QBrush, QKeySequence, QShortcut, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -196,6 +196,8 @@ class CommandsTab(QWidget):
         self._timing_syncing = False
         self._loop_pending: tuple[bool, float] | None = None
         self._playlist_loop_pending: tuple[bool, float] | None = None
+        self._stop_at_end_pending: tuple[bool, float] | None = None
+        self._display_center_pending: tuple[bool, float] | None = None
         self._loop_pending_timeout = 2.5  # seconds window to wait for device ACK
         self._last_synced_playlist_items: list[str] = []
         self._auto_apply_pending: tuple[list[str], bool] | None = None
@@ -260,6 +262,23 @@ class CommandsTab(QWidget):
         controls_row = (len(playback_defs) + (columns - 1)) // columns
         controls = QHBoxLayout()
         controls.addWidget(self._loop_checkbox)
+        controls.addSpacing(12)
+        self._stop_at_end_checkbox = QCheckBox("Stop a fine clip")
+        self._stop_at_end_checkbox.setChecked(False)
+        self._stop_at_end_checkbox.setStyleSheet("font-weight: 600;")
+        try:
+            self._stop_at_end_checkbox.toggled.connect(self._on_stop_at_end_toggled)
+        except Exception:
+            pass
+        try:
+            self._register_control(
+                self._stop_at_end_checkbox,
+                enabled_tip="Blocca sul frame finale (nessun avanzamento automatico)",
+                disabled_tip=self._selection_required_tip,
+            )
+        except Exception:
+            pass
+        controls.addWidget(self._stop_at_end_checkbox)
         # Playlist loop toggle (promoted here)
         controls.addSpacing(12)
         self._playlist_loop_toggle = QCheckBox("Loop playlist")
@@ -295,8 +314,13 @@ class CommandsTab(QWidget):
         self._action_badge = QLabel("")
         self._action_badge.setStyleSheet(self._action_badge_base_style)
         self._action_badge.setMinimumHeight(24)
-        self._action_badge.setMinimumWidth(120)
+        self._action_badge_width = 210
+        try:
+            self._action_badge.setFixedWidth(self._action_badge_width)
+        except Exception:
+            self._action_badge.setMinimumWidth(self._action_badge_width)
         self._action_badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._action_badge.setWordWrap(False)
         self._action_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         action_row.addWidget(self._action_badge)
         action_row.addStretch(1)
@@ -965,6 +989,16 @@ class CommandsTab(QWidget):
             disabled_tip="Serve almeno un player selezionato e una playlist non vuota",
         )
         playlist_row.addWidget(self._push_playlist)
+        self._clear_playlist_remote = QPushButton("Clear playlist")
+        self._clear_playlist_remote.setStyleSheet("background-color: #c0392b; color: white; font-weight: 700;")
+        self._clear_playlist_remote.clicked.connect(self._emit_playlist_clear_remote)
+        self._clear_playlist_remote.setEnabled(False)
+        self._register_control(
+            self._clear_playlist_remote,
+            enabled_tip="Svuota la playlist remota sul player selezionato",
+            disabled_tip=self._selection_required_tip,
+        )
+        playlist_row.addWidget(self._clear_playlist_remote)
         # Clear-before-push option
         self._clear_before_push = QCheckBox("Svuota media sui device prima del push")
         playlist_row.addWidget(self._clear_before_push)
@@ -1179,6 +1213,7 @@ class CommandsTab(QWidget):
             spin.setEnabled(enabled)
         for extra in (
             getattr(self, "_display_center_checkbox", None),
+            getattr(self, "_stop_at_end_checkbox", None),
             getattr(self, "_image_duration_spin", None),
             getattr(self, "_image_duration_apply", None),
             getattr(self, "_image_duration_refresh", None),
@@ -1403,6 +1438,24 @@ class CommandsTab(QWidget):
         else:
             self._loop_checkbox.setStyleSheet("font-weight: 600;")
             self._loop_checkbox.setToolTip(base_tip)
+
+    def set_stop_at_end(self, enabled: bool | None, multi_count: int | None = None) -> None:
+        checkbox = getattr(self, "_stop_at_end_checkbox", None)
+        if checkbox is None:
+            return
+        if enabled is not None and self._should_apply_loop_update("stop_at_end", bool(enabled)):
+            checkbox.blockSignals(True)
+            try:
+                checkbox.setChecked(bool(enabled))
+            finally:
+                checkbox.blockSignals(False)
+        base_tip = "Blocca sul frame finale (nessun avanzamento automatico)"
+        if isinstance(multi_count, int) and multi_count > 1:
+            checkbox.setStyleSheet("font-weight: 600; background-color: #fff4e5; border: 1px solid #f39c12;")
+            checkbox.setToolTip(f"{base_tip} (si applica a {multi_count} player)")
+        else:
+            checkbox.setStyleSheet("font-weight: 600;")
+            checkbox.setToolTip(base_tip)
 
     def set_playlist_loop(self, loop: bool | None, multi_count: int | None = None) -> None:
         if loop is not None and self._should_apply_loop_update("playlist", bool(loop)):
@@ -1734,6 +1787,7 @@ class CommandsTab(QWidget):
     def _on_display_center_toggled(self, checked: bool) -> None:
         if not self._targets_enabled:
             return
+        self._display_center_pending = (bool(checked), _time.monotonic() + self._loop_pending_timeout)
         self.miscCommandTriggered.emit("display_center", {"on": 1 if checked else 0})
 
     def set_display_center(self, enabled: bool | None, multi_count: int | None = None) -> None:
@@ -1741,9 +1795,12 @@ class CommandsTab(QWidget):
         if checkbox is None:
             return
         if enabled is not None:
+            normalized = bool(enabled)
+            if not self._should_apply_display_center_update(normalized):
+                return
             checkbox.blockSignals(True)
             try:
-                checkbox.setChecked(bool(enabled))
+                checkbox.setChecked(normalized)
             finally:
                 checkbox.blockSignals(False)
         base_style = "font-weight: 500;"
@@ -1904,6 +1961,11 @@ class CommandsTab(QWidget):
             self._push_playlist,
             can_push,
             disabled_reason=push_reason,
+        )
+        self._set_control_enabled(
+            self._clear_playlist_remote,
+            self._targets_enabled,
+            disabled_reason=self._selection_required_tip if not self._targets_enabled else None,
         )
         if not self._targets_enabled:
             start_reason = self._selection_required_tip
@@ -2537,10 +2599,11 @@ class CommandsTab(QWidget):
         try:
             self._action_badge.setText("")
             self._action_badge.setStyleSheet(self._action_badge_base_style)
+            self._action_badge.setToolTip("")
         except Exception:
             pass
 
-    def set_action_badge(self, action: str | None) -> None:
+    def set_action_badge(self, action: str | None, *, tooltip: str | None = None) -> None:
         """Show a short-lived badge for the given action (next/prev/play/faststart_go)."""
         if not action:
             self._action_timer.stop()
@@ -2554,12 +2617,30 @@ class CommandsTab(QWidget):
         }
         text = label_map.get(str(action).lower(), str(action).upper())
         try:
-            self._action_badge.setText(text)
+            display_text = self._format_action_badge_text(text)
+            self._action_badge.setText(display_text)
+            badge_tip = tooltip or (text if display_text != text else "")
+            self._action_badge.setToolTip(badge_tip)
             self._action_badge.setStyleSheet(self._action_badge_active_style)
             # Refresh timer (1.6s)
             self._action_timer.start(1600)
         except Exception:
             pass
+
+    def _format_action_badge_text(self, text: str) -> str:
+        width = getattr(self, "_action_badge_width", None)
+        if not isinstance(width, int) or width <= 0:
+            try:
+                width = max(80, int(self._action_badge.width()))
+            except Exception:
+                width = 140
+        # Leave some padding for the label stylesheet borders
+        usable = max(24, width - 12)
+        try:
+            metrics = QFontMetrics(self._action_badge.font())
+            return metrics.elidedText(text, Qt.ElideRight, usable)
+        except Exception:
+            return text[:32]
 
     def _toggle_led_blink(self) -> None:
         # Alternate between strong and dim color while blinking
@@ -2753,6 +2834,13 @@ class CommandsTab(QWidget):
         except Exception:
             pass
 
+    def _on_stop_at_end_toggled(self, checked: bool) -> None:
+        self._stop_at_end_pending = (bool(checked), _time.monotonic() + self._loop_pending_timeout)
+        try:
+            self.miscCommandTriggered.emit("stop_at_end_on" if checked else "stop_at_end_off", {})
+        except Exception:
+            pass
+
     def _on_playback_loop_toggled(self, checked: bool) -> None:
         self._loop_pending = (bool(checked), _time.monotonic() + self._loop_pending_timeout)
         try:
@@ -2761,19 +2849,31 @@ class CommandsTab(QWidget):
             pass
 
     def _should_apply_loop_update(self, kind: str, remote_state: bool) -> bool:
-        if kind == "playback":
-            pending = self._loop_pending
-        else:
-            pending = self._playlist_loop_pending
+        pending_map = {
+            "playback": "_loop_pending",
+            "playlist": "_playlist_loop_pending",
+            "stop_at_end": "_stop_at_end_pending",
+        }
+        attr = pending_map.get(kind)
+        pending = getattr(self, attr, None) if attr else None
         if not pending:
             return True
         desired, deadline = pending
         now = _time.monotonic()
         if remote_state == desired or now >= deadline:
-            if kind == "playback":
-                self._loop_pending = None
-            else:
-                self._playlist_loop_pending = None
+            if attr:
+                setattr(self, attr, None)
+            return True
+        return False
+
+    def _should_apply_display_center_update(self, remote_state: bool) -> bool:
+        pending = self._display_center_pending
+        if not pending:
+            return True
+        desired, deadline = pending
+        now = _time.monotonic()
+        if remote_state == desired or now >= deadline:
+            self._display_center_pending = None
             return True
         return False
 
@@ -3254,6 +3354,19 @@ class CommandsTab(QWidget):
         self._set_playlist_led_color("orange", "Playlist in invio verso i player")
         pl_loop = self._current_loop_state()
         self.playlistPushRequested.emit(items, self._clear_before_push.isChecked(), pl_loop)
+
+    def _emit_playlist_clear_remote(self) -> None:
+        if not self._targets_enabled:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear playlist",
+            "Svuotare la playlist sul player selezionato?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.miscCommandTriggered.emit("playlist_clear", {})
 
     def _apply_playlist_frame_style(self) -> None:
         box = getattr(self, "_playlist_box", None)

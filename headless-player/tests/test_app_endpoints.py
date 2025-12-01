@@ -212,6 +212,35 @@ def test_status_loop_defaults_enabled(fastapi_app):
         assert data.get("playlist_loop") is True
 
 
+def test_status_syncs_off_center_flag(monkeypatch, fastapi_app):
+    import importlib
+
+    app_mod = importlib.import_module("app_module")
+    center_state = {"value": True}
+
+    def _fake_off_status():
+        return {"ok": True, "player": {"centerVideo": center_state["value"]}}
+
+    monkeypatch.setattr(app_mod, "off_status", _fake_off_status)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(fastapi_app) as client:
+        center_state["value"] = True
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload.get("display_center", {}).get("enabled") is True
+        assert app_mod.DISPLAY_CENTER_VIDEO is True
+
+        center_state["value"] = False
+        resp2 = client.get("/status")
+        assert resp2.status_code == 200
+        payload2 = resp2.json()
+        assert payload2.get("display_center", {}).get("enabled") is False
+        assert app_mod.DISPLAY_CENTER_VIDEO is False
+
+
 def test_autoplay_disabling_restores_loop(fastapi_app):
     import importlib
     app_mod = importlib.import_module("app_module")
@@ -222,6 +251,18 @@ def test_autoplay_disabling_restores_loop(fastapi_app):
     app_mod._autoplay_set_enabled(False)
     assert app_mod.player["loop"] is True
     assert app_mod.autoplay.get("forced_loop_prev") is None
+
+
+def test_status_exposes_udp_lock(fastapi_app):
+    from fastapi.testclient import TestClient
+    with TestClient(fastapi_app) as client:
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        payload = resp.json()
+        udp = payload.get("udp") or {}
+        assert udp.get("configured_port") == 7777
+        assert udp.get("locked") is True
+        assert udp.get("enabled") is True
 
 
 def test_settings_reload_toggle_flag(fastapi_app):
@@ -409,3 +450,23 @@ def test_media_prune_to_playlist_removes_extra_files(fastapi_app):
         assert body.get("removed", 0) >= 1
     assert keep.exists()
     assert not drop.exists()
+
+def test_off_version_endpoints(fastapi_app):
+    from fastapi.testclient import TestClient
+    import importlib
+    app_mod = importlib.import_module("app_module")
+    with TestClient(fastapi_app) as client:
+            # /off/version should return ok and running info, if off backend is running it should include player or player_raw
+            r = client.get("/off/version")
+            assert r.status_code == 200
+            payload = r.json()
+            assert payload.get("ok") is True
+            assert "running" in payload
+            # /version should include headless version and may include off or off_raw
+            r2 = client.get("/version")
+            assert r2.status_code == 200
+            p2 = r2.json()
+            assert "headless" in p2 and isinstance(p2["headless"], str)
+            assert p2["headless"] == app_mod.VERSION
+            # off could be None or a version string, confirm shape
+            assert ("off" in p2 and (p2["off"] is None or isinstance(p2["off"], str))) or ("off_raw" in p2)

@@ -107,6 +107,7 @@ private:
     DisplayInfo getDisplayInfoCached() const;
     std::string formatDisplayInfo(const DisplayInfo& info) const;
     std::string detectAppVersion() const;
+    std::string detectHeadlessVersion() const;
     std::string detectPlayerName() const;
 
     AppConfig cfg;
@@ -145,6 +146,7 @@ private:
     ofTrueTypeFont overlayFont;
     bool overlayFontLoaded = false;
     std::string appVersion = "unknown";
+    std::string headlessVersion = ""; // if set by launcher
     std::string playerName;
     mutable DisplayInfo displayInfoCache;
     mutable float displayInfoLastProbe = 0.0f;

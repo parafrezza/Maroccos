@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 
@@ -81,6 +83,15 @@ class UpdateTab(QWidget):
         self._bundle_badge.setStyleSheet(
             "QLabel { border-radius: 10px; padding: 2px 8px; font-weight: bold; }"
         )
+        self._bundle_badge_width = 220
+        try:
+            self._bundle_badge.setFixedWidth(self._bundle_badge_width)
+        except Exception:
+            self._bundle_badge.setMinimumWidth(self._bundle_badge_width)
+        self._bundle_badge.setMinimumHeight(22)
+        self._bundle_badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._bundle_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bundle_badge.setWordWrap(False)
         update_layout.addWidget(self._bundle_badge)
         side_panel.addWidget(update_box)
 
@@ -247,7 +258,9 @@ class UpdateTab(QWidget):
         # Aggiorna badge
         if self._bundle_available and self._bundle_version:
             # Mostra solo la versione nel badge (es. v0.1.74)
-            self._bundle_badge.setText(self._bundle_version)
+            display = self._format_bundle_badge_text(self._bundle_version)
+            self._bundle_badge.setText(display)
+            self._bundle_badge.setToolTip(self._bundle_version if display != self._bundle_version else "")
             self._bundle_badge.setStyleSheet(
                 "QLabel { background-color: #2e7d32; color: white; border-radius: 10px; padding: 2px 8px; font-weight: bold; }"
             )
@@ -261,6 +274,20 @@ class UpdateTab(QWidget):
         # Aggiorna il badge se già visibile
         if self._bundle_available:
             self.set_bundle_available(True)
+
+    def _format_bundle_badge_text(self, text: str) -> str:
+        width = getattr(self, "_bundle_badge_width", None)
+        if not isinstance(width, int) or width <= 0:
+            try:
+                width = max(80, int(self._bundle_badge.width()))
+            except Exception:
+                width = 140
+        usable = max(24, width - 12)
+        try:
+            metrics = QFontMetrics(self._bundle_badge.font())
+            return metrics.elidedText(text, Qt.ElideRight, usable)
+        except Exception:
+            return text[:32]
 
     def _update_actions_enabled(self) -> None:
         # Distribuisci via API: richiede selezione e bundle disponibile

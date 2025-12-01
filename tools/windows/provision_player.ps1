@@ -278,7 +278,7 @@ function Ensure-PlayerShortcutReplica {
     param(
         [string]$InstallRoot = 'C:\Program Files\marocco-player',
         [string]$LogDirectory,
-        [string]$ShortcutName = 'Player.lnk'
+        [string]$ShortcutName
     )
 
     Write-Step 'Replica collegamento Player in media\_logs'
@@ -300,7 +300,24 @@ function Ensure-PlayerShortcutReplica {
     }
 
     $shortcutInfo = Find-PlayerShortcut -InstallRoot $InstallRoot
-    $destName = if ($ShortcutName) { $ShortcutName } elseif ($shortcutInfo) { Split-Path -Leaf $shortcutInfo.Path } else { 'Player.lnk' }
+
+    $versionLinkName = $null
+    if (-not $ShortcutName -and $InstallRoot) {
+        try {
+            $versionFile = Join-Path $InstallRoot 'VERSION'
+            if (Test-Path -LiteralPath $versionFile) {
+                $rawVersion = (Get-Content -LiteralPath $versionFile -Raw -ErrorAction Stop).Trim()
+                if ($rawVersion) {
+                    $baseName = Split-Path -Leaf (Resolve-FullPathSafe $InstallRoot)
+                    if ([string]::IsNullOrWhiteSpace($baseName)) { $baseName = 'marocco-player' }
+                    $safeVersion = ($rawVersion -replace '[^0-9A-Za-z_.-]', '_')
+                    $versionLinkName = "{0}_{1}.lnk" -f $baseName, $safeVersion
+                }
+            }
+        } catch {}
+    }
+
+    $destName = if ($ShortcutName) { $ShortcutName } elseif ($shortcutInfo) { Split-Path -Leaf $shortcutInfo.Path } elseif ($versionLinkName) { $versionLinkName } else { 'Player.lnk' }
     $destPath = Join-Path $targetDir $destName
 
     if ($shortcutInfo) {
@@ -2000,7 +2017,7 @@ function Main {
     Install-TigerVNC
     Configure-OpenSSH
     Configure-MediaShare
-    Ensure-PlayerShortcutReplica -InstallRoot $InstallRoot -LogDirectory $LogDir -ShortcutName 'Player.lnk'
+    Ensure-PlayerShortcutReplica -InstallRoot $InstallRoot -LogDirectory $LogDir
     Apply-PreferredResolution
     Rename-ComputerFromConfig
     Ensure-HeadlessPermissions -InstallRoot $InstallRoot -RunAsUser $HeadlessTaskUser

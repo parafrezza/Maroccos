@@ -121,6 +121,7 @@ void ofApp::setup(){
     ofSetLogLevel(OF_LOG_NOTICE);
     loadConfig();
     appVersion = detectAppVersion();
+    headlessVersion = detectHeadlessVersion();
     if(appVersion.empty()){
         appVersion = "unknown";
     }
@@ -214,6 +215,8 @@ void ofApp::setup(){
     api.fnSplashText = [this](const std::string& t){ this->splash.setText(t); };
     api.fnHudVisible = [this](bool on){ this->setHudMode(on ? HudMode::Full : HudMode::Hidden); };
     api.fnHudMode = [this](int mode){ this->setHudModeByIndex(mode); };
+    api.fnVersion  = [this]{ return this->appVersion; };
+    api.fnHeadlessVersion = [this]{ return this->headlessVersion; };
     // Visual fades
     api.fnFadeIn      = [this](float s){ this->fadeIn(s); };
     api.fnFadeToBlack = [this](float s){ this->fadeToBlack(s); };
@@ -591,6 +594,19 @@ std::string ofApp::statusString() const {
     ss << ",\"label\":\"" << hudModeLabel(hudMode) << "\"}";
     // visual/brightness (0..1)
     ss << ",\"brightness\":" << ofClamp(brightnessCur_, 0.0f, 1.0f);
+    ss << ",\"version\":\"";
+    for(char c : appVersion){ if(c == '"' || c == '\\'){ ss << '\\'; } ss << c; }
+    ss << "\"";
+    if(!headlessVersion.empty()){
+        ss << ",\"headless\":\"";
+        for(char c : headlessVersion){ if(c == '"' || c == '\\'){ ss << '\\'; } ss << c; }
+        ss << "\"";
+    }
+    // Include the detected application version to help external tools verify which build is running
+    ss << ",\"version\":\"";
+    // Escape any quotes/backslashes in the version string
+    for(char c : appVersion){ if(c == '"' || c == '\\'){ ss << '\\'; } ss << c; }
+    ss << "\"";
     ss << "}";
     return ss.str();
 }
@@ -1449,6 +1465,16 @@ std::string ofApp::detectAppVersion() const{
     return {};
 }
 
+std::string ofApp::detectHeadlessVersion() const{
+    if(const char* envVer = std::getenv("HEADLESS_VERSION")){
+        std::string val = ofTrim(std::string(envVer));
+        if(!val.empty()){
+            return val;
+        }
+    }
+    return {};
+}
+
 std::string ofApp::detectPlayerName() const{
     auto fromEnv = [](const char* key) -> std::string {
         const char* v = std::getenv(key);
@@ -1509,8 +1535,14 @@ void ofApp::updateOverlayInfo(bool force){
     DisplayInfo disp = getDisplayInfoCached();
     if(disp.valid){
         oss << "\nDisplay: " << formatDisplayInfo(disp) << " | Software: OFF-player " << appVersion;
+        if(!headlessVersion.empty()){
+            oss << " | Headless: " << headlessVersion;
+        }
     }else{
         oss << "\nSoftware: OFF-player " << appVersion;
+        if(!headlessVersion.empty()){
+            oss << " | Headless: " << headlessVersion;
+        }
     }
     overlayInfo.fullText = oss.str();
 

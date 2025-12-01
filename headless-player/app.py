@@ -1257,6 +1257,14 @@ def load_persisted_framework():
                 OVERLAY_FADE_IN_ON_STOP_S = float(data.get("overlay_fade_in_on_stop_s", data.get("OVERLAY_FADE_IN_ON_STOP_S", OVERLAY_FADE_IN_ON_STOP_S)))
             except Exception:
                 pass
+            try:
+                globals()["STOP_AT_END"] = bool(data.get("stop_at_end", data.get("STOP_AT_END", STOP_AT_END)))
+            except Exception:
+                pass
+            try:
+                globals()["BOOTSTRAP_PLAYLIST"] = bool(data.get("bootstrap_playlist", data.get("BOOTSTRAP_PLAYLIST", BOOTSTRAP_PLAYLIST)))
+            except Exception:
+                pass
             # Autoplay fade seconds (optional)
             try:
                 globals()["AUTOPLAY_FADE_SECONDS"] = float(data.get("autoplay_fade_seconds", data.get("AUTOPLAY_FADE_SECONDS", globals().get("AUTOPLAY_FADE_SECONDS", 1.0))))
@@ -1293,18 +1301,7 @@ def load_persisted_framework():
                     BEACON_PORT = int(cand)
             except Exception:
                 pass
-            # Porta UDP comandi principale
-            try:
-                udp_cfg = data.get("udp_port", data.get("UDP_PORT"))
-                if udp_cfg is not None:
-                    udp_candidate = int(udp_cfg)
-                    if 1024 <= udp_candidate <= 65535:
-                        UDP_PORT = udp_candidate
-                        print(f"[CONFIG] UDP_PORT configurato da file: {UDP_PORT}", flush=True)
-                    else:
-                        print(f"[CONFIG] udp_port fuori range ({udp_cfg}) - uso default {UDP_PORT}", flush=True)
-            except Exception:
-                print(f"[CONFIG] udp_port invalido ({udp_cfg}) - uso default {UDP_PORT}", flush=True)
+            # Porta UDP comandi principale: bloccata su default, ignora override da config
             # OFF autostart flag (opzionale)
             try:
                 globals()["OFF_AUTOSTART"] = bool(data.get("off_autostart", data.get("OFF_AUTOSTART", OFF_AUTOSTART)))
@@ -1392,12 +1389,13 @@ def persist_settings(extra: dict | None = None):
             "log_udp_port": LOG_UDP_PORT,
             "overlay_fade_out_on_play_s": OVERLAY_FADE_OUT_ON_PLAY_S,
             "overlay_fade_in_on_stop_s": OVERLAY_FADE_IN_ON_STOP_S,
+            "stop_at_end": bool(STOP_AT_END),
+            "bootstrap_playlist": bool(BOOTSTRAP_PLAYLIST),
             "autoplay_fade_seconds": AUTOPLAY_FADE_SECONDS,
             "OFF_UDP_PORT": OFF_UDP_PORT,
             "OFF_HOST": OFF_HOST,
             "OFF_PORT": OFF_PORT,
             "off_autostart": OFF_AUTOSTART,
-            "udp_port": UDP_PORT,
             "beacon_enabled": BEACON_ENABLED,
             "beacon_port": BEACON_PORT,
             "startup_macs": STARTUP_MACS,
@@ -1514,32 +1512,28 @@ def ensure_backend():
 
 # Carica config e backend verrà fatto dopo l'inizializzazione degli stati globali
 
-# ---------- UDP Listener opzionale ----------
-UDP_PORT = 7777            # Porta configurata (desiderata)
-UDP_ACTUAL_PORT = None     # Porta effettiva (può differire per fallback)
+# ---------- UDP Listener (porta bloccata) ----------
+UDP_PORT = 7777            # Porta configurata (bloccata)
+UDP_ACTUAL_PORT = None     # Porta effettiva (None se bind fallisce)
 UDP_ERROR_MESSAGE = None   # Messaggio di errore se il bind fallisce
 
-def _udp_bind_scan(port: int, attempts: int = 10) -> tuple[int | None, str | None]:
-    """Tenta bind su port, se fallisce prova porte successive (port+1,...)."""
-    last_err = None
-    for p in range(int(port), int(port) + int(attempts)):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+def _udp_bind_scan(port: int) -> tuple[int | None, str | None]:
+    """Prova il bind solo sulla porta indicata; niente fallback su altre porte."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("0.0.0.0", int(port)))
+        s.setblocking(False)
         try:
-            s.bind(("0.0.0.0", p))
-            s.setblocking(False)
-            try:
-                s.close()
-            except Exception:
-                pass
-            return p, None
-        except Exception as e:
-            last_err = str(e)
-        finally:
-            try:
-                s.close()
-            except Exception:
-                pass
-    return None, last_err
+            s.close()
+        except Exception:
+            pass
+        return int(port), None
+    except Exception as e:
+        try:
+            s.close()
+        except Exception:
+            pass
+        return None, str(e)
 
 
 def _udp_handle_plain_text(
@@ -2001,16 +1995,16 @@ def _udp_thread():
     global UDP_ACTUAL_PORT, UDP_ERROR_MESSAGE
     
     desired = int(UDP_PORT)
-    bound, err = _udp_bind_scan(desired, attempts=10)
+    bound, err = _udp_bind_scan(desired)
     if bound is None:
-        error_msg = f"Impossibile usare porta {desired} (+fallback). Ultimo errore: {err}"
+        error_msg = f"Porta UDP {desired} non disponibile (binding bloccato su questa porta). Errore: {err}"
         print(f"[UDP] Errore bind: {error_msg}", flush=True)
         UDP_ACTUAL_PORT = None
         UDP_ERROR_MESSAGE = error_msg
         return
     UDP_ACTUAL_PORT = bound
     UDP_ERROR_MESSAGE = None  # Reset errore se bind ha successo
-    print(f"[UDP] Thread avviato su porta {UDP_ACTUAL_PORT} (configurata={desired})", flush=True)
+    print(f"[UDP] Thread avviato su porta {UDP_ACTUAL_PORT} (bloccata)", flush=True)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.bind(("0.0.0.0", UDP_ACTUAL_PORT))
@@ -2192,26 +2186,14 @@ def udp_status():
         "enabled": True,  # UDP sempre attivo
         "configured_port": int(UDP_PORT),
         "actual_port": int(UDP_ACTUAL_PORT) if UDP_ACTUAL_PORT else None,
-        "fallback_used": (UDP_ACTUAL_PORT is not None and int(UDP_ACTUAL_PORT) != int(UDP_PORT)),
+        "fallback_used": False,
+        "locked": True,
         "error_message": UDP_ERROR_MESSAGE if UDP_ERROR_MESSAGE else None,
     }
 
 def udp_rebind(port: int | None = Body(None)):  # type: ignore
-    global UDP_PORT
-    if port is not None:
-        try:
-            if 1024 <= int(port) <= 65535:
-                UDP_PORT = int(port)
-            else:
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Porta fuori range (1024-65535)"})
-        except Exception:
-            return JSONResponse(status_code=400, content={"ok": False, "error": "Porta invalida"})
-    threading.Thread(target=_udp_thread, daemon=True).start()
-    try:
-        persist_settings()
-    except Exception:
-        pass
-    return udp_status()
+    _ = port  # Ignora richieste di cambio porta: porta bloccata su UDP_PORT
+    return JSONResponse(status_code=403, content={"ok": False, "error": "Porta UDP bloccata su 7777"})
 
 # ---------- Time endpoint (multi-platform, no deps) ----------
 def api_time_now():
@@ -2332,7 +2314,7 @@ async def _lifespan(app: FastAPI):
         print(f"[STARTUP] UDP thread errore: {e}", flush=True)
     if autoplay.get("enabled"):
         GLib.idle_add(lambda: (_autoplay_schedule_initial(), False)[1])
-    else:
+    elif BOOTSTRAP_PLAYLIST:
         def _manual_bootstrap():
             _autoplay_prepare_manual_bootstrap()
             return False
@@ -2456,6 +2438,8 @@ def fsm_idle(reason: str | None = None, error: str | None = None) -> None:
 playlist = {"items": [], "index": -1, "loop": True}
 splash = {"pipeline": None, "src": None, "vb": None, "active": False}  # Tracking splash (se attivo copre lo schermo)
 preloaded = {"path": None, "pipeline": None, "vb": None, "alpha": None}  # Pipeline pre-caricata per prossimo elemento playlist
+STOP_AT_END = os.environ.get("STOP_AT_END", "0").lower() in {"1", "true", "yes", "on"}
+BOOTSTRAP_PLAYLIST = os.environ.get("BOOTSTRAP_PLAYLIST", "0").lower() in {"1", "true", "yes", "on"}
 IMAGE_DURATION_MIN_SECONDS = 1.0
 IMAGE_DURATION_MAX_SECONDS = 600.0
 try:
@@ -3006,7 +2990,7 @@ def _off_start(path: str | None = None, port: int | None = None) -> dict:
         except Exception:
             pass
         try:
-            env["OFF_VERSION"] = VERSION
+            env["HEADLESS_VERSION"] = VERSION
         except Exception:
             pass
         # Determina il comando di lancio (fallback headless con xvfb se DISPLAY assente)
@@ -3520,6 +3504,8 @@ def _autoplay_launch() -> None:
 
 def _autoplay_prepare_manual_bootstrap() -> None:
     """Prepara playlist e fast-start quando l'autoplay è disattivato."""
+    if not BOOTSTRAP_PLAYLIST:
+        return
     if autoplay.get("enabled"):
         return
     try:
@@ -4519,46 +4505,26 @@ def on_bus_message(bus, msg, data):
     t = msg.type
     if t == Gst.MessageType.EOS:
         print("[PLAYER] Fine del video (EOS)", flush=True)
-        # Avanzamento playlist se presente
-        if playlist["items"]:
-            next_index = playlist["index"] + 1
-            if next_index >= len(playlist["items"]):
-                if playlist["loop"]:
-                    next_index = 0
-                else:
-                    # Fine playlist
-                    if player["pipeline"]:
-                        player["pipeline"].set_state(Gst.State.NULL)
-                    player["state"] = "stopped"
-                    print("[PLAYER] Fine playlist", flush=True)
-                    return
-            playlist["index"] = next_index
-            next_path = playlist["items"][next_index]
-            print(f"[PLAYLIST] Avanzo a: {next_path}", flush=True)
-            # Aggiorna path e adotta se precaricata
-            global VIDEO_PATH
-            VIDEO_PATH = next_path
-            if not adopt_preloaded(next_path):
-                stop_play()
-                if autoplay.get("enabled"):
-                    start_play(AUTOPLAY_FADE_SECONDS)
-                else:
-                    start_play_with_path(next_path)
-            return
-        # Nessuna playlist: comportamento originale loop singolo
-        if player["loop"] and player["pipeline"]:
+        if player.get("loop") and player.get("pipeline"):
             print("[PLAYER] Riavvio loop", flush=True)
             player["pipeline"].seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 0)
-        else:
-            stop_play()
+            return
+        if STOP_AT_END:
+            try:
+                if player.get("pipeline"):
+                    player["pipeline"].set_state(Gst.State.PAUSED)
+                player["state"] = "paused"
+            except Exception:
+                pass
+            return
+        advanced, stopped = _advance_playlist("eos")
+        if advanced:
+            return
+        if stopped:
             print("[PLAYER] Riproduzione terminata", flush=True)
-            if not splash["active"]:
-                # Se lo splash è nascosto, mostra il nero in pausa per mantenere un'immagine stabile
-                try:
-                    if not show_idle_black():
-                        print("[PLAYER] Idle black fallback non disponibile", flush=True)
-                except Exception as exc:
-                    print(f"[PLAYER] Idle black fallback errore: {exc}", flush=True)
+            return
+        stop_play()
+        print("[PLAYER] Riproduzione terminata", flush=True)
     elif t == Gst.MessageType.ERROR:
         err, debug = msg.parse_error()
         print(f"[PLAYER] GST ERROR: {err}", flush=True)
@@ -4824,31 +4790,65 @@ def _update_image_timer_policy(path: str | None = None) -> None:
         _cancel_image_timer()
         image_duration_state.update({"path": target, "deadline": None})
         return
+    if STOP_AT_END:
+        _cancel_image_timer()
+        image_duration_state.update({"path": target, "deadline": None})
+        return
     _schedule_image_timer(target)
 
-def _advance_playlist_after_timer() -> bool:
+def _advance_playlist(reason: str) -> tuple[bool, bool]:
+    """Avanza al prossimo elemento di playlist.
+
+    Ritorna (advanced, stopped) dove:
+      - advanced=True se A" stato avviato il prossimo elemento
+      - stopped=True se la riproduzione A" stata fermata (fine playlist o nessuna playlist)
+    """
     try:
+        if STOP_AT_END:
+            return False, False
         items = playlist.get("items") if isinstance(playlist, dict) else None
         if not items:
             stop_play()
-            return False
+            return False, True
         idx = int(playlist.get("index", 0))
         next_idx = idx + 1
         if next_idx >= len(items):
             if playlist.get("loop"):
                 next_idx = 0
             else:
+                print("[PLAYER] Fine playlist", flush=True)
                 stop_play()
-                return False
+                return False, True
         playlist["index"] = next_idx
         next_path = items[next_idx]
-        start_play_with_path(next_path, action="image_timeout")
+        print(f"[PLAYLIST] Avanzo a: {next_path}", flush=True)
+        if current_framework.get("name") == "gst":
+            global VIDEO_PATH
+            VIDEO_PATH = next_path
+            if not adopt_preloaded(next_path):
+                stop_play()
+                if autoplay.get("enabled"):
+                    start_play(AUTOPLAY_FADE_SECONDS, action=reason)
+                else:
+                    start_play(action=reason)
+        else:
+            start_play_with_path(next_path, action=reason)
+        return True, False
+    except Exception as exc:
+        print(f"[PLAYLIST] Errore avanzando playlist ({reason}): {exc}", flush=True)
+        return False, False
+
+def _advance_playlist_after_timer() -> bool:
+    try:
+        _advance_playlist("image_timeout")
     except Exception as exc:
         print(f"[IMAGE] Errore avanzando playlist: {exc}", flush=True)
     return False
 
 def _image_timer_fired(path: str, expected_deadline: float) -> bool:
     if image_duration_state.get("path") != path:
+        return False
+    if STOP_AT_END:
         return False
     _cancel_image_timer()
     try:
@@ -4863,6 +4863,24 @@ def _image_timer_fired(path: str, expected_deadline: float) -> bool:
     except Exception as exc:
         print(f"[IMAGE] Timer error: {exc}", flush=True)
     return False
+
+def _handle_backend_end(reason: str = "backend_eos") -> None:
+    """Chiamato dai backend non-GST quando termina un contenuto."""
+    if player.get("loop"):
+        return
+    if STOP_AT_END:
+        return
+    try:
+        had_playlist = bool(playlist.get("items"))
+    except Exception:
+        had_playlist = False
+    advanced, stopped = _advance_playlist(reason)
+    if advanced or stopped or had_playlist:
+        return
+    try:
+        stop_play()
+    except Exception as exc:
+        print(f"[PLAYER] Stop dopo fine backend fallito: {exc}", flush=True)
 
 
 def validate_media_file(path: Path) -> bool:
@@ -6349,6 +6367,7 @@ def healthz():
 @app.get("/status")
 def status():
     # Esponi stato player, media corrente e schedulazioni note
+    global DISPLAY_CENTER_VIDEO
     current_name = None
     try:
         if VIDEO_PATH:
@@ -6414,6 +6433,7 @@ def status():
         "device_id": _ensure_device_id(),
         "instance_id": INSTANCE_ID,
         "loop_enabled": bool(player.get("loop")),
+        "stop_at_end": bool(STOP_AT_END),
         "fsm_state": fsm.get("state", "unknown"),
         "fsm_action": fsm.get("action"),
         "fsm": {
@@ -6454,6 +6474,7 @@ def status():
         "update_elevated": current_update.get("elevated"),
         "maintenance_status": maintenance["status"],
         "maintenance_last_logs": maintenance["log"][-10:],
+        "udp": udp_status(),
         "faststart": {
             "prepared": bool(faststart.get("prepared_path")),
             "path": faststart.get("prepared_path"),
@@ -6517,6 +6538,23 @@ def status():
             # Se disponibile, esponi alcuni campi utili in chiaro
             player_info = (off or {}).get("player") or {}
             if isinstance(player_info, dict):
+                center_field = player_info.get("centerVideo")
+                if center_field is not None:
+                    if isinstance(center_field, bool):
+                        center_enabled = center_field
+                    elif isinstance(center_field, (int, float)):
+                        center_enabled = bool(center_field)
+                    else:
+                        center_str = str(center_field).strip().lower()
+                        center_enabled = center_str in {"1", "true", "yes", "on"}
+                    try:
+                        current_flag = bool(resp.get("display_center", {}).get("enabled"))
+                    except Exception:
+                        current_flag = False
+                    if center_enabled != current_flag:
+                        resp["display_center"] = {"enabled": center_enabled}
+                    if DISPLAY_CENTER_VIDEO != center_enabled:
+                        DISPLAY_CENTER_VIDEO = center_enabled
                 try:
                     off_hud = player_info.get("hud")
                     if isinstance(off_hud, dict):
@@ -7074,23 +7112,11 @@ def api_play(
     elif filename:
         p = MEDIA_DIR / filename
         if not p.exists():
-            # Fallback intelligente: se filename non esiste (es. vecchio default clip.mp4), prova a scansionare media/
-            print(f"[PLAY] '{filename}' non trovato in media/. Provo fallback su altri file presenti…", flush=True)
-            items = []
-            for fp in sorted(MEDIA_DIR.iterdir()):
-                if fp.is_file() and validate_media_file(fp):
-                    items.append(str(fp))
-            if items:
-                playlist["items"] = items
-                playlist["index"] = 0
-                chosen = items[0]
-                print(f"[PLAY] Fallback: avvio {chosen}", flush=True)
-            else:
-                return JSONResponse(status_code=404, content={"ok": False, "error": f"File non trovato in media/: {filename}"})
+            return JSONResponse(status_code=404, content={"ok": False, "error": f"File non trovato in media/: {filename}"})
         else:
             chosen = str(p)
     else:
-        # fallback: playlist se esiste; altrimenti scansione rapida di media/
+        # fallback: playlist se esiste; altrimenti errore esplicito
         if playlist["items"]:
             if 0 <= playlist["index"] < len(playlist["items"]):
                 chosen = playlist["items"][playlist["index"]]
@@ -7098,18 +7124,7 @@ def api_play(
                 playlist["index"] = 0
                 chosen = playlist["items"][0]
         else:
-            items = []
-            for p in sorted(MEDIA_DIR.iterdir()):
-                if p.is_file() and validate_media_file(p):
-                    items.append(str(p))
-            if items:
-                playlist["items"] = items
-                playlist["index"] = 0
-                chosen = items[0]
-            elif Path(VIDEO_PATH).exists():
-                chosen = VIDEO_PATH
-            else:
-                return JSONResponse(status_code=404, content={"ok": False, "error": "Nessun file in media/: carica un video o specifica filename"})
+            return JSONResponse(status_code=404, content={"ok": False, "error": "Nessuna playlist attiva: invia una playlist prima di eseguire play"})
 
     if chosen:
         # Stop pipeline corrente se cambia file
@@ -7431,6 +7446,44 @@ def off_status():
                 res["player_raw"] = body
     except Exception:
         pass
+    return res
+
+
+@app.get("/off/version")
+def off_version():
+    p = off_proc.get("p")
+    res = {"ok": True, "running": bool(p and p.poll() is None)}
+    try:
+        if res["running"]:
+            import urllib.request, json as _json
+            url = f"http://{OFF_HOST}:{int(globals().get('OFF_PORT', 8082))}/version"
+            with urllib.request.urlopen(url, timeout=0.6) as r:
+                body = r.read().decode("utf-8", errors="ignore")
+            try:
+                res["player"] = _json.loads(body)
+            except Exception:
+                res["player_raw"] = body
+    except Exception:
+        pass
+    return res
+
+
+@app.get('/version')
+def version():
+    # Aggregate headless and off versions
+    res = {"headless": VERSION}
+    try:
+        import urllib.request, json as _json
+        url = f"http://{OFF_HOST}:{int(globals().get('OFF_PORT', 8082))}/version"
+        with urllib.request.urlopen(url, timeout=0.6) as r:
+            body = r.read().decode("utf-8", errors="ignore")
+        try:
+            player = _json.loads(body)
+            res["off"] = player.get("version") if isinstance(player, dict) else None
+        except Exception:
+            res["off_raw"] = body
+    except Exception:
+        res["off"] = None
     return res
 
 @app.post("/off/start")
@@ -7935,6 +7988,20 @@ def api_go_to_start():
 def api_loop(on: int = Query(1)):
     set_loop(on == 1); return {"ok": True, "loop": player["loop"]}
 
+@app.post("/stop_at_end")
+def api_stop_at_end(on: int = Query(1)):
+    global STOP_AT_END
+    STOP_AT_END = (on == 1)
+    try:
+        persist_settings({"stop_at_end": STOP_AT_END})
+    except Exception:
+        pass
+    try:
+        _update_image_timer_policy()
+    except Exception:
+        pass
+    return {"ok": True, "stop_at_end": STOP_AT_END}
+
 @app.post("/stop")
 def api_stop():
     global VIDEO_PATH
@@ -7952,6 +8019,10 @@ def api_stop():
     except Exception:
         pass
     t_after_stop = time.time()
+    try:
+        preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
+    except Exception:
+        pass
     try:
         if preloaded.get("pipeline"):
             try:
@@ -9794,6 +9865,28 @@ def api_playlist_apply(payload: dict = Body(...)):
     if prepare_error:
         resp["prepare_error"] = prepare_error
     return resp
+
+@app.post("/playlist/clear")
+def api_playlist_clear():
+    """Svuota completamente la playlist locale e resetta indici/preload."""
+    try:
+        stop_play()
+    except Exception:
+        pass
+    playlist["items"] = []
+    playlist["index"] = -1
+    playlist.pop("fingerprint", None)
+    preloaded.update({"path": None, "pipeline": None, "vb": None, "alpha": None})
+    faststart["prepared_path"] = None
+    try:
+        show_state.update({"ready": False, "for": None})
+    except Exception:
+        pass
+    try:
+        globals()["VIDEO_PATH"] = None
+    except Exception:
+        pass
+    return {"ok": True, "cleared": True}
 
 @app.get("/playlist/status")
 def api_playlist_status():

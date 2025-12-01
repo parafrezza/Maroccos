@@ -25,6 +25,8 @@ echo -n "LOOP off" | nc -u -w1 192.168.1.50 7777
 # Stato (JSON)
 curl http://HOST:8080/status
 
+Note: the HUD overlay now shows both the OFF-player build version and, if present, the headless-player version passed via the environment variable 'HEADLESS_VERSION' (displayed as 'Headless: <version>').
+
 # Controlli base
 curl -X POST http://HOST:8080/play
 curl -X POST http://HOST:8080/stop

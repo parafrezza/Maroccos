@@ -444,3 +444,25 @@ class PlayerRegistry(QObject):
         for ip in removed:
             self.playerRemoved.emit(ip)
         return removed
+
+    def purge_all(self) -> list[str]:
+        """Remove all known players, regardless of state."""
+        with self._lock:
+            removed = list(self._players.keys())
+            self._players.clear()
+        for ip in removed:
+            self.playerRemoved.emit(ip)
+        return removed
+
+    def purge_player(self, ip: str) -> bool:
+        """Remove a specific player by IP."""
+        if not ip:
+            return False
+        removed = False
+        with self._lock:
+            if ip in self._players:
+                del self._players[ip]
+                removed = True
+        if removed:
+            self.playerRemoved.emit(ip)
+        return removed

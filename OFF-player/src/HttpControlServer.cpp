@@ -52,6 +52,28 @@ void HttpRequestHandler::handleRequest(Poco::Net::HTTPServerRequest& request,
     } else if (path == "/status") {
         std::string json = api_.fnStatus ? api_.fnStatus() : "{\"error\":\"no status\"}";
         sendJSON(response, json);
+    } else if (path == "/version") {
+        if (api_.fnVersion) {
+            std::string offv = api_.fnVersion();
+            std::string hv;
+            if (api_.fnHeadlessVersion) {
+                hv = api_.fnHeadlessVersion();
+            }
+            std::ostringstream oss;
+            oss << "{";
+            oss << "\"off\":\"";
+            for (char c : offv) { if (c == '"' || c == '\\') oss << '\\'; oss << c; }
+            oss << "\"";
+            if (!hv.empty()) {
+                oss << ",\"headless\":\"";
+                for (char c : hv) { if (c == '"' || c == '\\') oss << '\\'; oss << c; }
+                oss << "\"";
+            }
+            oss << "}";
+            sendJSON(response, oss.str());
+        } else {
+            sendBad(response, "{\"error\":\"version endpoint not supported\"}");
+        }
     } else if (path == "/playlist") {
         std::string json = api_.fnPlaylist ? api_.fnPlaylist() : "{\"items\":[]}";
         sendJSON(response, json);

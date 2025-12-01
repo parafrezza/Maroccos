@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -213,3 +214,43 @@ def test_auto_apply_not_triggered_on_add(commands_tab: CommandsTab, qapp: QAppli
     if spy.count() == 0:
         spy.wait(200)
     assert spy.count() == 0
+
+
+def test_display_center_pending_blocks_outdated_state(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    checkbox = commands_tab._display_center_checkbox
+    checkbox.blockSignals(True)
+    checkbox.setChecked(False)
+    checkbox.blockSignals(False)
+
+    spy = QSignalSpy(commands_tab.miscCommandTriggered)
+    checkbox.click()
+    qapp.processEvents()
+    assert spy.count() == 1
+
+    commands_tab.set_display_center(False, 1)
+    qapp.processEvents()
+    assert checkbox.isChecked() is True
+
+    commands_tab._display_center_pending = (True, time.monotonic() - 1)
+    commands_tab.set_display_center(False, 1)
+    qapp.processEvents()
+    assert checkbox.isChecked() is False
+
+
+def test_display_center_pending_clears_on_ack(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    checkbox = commands_tab._display_center_checkbox
+    checkbox.blockSignals(True)
+    checkbox.setChecked(False)
+    checkbox.blockSignals(False)
+
+    checkbox.click()
+    qapp.processEvents()
+    assert commands_tab._display_center_pending is not None
+
+    commands_tab.set_display_center(True, 1)
+    qapp.processEvents()
+
+    assert commands_tab._display_center_pending is None
+    assert checkbox.isChecked() is True

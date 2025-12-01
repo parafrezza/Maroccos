@@ -2234,6 +2234,8 @@ class ApplicationController(QObject):
             return client.request("post", "/playlist/loop", params={"on": 1})
         if cmd == "playlist_loop_off":
             return client.request("post", "/playlist/loop", params={"on": 0})
+        if cmd == "playlist_clear":
+            return client.request("post", "/playlist/clear")
         if cmd == "playlist_jump":
             index = int(payload.get("index", 0))
             return client.request("post", "/playlist/jump", params={"index": index})
@@ -2241,6 +2243,10 @@ class ApplicationController(QObject):
             return client.request("post", "/loop", params={"on": 1})
         if cmd == "loop_off":
             return client.request("post", "/loop", params={"on": 0})
+        if cmd == "stop_at_end_on":
+            return client.request("post", "/stop_at_end", params={"on": 1})
+        if cmd == "stop_at_end_off":
+            return client.request("post", "/stop_at_end", params={"on": 0})
         if cmd == "download_asset":
             url = payload.get("url")
             if not url:
@@ -2339,7 +2345,11 @@ class ApplicationController(QObject):
         raise ValueError(f"Comando non riconosciuto: {command}")
     def _client_for(self, player: PlayerRecord) -> ApiClient:
         cfg = self.state.config.network
-        base = f"http://{player.ip}:{cfg.player_port}"
+        try:
+            port = int(getattr(player, "port", None) or cfg.player_port)
+        except Exception:
+            port = cfg.player_port
+        base = f"http://{player.ip}:{port}"
         return ApiClient(base, cfg.api_key)
 
     # ------------------------------------------------------------------
@@ -2885,4 +2895,20 @@ echo "[remote] Fatto."
                 self.logMessage.emit(f"Purgato player offline {ip}")
         else:
             self.logMessage.emit("Nessun player offline da purgare")
+        return removed
+
+    def purge_all_players(self) -> list[str]:
+        removed = self.player_registry.purge_all()
+        if removed:
+            self.logMessage.emit(f"Purgati {len(removed)} player dalla lista (force purge)")
+        else:
+            self.logMessage.emit("Nessun player da purgare")
+        return removed
+
+    def purge_player(self, ip: str) -> bool:
+        removed = self.player_registry.purge_player(ip)
+        if removed:
+            self.logMessage.emit(f"Purgato player {ip}")
+        else:
+            self.logMessage.emit(f"Player {ip} non trovato nella lista")
         return removed
