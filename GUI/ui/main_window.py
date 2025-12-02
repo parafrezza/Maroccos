@@ -58,9 +58,12 @@ class MainWindow(QMainWindow):
         self._tabs = QTabWidget()
         self._commands_tab = CommandsTab(parent=self._tabs)
         self._update_tab = UpdateTab(parent=self._tabs)
+        from GUI.ui.tabs.test_udp_tab import TestUdpTab
+        self._test_udp_tab = TestUdpTab(parent=self._tabs)
 
         self._tabs.addTab(self._commands_tab, "Comandi")
         self._tabs.addTab(self._update_tab, "Aggiornamento & Settings")
+        self._tabs.addTab(self._test_udp_tab, "test_UDP")
 
         self._player_panel = PlayerPanel()
         self._player_panel_default_min = self._player_panel.minimumWidth()
@@ -263,6 +266,7 @@ class MainWindow(QMainWindow):
         self._player_panel.forcePurgeRequested.connect(self._handle_force_purge)
         self._player_panel.vncRequested.connect(self._handle_open_vnc)
         self._player_panel.detachRequested.connect(self._toggle_player_panel_detach)
+        self._test_udp_tab.udpCommandRequested.connect(self._handle_udp_test_command)
 
         self._commands_tab.playbackTriggered.connect(self._handle_playback)
         self._commands_tab.miscCommandTriggered.connect(self._handle_misc_command)
@@ -959,8 +963,15 @@ class MainWindow(QMainWindow):
             pass
         label = record.name or record.ip
         self._set_clone_job_state(True, f"Clonazione avviata da {label}")
+        # Playlist GUI come override opzionale (se presente)
         try:
-            self._controller.clone_media_from_player(record)
+            pl_items = self._commands_tab.get_current_playlist_items()
+            pl_loop = self._commands_tab.get_current_playlist_loop()
+        except Exception:
+            pl_items = []
+            pl_loop = None
+        try:
+            self._controller.clone_media_from_player(record, playlist_override=pl_items or None, loop_override=pl_loop)
         except Exception as exc:
             self._append_log(f"[Clone] Avvio fallito: {exc}")
             self._set_clone_job_state(False, f"Avvio clonazione fallito: {exc}")
@@ -1833,6 +1844,19 @@ class MainWindow(QMainWindow):
 
     def _handle_force_purge(self, ip: str) -> None:
         self._controller.purge_player(ip)
+
+    def _handle_udp_test_command(self, command: str, lora_ip: str | None, port: int | None) -> None:
+        targets = [p.ip for p in self._selected_players]
+        if lora_ip:
+            targets.append(lora_ip.strip())
+        targets = [t for t in targets if t]
+        if not targets:
+            self._append_log("[UDP] Nessun target selezionato")
+            return
+        try:
+            self._controller.send_udp_command(command, targets, port=port)
+        except Exception as exc:
+            self._append_log(f"[UDP] Invio fallito: {exc}")
 
     # -----------------------------
     # Media directory watcher helpers

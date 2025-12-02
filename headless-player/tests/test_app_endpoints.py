@@ -151,8 +151,18 @@ def _install_stubs():
 
 
 @pytest.fixture(scope="module")
-def fastapi_app():
+def fastapi_app(tmp_path_factory):
     _install_stubs()
+    # Isola le cartelle di config/media su una directory temporanea per evitare
+    # di leggere config reali dell'utente che potrebbero riabilitare OFF_AUTOSTART
+    temp_root = tmp_path_factory.mktemp("headless_cfg")
+    media_override = temp_root / "media"
+    media_override.mkdir(parents=True, exist_ok=True)
+    env_keys = ("LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "MEDIA_DIR")
+    env_backup = {k: os.environ.get(k) for k in env_keys}
+    for key in ("LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME"):
+        os.environ[key] = str(temp_root)
+    os.environ["MEDIA_DIR"] = str(media_override)
     # Import dinamico dell'app FastAPI
     base = Path(__file__).resolve().parents[1]
     # Assicura che import assoluti come 'backends' risolvano dalla root dell'app
@@ -176,7 +186,6 @@ def fastapi_app():
             return None
     threading.Thread = _DummyThread
     # Ensure OFF autostart is disabled during tests to avoid launching external binary
-    import os
     os.environ["OFF_AUTOSTART"] = "0"
     spec = importlib.util.spec_from_file_location("app_module", str(app_path))
     assert spec and spec.loader
@@ -184,7 +193,6 @@ def fastapi_app():
     import builtins
     # evita esecuzioni di os.system/poweroff in /shutdown durante i test
     builtins._original_system = getattr(sys.modules.get('os'), 'system', None)
-    import os
     os.system = lambda *a, **k: 0
     sys.modules["app_module"] = mod
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
@@ -199,6 +207,11 @@ def fastapi_app():
             mod.request_headless_exit("pytest cleanup")
         except Exception:
             pass
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def test_framework_get_and_change(fastapi_app):
@@ -213,6 +226,134 @@ def test_framework_get_and_change(fastapi_app):
         r2 = client.post("/change_framework", json={"name": payload["current"]})
         assert r2.status_code == 200
         assert r2.json().get("ok") is True
+
+
+def test_backend_restart_endpoint_stops_and_reinits(fastapi_app, monkeypatch):
+    import sys
+    app_mod = sys.modules["app_module"]
+    stop_called = {"count": 0}
+
+    def fake_stop_play():
+        stop_called["count"] += 1
+
+    monkeypatch.setattr(app_mod, "stop_play", fake_stop_play, raising=False)
+
+    class DummyBackend:
+        def __init__(self):
+            self.shutdown_count = 0
+
+        def shutdown(self):
+            self.shutdown_count += 1
+
+    dummy_backend = DummyBackend()
+    app_mod.current_framework["backend"] = dummy_backend
+    app_mod.current_framework["name"] = "gst"
+    init_calls: list[tuple[str, bool]] = []
+
+    def fake_init(name: str, persist: bool = False):
+        init_calls.append((name, persist))
+        app_mod.current_framework["backend"] = DummyBackend()
+
+    monkeypatch.setattr(app_mod, "init_backend", fake_init, raising=False)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/backend/restart")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("scheduled") is False
+        result = body.get("result") or {}
+        assert result.get("backend") == "gst"
+
+    assert stop_called["count"] == 1
+    assert dummy_backend.shutdown_count == 1
+    assert init_calls == [("gst", True)]
+
+
+def test_backend_restart_endpoint_propagates_errors(fastapi_app, monkeypatch):
+    import sys
+    app_mod = sys.modules["app_module"]
+    monkeypatch.setattr(app_mod, "stop_play", lambda: None, raising=False)
+    monkeypatch.setattr(app_mod, "init_backend", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")), raising=False)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/backend/restart")
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body.get("ok") is False
+
+
+def test_backend_restart_off_process_cycle(fastapi_app, monkeypatch):
+    import sys
+    app_mod = sys.modules["app_module"]
+
+    class DummyBackend:
+        def __init__(self) -> None:
+            self.shutdown_calls = 0
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    dummy_backend = DummyBackend()
+    app_mod.current_framework["name"] = "off"
+    app_mod.current_framework["backend"] = dummy_backend
+
+    stop_play_calls = {"count": 0}
+
+    def fake_stop_play() -> None:
+        stop_play_calls["count"] += 1
+
+    monkeypatch.setattr(app_mod, "stop_play", fake_stop_play, raising=False)
+
+    off_stop_calls: list[dict] = []
+
+    def fake_off_stop() -> dict:
+        payload = {"ok": True, "running": False}
+        off_stop_calls.append(payload)
+        return payload
+
+    monkeypatch.setattr(app_mod, "_off_stop", fake_off_stop, raising=False)
+
+    off_start_calls: list[dict] = []
+
+    def fake_off_start() -> dict:
+        payload = {"ok": True, "running": True, "port": 8090}
+        off_start_calls.append(payload)
+        return payload
+
+    monkeypatch.setattr(app_mod, "_off_start", fake_off_start, raising=False)
+    monkeypatch.setattr(app_mod, "_wait_off_http_ready", lambda *a, **k: True, raising=False)
+
+    init_calls: list[tuple[str, bool]] = []
+
+    def fake_init(name: str, persist: bool = False) -> None:
+        init_calls.append((name, persist))
+        app_mod.current_framework["name"] = name
+        app_mod.current_framework["backend"] = DummyBackend()
+
+    monkeypatch.setattr(app_mod, "init_backend", fake_init, raising=False)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/backend/restart")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload.get("ok") is True
+        assert payload.get("scheduled") is False
+        result = payload.get("result") or {}
+        assert result.get("off_stop") == {"ok": True, "running": False}
+        assert result.get("off_start", {}).get("running") is True
+        assert result.get("off_start_ready") is True
+        assert result.get("errors") == []
+    assert stop_play_calls["count"] == 1
+    assert len(off_stop_calls) == 1
+    assert len(off_start_calls) >= 1
+    assert init_calls == [("off", True)]
 
 
 def test_ping_and_status(fastapi_app):
@@ -290,7 +431,8 @@ def test_status_exposes_udp_lock(fastapi_app):
 
 
 def test_manual_bootstrap_disabled_when_autoplay_off(fastapi_app, monkeypatch):
-    import app_module as app_mod
+    import sys
+    app_mod = sys.modules["app_module"]
 
     # Simula scenario con autoplay disabilitato e media presenti
     app_mod.autoplay["enabled"] = False
@@ -495,33 +637,85 @@ def test_media_prune_to_playlist_removes_extra_files(fastapi_app):
 def test_off_version_endpoints(fastapi_app):
     from fastapi.testclient import TestClient
     import importlib
+    from version_utils import aggregate_off_responses
+
     app_mod = importlib.import_module("app_module")
     with TestClient(fastapi_app) as client:
-            # /off/version should return ok and running info, if off backend is running it should include player or player_raw
-            r = client.get("/off/version")
-            assert r.status_code == 200
-            payload = r.json()
-            assert payload.get("ok") is True
-            assert "running" in payload
-            # /version should include headless version and may include off or off_raw
-            r2 = client.get("/version")
-            assert r2.status_code == 200
-            p2 = r2.json()
-            assert "headless" in p2 and isinstance(p2["headless"], str)
-            assert p2["headless"] == app_mod.VERSION
-            # off could be None or a version string, confirm shape
-            assert ("off" in p2 and (p2["off"] is None or isinstance(p2["off"], str))) or ("off_raw" in p2)
+        # /off/version should return ok and running info
+        r = client.get("/off/version")
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload.get("ok") is True
+        assert "running" in payload
 
-    # Verify fallback behavior using aggregate helper directly (without starting OFF process)
-    from version_utils import aggregate_off_responses
+        # /version should include headless version and may include off or off_raw
+        r2 = client.get("/version")
+        assert r2.status_code == 200
+        p2 = r2.json()
+        assert "headless" in p2 and isinstance(p2["headless"], str)
+        assert p2["headless"] == app_mod.VERSION
+        assert ("off" in p2 and (p2["off"] is None or isinstance(p2["off"], str))) or ("off_raw" in p2)
+
+    # Verify helper aggregation without starting OFF process
     headless = app_mod.VERSION
-    # prefer /version when available
     vbody = '{"version":"v5.5.5"}'
     sbody = '{"player":{"version":"v9.9.9"}}'
     agg = aggregate_off_responses(headless, vbody, sbody)
     assert agg["off"] == "v5.5.5"
     assert agg["off_source"] == "version"
-    # fallback to status if version absent
     agg2 = aggregate_off_responses(headless, None, sbody)
     assert agg2["off"] == "v9.9.9"
     assert agg2["off_source"] == "status"
+
+
+def test_media_clear_requires_confirm(fastapi_app):
+    from fastapi.testclient import TestClient
+
+    with TestClient(fastapi_app) as client:
+        resp = client.post("/media/clear")
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload.get("ok") is False
+        assert "Conferma" in payload.get("error", "")
+
+
+def test_media_clear_force_off_restarts(monkeypatch, fastapi_app):
+    from fastapi.testclient import TestClient
+    import importlib
+
+    app_mod = importlib.import_module("app_module")
+    media_dir = app_mod.MEDIA_DIR
+    media_dir.mkdir(exist_ok=True)
+    target = media_dir / "locked.mp4"
+    _write_fake_mp4(target)
+
+    stop_calls: dict[str, dict] = {}
+
+    def fake_stop(timeout: float = 3.0, force: bool = True, stop_off: bool = True):
+        stop_calls["kwargs"] = {"timeout": timeout, "force": force, "stop_off": stop_off}
+        return {"playback_stopped": True, "off_player_stopped": True}
+
+    restart_tracker = {"count": 0}
+
+    def fake_start(*args, **kwargs):
+        restart_tracker["count"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(app_mod, "_stop_active_media", fake_stop, raising=False)
+    monkeypatch.setattr(app_mod, "_off_start", fake_start, raising=False)
+
+    with TestClient(fastapi_app) as client:
+        resp = client.post(
+            "/media/clear",
+            params={"confirm": 1, "force_off": 1, "restart_off": 1},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("off_player_stopped") is True
+        assert body.get("off_player_restarted") is True
+        assert body.get("removed", 0) >= 1
+
+    assert stop_calls["kwargs"]["stop_off"] is True
+    assert restart_tracker["count"] == 1
+    assert not target.exists()

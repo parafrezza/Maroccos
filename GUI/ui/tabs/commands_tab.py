@@ -706,7 +706,7 @@ class CommandsTab(QWidget):
         self._device_refresh = QPushButton("Aggiorna")
         self._device_refresh.clicked.connect(self.deviceMediaRefreshRequested.emit)
         self._device_clear = QPushButton("Svuota media")
-        self._device_clear.clicked.connect(lambda _=False: self.miscCommandTriggered.emit("media_clear", {}))
+        self._device_clear.clicked.connect(self._confirm_device_media_clear)
         self._device_remove = QPushButton("Rimuovi")
         self._device_remove.clicked.connect(self._remove_selected_device_media)
         self._device_refresh.setEnabled(False)
@@ -1246,6 +1246,14 @@ class CommandsTab(QWidget):
         self._update_brightness_controls_state()
         self._update_brightness_tooltip()
         self._update_start_sync_enabled()
+
+    def get_current_playlist_items(self) -> list[str]:
+        """Ritorna la playlist corrente in GUI (normalizzata)."""
+        return self._collect_playlist_items()
+
+    def get_current_playlist_loop(self) -> bool:
+        """Ritorna lo stato del loop playlist nella GUI."""
+        return self._current_loop_state()
 
     def eventFilter(self, obj, event):  # type: ignore[override]
         if obj is getattr(self, "_playlist", None) and event is not None:
@@ -2158,6 +2166,11 @@ class CommandsTab(QWidget):
                 "confirm": "Riavviare il servizio headless-player sui device selezionati?",
             },
             {
+                "label": "Backend: Riavvia backend corrente",
+                "command": "backend_restart",
+                "confirm": "Riavviare il backend audio/video sui device selezionati?",
+            },
+            {
                 "label": "Sistema: Shutdown",
                 "command": "shutdown",
                 "confirm": "Spegnere i player selezionati?",
@@ -2935,6 +2948,19 @@ class CommandsTab(QWidget):
             return
         keep = self._collect_playlist_items()
         self.miscCommandTriggered.emit("media_prune_to_playlist", {"items": keep})
+
+    def _confirm_device_media_clear(self, _checked: bool = False) -> None:
+        if not self._targets_enabled:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Conferma svuota media",
+            "Cancellare tutti i file nella cartella media dei player selezionati?\nOperazione irreversibile.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.miscCommandTriggered.emit("media_clear", {})
 
     def _remove_selected_device_media(self) -> None:
         try:

@@ -68,7 +68,7 @@ public:
     void loadConfig();
     void saveDefaultConfigIfMissing();
     void buildPlaylist();
-    bool loadCurrent();
+    bool loadCurrent(bool autoPlay=true);
     std::string statusString() const;
     std::string playlistJSON() const;
 

@@ -59,3 +59,25 @@ def test_execute_display_center_posts_display_center(qapp: QApplication, tmp_pat
     assert params.get("on") == 1
     assert resp.get("enabled") is True
     controller._executor.shutdown(wait=False)
+
+
+def test_execute_media_clear_hits_media_clear_endpoint(qapp: QApplication, tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    controller = ApplicationController(settings_path)
+
+    class DummyClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict | None, dict | None, float]] = []
+
+        def request(self, method, path, *, json=None, params=None, timeout=5):
+            self.calls.append((method, path, json, params, timeout))
+            return {"ok": True}
+
+    dummy = DummyClient()
+    controller._execute_command(dummy, "media_clear", {})
+    assert dummy.calls, "Expected a call to be performed"
+    method, path, json_payload, params, timeout = dummy.calls[0]
+    assert method.lower() == "post"
+    assert path == "/media/clear"
+    assert params == {"confirm": 1, "force_off": 1, "restart_off": 1}
+    controller._executor.shutdown(wait=False)

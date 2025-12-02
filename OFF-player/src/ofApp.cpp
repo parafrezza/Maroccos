@@ -145,11 +145,13 @@ void ofApp::setup(){
     if(playlist.empty()){
         ofLogWarning() << "Playlist vuota. Metti dei video in \"" << cfg.mediaDir << "\"";
     }else{
-        loadCurrent();
+        loadCurrent(/*autoPlay*/ !cfg.startPaused);
     }
 
     if(!cfg.startPaused){
         play();
+    }else{
+        ofLogNotice() << "Start paused: playlist caricata senza avviare la riproduzione.";
     }
 
     setupUDP();
@@ -299,7 +301,7 @@ void ofApp::buildPlaylist(){
     ofLogNotice() << "Playlist: " << playlist.size() << " file.";
 }
 
-bool ofApp::loadCurrent(){
+bool ofApp::loadCurrent(bool autoPlay){
     if(playlist.empty() || currentIndex >= playlist.size()){
         return false;
     }
@@ -321,7 +323,7 @@ bool ofApp::loadCurrent(){
             currentIsImage = false;
             return false;
         }
-        isPlaying = true;
+        isPlaying = autoPlay;
         return true;
     }
 
@@ -332,9 +334,14 @@ bool ofApp::loadCurrent(){
     }
     player.setLoopState(cfg.loopEach ? OF_LOOP_NORMAL : OF_LOOP_NONE);
     player.setVolume(0.0f); // silenzio; cambia se vuoi audio
-    player.setPaused(false);
-    player.play();
-    isPlaying = true;
+    if(autoPlay){
+        player.setPaused(false);
+        player.play();
+        isPlaying = true;
+    }else{
+        player.setPaused(true);
+        isPlaying = false;
+    }
     return true;
 }
 
@@ -434,7 +441,7 @@ void ofApp::setIndex(size_t idx){
 
 void ofApp::reloadPlaylist(){
     buildPlaylist();
-    loadCurrent();
+    loadCurrent(true);
     ofLogNotice() << "RELOAD playlist.";
 }
 
@@ -1332,7 +1339,7 @@ void ofApp::transitionToIndex(size_t idx, float seconds){
     fadeCallback = [this, idx, sec]{
         if(idx < playlist.size()){
             currentIndex = idx;
-            loadCurrent();
+            loadCurrent(true);
         }
         this->fadeIn(sec);
     };

@@ -11,7 +11,7 @@ pytest.importorskip("PySide6", reason="PySide6 non disponibile nell'ambiente di 
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QListWidgetItem
+from PySide6.QtWidgets import QApplication, QListWidgetItem, QMessageBox
 
 from GUI.ui.tabs.commands_tab import CommandsTab
 
@@ -150,6 +150,31 @@ def test_device_media_update_clears_transfer_state(commands_tab: CommandsTab, tm
     assert item is not None
     assert item.data(Qt.BackgroundRole) is None
     assert not commands_tab._downloads_in_progress
+
+
+def test_device_clear_requires_confirmation(commands_tab: CommandsTab, qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands_tab.set_targets_selected(True)
+    answers = [QMessageBox.No, QMessageBox.Yes]
+    prompts: list[str] = []
+
+    def fake_question(parent, title, text, buttons):  # type: ignore[override]
+        prompts.append(str(text))
+        return answers.pop(0)
+
+    monkeypatch.setattr(QMessageBox, "question", fake_question)
+    spy = QSignalSpy(commands_tab.miscCommandTriggered)
+
+    commands_tab._device_clear.click()
+    qapp.processEvents()
+    assert spy.count() == 0
+
+    commands_tab._device_clear.click()
+    qapp.processEvents()
+    assert spy.count() == 1
+    emitted_command, payload = spy.at(0)
+    assert emitted_command == "media_clear"
+    assert payload == {}
+    assert prompts and "cartella media" in prompts[0]
 
 
 def test_next_command_blocked_with_single_playlist_item(commands_tab: CommandsTab, qapp: QApplication) -> None:

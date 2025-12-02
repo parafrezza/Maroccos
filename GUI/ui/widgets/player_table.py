@@ -206,6 +206,20 @@ class PlayerStatusTable(QTableWidget):
             pass
 
     # --------------------------
+    # Deselect on empty click
+    # --------------------------
+    def mousePressEvent(self, event):  # type: ignore[override]
+        # Se clic su area vuota (nessuna cella), deseleziona tutte le righe
+        idx = self.indexAt(event.pos())
+        if not idx.isValid():
+            try:
+                self.clearSelection()
+                self.clearFocus()
+            except Exception:
+                pass
+        super().mousePressEvent(event)
+
+    # --------------------------
     # Layout helpers
     # --------------------------
     def resizeEvent(self, event):  # noqa: D401

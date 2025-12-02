@@ -1195,6 +1195,13 @@ def _resolve_startup_targets(source: Any | None = None) -> list[str]:
     return _normalize_mac_collection(source)
 
 def load_persisted_framework():
+    try:
+        print(
+            f"[CONFIG] Paths: primary={CONFIG_FILE} (exists={CONFIG_FILE.exists()}), legacy={LEGACY_CONFIG_FILE} (exists={LEGACY_CONFIG_FILE.exists()})",
+            flush=True,
+        )
+    except Exception:
+        pass
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text())
@@ -1351,6 +1358,11 @@ def load_persisted_framework():
                 print(f"[MEDIA] Impossibile aggiornare config: {e}", flush=True)
         except Exception as e:
             print(f"[CONFIG] Lettura config fallita: {e}", flush=True)
+    else:
+        try:
+            print(f"[CONFIG] Nessun config presente, autoplay default={autoplay.get('enabled')} (source={autoplay_meta.get('source')})", flush=True)
+        except Exception:
+            pass
     # Always ensure device id exists
     try:
         _ensure_device_id()
@@ -1413,6 +1425,12 @@ def persist_settings(extra: dict | None = None):
             data.pop(legacy_key, None)
         if extra: data.update(extra)
         CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        try:
+            # Mantieni in sync anche il vecchio config nella cartella app (best-effort)
+            LEGACY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LEGACY_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
     except Exception as e:
         print(f"[CONFIG] Persist settings error: {e}", flush=True)
 
@@ -3638,10 +3656,36 @@ def _autoplay_on_play_started(path: str) -> None:
 
 autoplay_meta = {"source": "init", "ts": time.time()}
 
+def _persist_autoplay_flag(enabled: bool) -> None:
+    """Persisti solo il flag autoplay su tutte le copie note di config."""
+    try:
+        data = {}
+        if CONFIG_FILE.exists():
+            try: data = json.loads(CONFIG_FILE.read_text())
+            except Exception: data = {}
+        data["autoplay_enabled"] = bool(enabled)
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        try:
+            LEGACY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LEGACY_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+        try:
+            print(f"[CONFIG] Autoplay salvato={enabled} (force sync)", flush=True)
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            print(f"[CONFIG] Autoplay persist failed: {exc}", flush=True)
+        except Exception:
+            pass
+
 def _autoplay_set_enabled(enabled: bool, restart: bool = True, delay: float | None = None, source: str = "unknown") -> None:
     enabled = bool(enabled)
     if enabled == autoplay.get("enabled") and not restart:
         persist_settings({"autoplay_enabled": enabled})
+        _persist_autoplay_flag(enabled)
         return
     autoplay["enabled"] = enabled
     try:
@@ -3663,6 +3707,7 @@ def _autoplay_set_enabled(enabled: bool, restart: bool = True, delay: float | No
             set_loop(prev_loop)
             autoplay["forced_loop_prev"] = None
         persist_settings({"autoplay_enabled": False})
+        _persist_autoplay_flag(False)
         return
     _autoplay_log("Autoplay attivato")
     autoplay["forced_loop_prev"] = None
@@ -3681,6 +3726,7 @@ def _autoplay_set_enabled(enabled: bool, restart: bool = True, delay: float | No
     else:
         _autoplay_start_monitor()
     persist_settings({"autoplay_enabled": True})
+    _persist_autoplay_flag(True)
 
 # ---------- Maintenance ----------
 maintenance = {
@@ -7470,6 +7516,63 @@ def api_fade_out_current(seconds: float = Body(1.0, embed=True)):
 def framework_get():
     return {"ok": True, "current": current_framework["name"], "available": available_backends()}
 
+
+def _restart_current_backend(reason: str = "manual") -> dict[str, Any]:
+    backend_name = current_framework.get("name") or "unknown"
+    result: dict[str, Any] = {"backend": backend_name, "errors": []}
+    try:
+        stop_play()
+    except Exception as exc:
+        msg = f"stop_play: {exc}"
+        print(f"[BACKEND] {msg}", flush=True)
+        result["errors"].append(msg)
+    if backend_name == "off":
+        try:
+            stop_res = _off_stop()
+            result["off_stop"] = stop_res
+        except Exception as exc:
+            msg = f"off_stop: {exc}"
+            print(f"[BACKEND] Arresto OFF-player fallito: {exc}", flush=True)
+            result["errors"].append(msg)
+    backend = current_framework.get("backend")
+    if backend and hasattr(backend, "shutdown"):
+        try:
+            backend.shutdown()
+        except Exception as exc:
+            msg = f"shutdown: {exc}"
+            print(f"[BACKEND] Shutdown backend corrente fallito: {exc}", flush=True)
+            result["errors"].append(msg)
+    try:
+        init_backend(backend_name, persist=True)
+    except Exception as exc:
+        msg = f"init_backend: {exc}"
+        result["errors"].append(msg)
+        print(f"[BACKEND] Restart backend {backend_name} fallito: {exc}", flush=True)
+        raise
+    if backend_name == "off":
+        try:
+            start_res = _off_start()
+            result["off_start"] = start_res
+            if not start_res.get("ok"):
+                result["errors"].append("off_start: failed")
+            else:
+                try:
+                    ready = _wait_off_http_ready(start_res.get("port"), timeout=5.0, interval=0.2)
+                except Exception:
+                    ready = False
+                result["off_start_ready"] = bool(ready)
+                if not ready:
+                    result["errors"].append("off_start: http timeout")
+        except Exception as exc:
+            msg = f"off_start: {exc}"
+            print(f"[BACKEND] Riavvio OFF-player fallito: {exc}", flush=True)
+            result["errors"].append(msg)
+    try:
+        gui_log("backend_restart", data={"name": backend_name, "reason": reason, "errors": list(result["errors"])})
+    except Exception:
+        pass
+    return result
+
 @app.post("/change_framework")
 def change_framework(payload: dict = Body(...)):
     name = payload.get("name") if isinstance(payload, dict) else None
@@ -7479,19 +7582,8 @@ def change_framework(payload: dict = Body(...)):
     if name == current_framework["name"]:
         # comunque puoi schedulare un restart interno (stop/start) se voluto
         def restart_same():
-            backend = current_framework.get("backend")
             try:
-                if backend and hasattr(backend, "is_playing") and backend.is_playing():
-                    backend.stop()
-            except Exception:
-                print("[BACKEND] Stop backend corrente fallito", flush=True)
-            try:
-                if backend and hasattr(backend, "shutdown"):
-                    backend.shutdown()
-            except Exception:
-                print("[BACKEND] Shutdown backend corrente fallito", flush=True)
-            try:
-                init_backend(name, persist=True)
+                _restart_current_backend(reason="change_framework")
             except Exception as exc:
                 print(f"[BACKEND] Restart dello stesso framework fallito: {exc}", flush=True)
             return False
@@ -7523,6 +7615,28 @@ def change_framework(payload: dict = Body(...)):
 
     delay = schedule_action(in_time, do_switch)
     return {"ok": True, "scheduled": bool(in_time), "delay": delay, "target": name, "current": current_framework["name"] if in_time else name}
+
+
+@app.post("/backend/restart")
+def backend_restart(start_at: Optional[float] = Body(None, embed=True)):
+    target = current_framework.get("name") or "unknown"
+
+    if start_at:
+        def _scheduled_restart():
+            try:
+                _restart_current_backend(reason="api-endpoint")
+            except Exception as exc:
+                print(f"[BACKEND] Restart programmato fallito: {exc}", flush=True)
+            return False
+
+        delay = schedule_action(start_at, _scheduled_restart)
+        return {"ok": True, "scheduled": True, "delay": delay, "target": target}
+
+    try:
+        result = _restart_current_backend(reason="api-endpoint")
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "scheduled": False, "target": target, "result": result}
 
 # ---------- OFF-player process endpoints ----------
 def _parse_off_version_from_json(body: str) -> tuple[object, object]:
@@ -9153,13 +9267,19 @@ def media_archive():
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 @app.post("/media/clear")
-def media_clear(confirm: int = Query(0)):
+def media_clear(
+    confirm: int = Query(0),
+    force_off: int = Query(0),
+    restart_off: int = Query(1),
+):
     """Cancella TUTTI i contenuti nella directory media del device.
     Per sicurezza richiede confirm=1 come query (es: POST /media/clear?confirm=1).
     """
     if confirm != 1:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Conferma mancante: usa ?confirm=1"})
-    release_info = _stop_active_media(stop_off=False)
+    force_stop_off = bool(force_off)
+    auto_restart_off = bool(restart_off)
+    release_info = _stop_active_media(force=True, stop_off=force_stop_off)
     try:
         time.sleep(0.2)
     except Exception:
@@ -9186,6 +9306,7 @@ def media_clear(confirm: int = Query(0)):
     else:
         current_path = None
         current_exists = False
+    off_restarted = False
     try:
         for entry in MEDIA_DIR.iterdir():
             try:
@@ -9225,6 +9346,16 @@ def media_clear(confirm: int = Query(0)):
                 faststart["prepared_path"] = None
             except Exception:
                 pass
+        if force_stop_off and auto_restart_off and release_info.get("off_player_stopped"):
+            try:
+                restart_result = _off_start()
+                off_restarted = bool(restart_result.get("ok"))
+                if not off_restarted:
+                    errors.append(
+                        "OFF restart failed: " + str(restart_result.get("error") or restart_result)
+                    )
+            except Exception as exc:
+                errors.append(f"OFF restart exception: {exc}")
         return {
             "ok": True,
             "removed": removed,
@@ -9234,6 +9365,7 @@ def media_clear(confirm: int = Query(0)):
             "active_media_protected": protect_current,
             "playback_stopped": release_info.get("playback_stopped", False),
             "off_player_stopped": release_info.get("off_player_stopped", False),
+            "off_player_restarted": off_restarted,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})

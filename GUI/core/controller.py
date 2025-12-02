@@ -243,7 +243,13 @@ class ApplicationController(QObject):
         except Exception as exc:
             self.logMessage.emit(f"[MEDIA] Unable to run sync worker for {ip}: {exc}")
 
-    def clone_media_from_player(self, source: PlayerRecord) -> None:
+    def clone_media_from_player(
+        self,
+        source: PlayerRecord,
+        *,
+        playlist_override: list[str] | None = None,
+        loop_override: bool | None = None,
+    ) -> None:
         """Clone the media library and playlist from the selected source player to all others."""
         if self._media_clone_future and not self._media_clone_future.done():
             self.logMessage.emit("Clonazione media già in corso: attendi il completamento")
@@ -255,7 +261,12 @@ class ApplicationController(QObject):
         self.mediaCloneLog.emit(f"[Clone] Avvio clonazione da {label} ({source.ip})")
         self.mediaCloneProgress.emit(0.0, f"Preparazione clone da {source.ip}")
         try:
-            future = self._executor.submit(self._run_media_clone_job, source)
+            future = self._executor.submit(
+                self._run_media_clone_job,
+                source,
+                playlist_override,
+                loop_override,
+            )
         except Exception as exc:
             msg = f"Impossibile avviare il job di clonazione: {exc}"
             self.logMessage.emit(f"[Clone] {msg}")
@@ -882,6 +893,51 @@ class ApplicationController(QObject):
             return
         self._submit_command(command, payload, filtered)
 
+    # ------------------------------------------------------------------
+    # UDP helper
+    # ------------------------------------------------------------------
+    def send_udp_command(self, command: str, targets: Iterable[str], *, port: int | None = None) -> None:
+        """Invia un comando UDP testuale a una lista di IP (best-effort)."""
+        try:
+            cmd = (command or "").strip()
+        except Exception:
+            cmd = ""
+        if not cmd:
+            self.logMessage.emit("[UDP] Comando vuoto, nulla da inviare")
+            return
+        udp_port = int(port) if port else 7777
+        unique_targets = []
+        seen = set()
+        for ip in targets:
+            try:
+                ip_str = str(ip).strip()
+            except Exception:
+                continue
+            if not ip_str or ip_str in seen:
+                continue
+            seen.add(ip_str)
+            unique_targets.append(ip_str)
+        if not unique_targets:
+            self.logMessage.emit("[UDP] Nessun target valido")
+            return
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.2)
+        except Exception as exc:
+            self.logMessage.emit(f"[UDP] Socket error: {exc}")
+            return
+        data = cmd.encode("utf-8", "ignore")
+        for ip in unique_targets:
+            try:
+                sock.sendto(data, (ip, udp_port))
+                self.logMessage.emit(f"[UDP] Sent '{cmd}' -> {ip}:{udp_port}")
+            except Exception as exc:
+                self.logMessage.emit(f"[UDP] Errore verso {ip}:{udp_port}: {exc}")
+        try:
+            sock.close()
+        except Exception:
+            pass
+
     def open_vnc_viewer(self, player: PlayerRecord) -> None:
         viewer = self._resolve_vnc_viewer()
         if viewer is None:
@@ -1295,7 +1351,12 @@ class ApplicationController(QObject):
     # Media clone orchestration
     # ------------------------------------------------------------------
 
-    def _run_media_clone_job(self, source: PlayerRecord) -> dict[str, Any]:
+    def _run_media_clone_job(
+        self,
+        source: PlayerRecord,
+        playlist_override: list[str] | None = None,
+        loop_override: bool | None = None,
+    ) -> dict[str, Any]:
         source_ip = source.ip
         source_label = (source.name or source_ip).strip() if getattr(source, "name", None) else source_ip
         label = f"{source_label} ({source_ip})" if source_label and source_label != source_ip else source_ip
@@ -1334,13 +1395,27 @@ class ApplicationController(QObject):
         source_manifest, prefix = self._build_media_manifest(files)
         _log(f"Inventario sorgente: {len(source_manifest)} file")
 
-        playlist_status = client.request("get", "/playlist/status", timeout=10)
-        raw_items = playlist_status.get("items") if isinstance(playlist_status, dict) else []
-        playlist_loop = bool(playlist_status.get("loop", True)) if isinstance(playlist_status, dict) else True
-        playlist_items = self._normalize_playlist_items(raw_items, prefix)
-        _log(
-            f"Playlist sorgente: {len(playlist_items)} elementi" + (" (loop)" if playlist_loop else "")
-        )
+        playlist_items: list[str] = []
+        playlist_loop: bool = True
+        if playlist_override:
+            playlist_items = list(playlist_override)
+            playlist_loop = bool(loop_override) if loop_override is not None else True
+            _log(
+                f"Playlist override locale: {len(playlist_items)} elementi" + (" (loop)" if playlist_loop else "")
+            )
+        else:
+            playlist_status = client.request("get", "/playlist/status", timeout=10)
+            raw_items = playlist_status.get("items") if isinstance(playlist_status, dict) else []
+            playlist_loop = bool(playlist_status.get("loop", True)) if isinstance(playlist_status, dict) else True
+            playlist_items = self._normalize_playlist_items(raw_items, prefix)
+            _log(
+                f"Playlist sorgente: {len(playlist_items)} elementi" + (" (loop)" if playlist_loop else "")
+            )
+        # Stato sorgente per allineare impostazioni (loop/autoplay/durata immagini/stop_at_end)
+        try:
+            status_payload = client.request("get", "/status", timeout=10)
+        except Exception:
+            status_payload = {}
 
         safe_ip = source_ip.replace(":", "-").replace("/", "-").replace(".", "-")
         archive_rel = Path("_sync_jobs") / f"clone_{safe_ip}_{int(time.time())}.zip"
@@ -1396,6 +1471,17 @@ class ApplicationController(QObject):
                         _log(f"{target.ip}: playlist non applicata ({exc})")
             else:
                 _log("Playlist sorgente vuota: nessun push richiesto")
+
+            # Allinea impostazioni ai target che hanno ricevuto i media
+            settings = self._extract_settings_from_status(status_payload)
+            if settings:
+                _emit_progress(0.9, "Allineo impostazioni ai target")
+                for target in successes:
+                    try:
+                        self._apply_settings_to_target(self._client_for(target), settings, target.ip)
+                    except Exception as exc:
+                        failures.setdefault(target.ip, f"Settings: {exc}")
+                        _log(f"{target.ip}: impostazioni non applicate ({exc})")
 
             _emit_progress(0.98, "Clonazione completata")
             summary = f"Clone completato su {len(successes)}/{total} player"
@@ -1469,6 +1555,85 @@ class ApplicationController(QObject):
                 "modified": entry.get("modified"),
             }
         return manifest, prefix
+
+    def _extract_settings_from_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        settings: dict[str, Any] = {}
+        try:
+            if "loop_enabled" in payload:
+                settings["loop_enabled"] = bool(payload.get("loop_enabled"))
+        except Exception:
+            pass
+        try:
+            if "playlist_loop" in payload:
+                settings["playlist_loop"] = bool(payload.get("playlist_loop"))
+        except Exception:
+            pass
+        try:
+            if "stop_at_end" in payload:
+                settings["stop_at_end"] = bool(payload.get("stop_at_end"))
+        except Exception:
+            pass
+        try:
+            if "autoplay_enabled" in payload:
+                settings["autoplay_enabled"] = bool(payload.get("autoplay_enabled"))
+        except Exception:
+            pass
+        try:
+            img = payload.get("image_duration") or {}
+            if isinstance(img, dict) and "seconds" in img:
+                settings["image_duration_seconds"] = float(img.get("seconds"))
+        except Exception:
+            pass
+        return settings
+
+    def _apply_settings_to_target(self, client: ApiClient, settings: dict[str, Any], ip: str) -> None:
+        try:
+            if "loop_enabled" in settings:
+                client.request("post", "/loop", params={"on": 1 if settings["loop_enabled"] else 0}, timeout=5)
+        except Exception as exc:
+            self.logMessage.emit(f"[Clone] {ip}: loop non applicato ({exc})")
+        try:
+            if "playlist_loop" in settings:
+                client.request(
+                    "post",
+                    "/playlist/loop",
+                    params={"on": 1 if settings["playlist_loop"] else 0},
+                    timeout=5,
+                )
+        except Exception as exc:
+            self.logMessage.emit(f"[Clone] {ip}: playlist loop non applicato ({exc})")
+        try:
+            if "stop_at_end" in settings:
+                client.request(
+                    "post",
+                    "/stop_at_end",
+                    params={"on": 1 if settings["stop_at_end"] else 0},
+                    timeout=5,
+                )
+        except Exception as exc:
+            self.logMessage.emit(f"[Clone] {ip}: stop_at_end non applicato ({exc})")
+        try:
+            if "autoplay_enabled" in settings:
+                client.request(
+                    "post",
+                    "/autoplay",
+                    json={"enabled": bool(settings["autoplay_enabled"]), "restart": True},
+                    timeout=8,
+                )
+        except Exception as exc:
+            self.logMessage.emit(f"[Clone] {ip}: autoplay non applicato ({exc})")
+        try:
+            if "image_duration_seconds" in settings:
+                client.request(
+                    "post",
+                    "/visual/image_duration",
+                    params={"seconds": settings["image_duration_seconds"]},
+                    timeout=5,
+                )
+        except Exception as exc:
+            self.logMessage.emit(f"[Clone] {ip}: durata immagini non applicata ({exc})")
 
     def _normalize_playlist_items(self, items: Any, prefix: Path | None) -> list[str]:
         if not isinstance(items, list):
@@ -2204,11 +2369,21 @@ class ApplicationController(QObject):
                 return client.request("post", "/system/service/restart", timeout=2)
             except requests.RequestException:
                 return {"ok": True, "message": "Service restart dispatched"}
+        if cmd == "backend_restart":
+            start_at = payload.get("start_at") if isinstance(payload, dict) else None
+            json_payload: dict[str, Any] | None = None
+            if start_at is not None:
+                try:
+                    json_payload = {"start_at": float(start_at)}
+                except Exception:
+                    json_payload = None
+            return client.request("post", "/backend/restart", json=json_payload, timeout=10)
         if cmd == "run_setup":
             force = bool(payload.get("force", False))
             return client.request("post", "/maintenance/run_setup", json={"force": force}, timeout=120)
         if cmd == "media_clear":
-            return client.request("post", "/media/prune_to_playlist", json={"items": []}, timeout=120)
+            params = {"confirm": 1, "force_off": 1, "restart_off": 1}
+            return client.request("post", "/media/clear", params=params, timeout=120)
         if cmd == "media_prune_to_playlist":
             items_payload = []
             if isinstance(payload, dict):
