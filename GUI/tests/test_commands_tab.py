@@ -125,6 +125,18 @@ def test_auto_download_started_for_missing_media(commands_tab: CommandsTab, tmp_
     assert brush.color().name() == "#fff4e5"  # arancio trasferimento
 
 
+def test_media_library_sorted_alphabetically(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_media_items([
+        {"label": "Zulu.mov", "path": "/zulu.mov"},
+        {"label": "alpha.mp4", "path": "/alpha.mp4"},
+        {"label": "Bravo.mov", "path": "/bravo.mov"},
+    ])
+    qapp.processEvents()
+
+    texts = [commands_tab._media_list.item(idx).text() for idx in range(commands_tab._media_list.count())]
+    assert texts == ["alpha.mp4", "Bravo.mov", "Zulu.mov"]
+
+
 def test_device_media_update_clears_transfer_state(commands_tab: CommandsTab, tmp_path: Path, qapp: QApplication) -> None:
     media_root = tmp_path / "media"
     media_root.mkdir()
@@ -177,6 +189,73 @@ def test_device_clear_requires_confirmation(commands_tab: CommandsTab, qapp: QAp
     assert prompts and "cartella media" in prompts[0]
 
 
+def test_device_media_remove_supports_multi_selection(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab.set_device_media_items([
+        {"name": "alpha.mp4", "size": 10},
+        {"name": "beta.mp4", "size": 20},
+        {"name": "gamma.mp4", "size": 30},
+    ])
+    qapp.processEvents()
+
+    widget = commands_tab._device_media_list
+    widget.item(0).setSelected(True)
+    widget.item(1).setSelected(True)
+    qapp.processEvents()
+
+    spy = QSignalSpy(commands_tab.miscCommandTriggered)
+    commands_tab._remove_selected_device_media()
+    qapp.processEvents()
+
+    assert widget.count() == 1
+    assert widget.item(0).data(Qt.UserRole) == "gamma.mp4"
+    assert spy.count() == 1
+    command, payload = spy.at(0)
+    assert command == "media_prune_to_playlist"
+    assert payload == {"items": ["gamma.mp4"]}
+
+
+def test_device_media_sorted_alphabetically(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab.set_device_media_items([
+        {"name": "Zulu.mp4", "size": 10},
+        {"name": "alpha.mp4", "size": 5},
+        {"name": "bravo.mp4", "size": 7},
+    ])
+    qapp.processEvents()
+
+    widget = commands_tab._device_media_list
+    texts = [widget.item(idx).text() for idx in range(widget.count())]
+    assert texts[0].startswith("alpha.mp4")
+    assert texts[1].startswith("bravo.mp4")
+    assert texts[2].startswith("Zulu.mp4")
+
+
+def test_device_media_selection_persists_on_refresh(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab.set_device_media_items([
+        {"name": "alpha.mp4", "size": 10},
+        {"name": "beta.mp4", "size": 20},
+    ])
+    qapp.processEvents()
+
+    widget = commands_tab._device_media_list
+    widget.item(1).setSelected(True)
+    qapp.processEvents()
+
+    commands_tab.set_device_media_items([
+        {"name": "beta.mp4", "size": 25},
+        {"name": "alpha.mp4", "size": 15},
+        {"name": "gamma.mp4", "size": 5},
+    ])
+    qapp.processEvents()
+
+    assert widget.count() == 3
+    selected_rows = [idx for idx in range(widget.count()) if widget.item(idx).isSelected()]
+    assert selected_rows == [1]
+    assert widget.item(1).data(Qt.UserRole) == "beta.mp4"
+
+
 def test_next_command_blocked_with_single_playlist_item(commands_tab: CommandsTab, qapp: QApplication) -> None:
     _populate_playlist(commands_tab, ["only.mp4"])
     commands_tab.set_targets_selected(True)
@@ -199,6 +278,42 @@ def test_prev_command_blocked_with_single_playlist_item(commands_tab: CommandsTa
 
     assert spy.count() == 0
     assert "Playlist con un solo elemento" in commands_tab._banner_label.text()
+
+
+def test_next_command_emits_with_fade(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    _populate_playlist(commands_tab, ["first.mp4", "second.mp4"])
+    commands_tab._playlist.setCurrentRow(0)
+    commands_tab._fade_seconds.setValue(2.5)
+
+    spy = QSignalSpy(commands_tab.playbackTriggered)
+    commands_tab._handle_playback_button({"command": "next", "use_fade": True})
+    qapp.processEvents()
+
+    assert spy.count() == 1
+    command, payload = spy.at(0)
+    assert command == "next"
+    assert payload["seconds"] == 2.5
+
+
+def test_start_playlist_uses_selected_media(commands_tab: CommandsTab, qapp: QApplication, tmp_path: Path) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab._loop_checkbox.setChecked(False)
+    media_item = QListWidgetItem("clip.mp4")
+    media_item.setData(Qt.UserRole, str((tmp_path / "media" / "clip.mp4").resolve()))
+    media_item.setData(CommandsTab._RELATIVE_ROLE, "folder/clip.mp4")
+    commands_tab._media_list.addItem(media_item)
+    commands_tab._media_list.setCurrentItem(media_item)
+
+    spy = QSignalSpy(commands_tab.playbackTriggered)
+    commands_tab._handle_playback_button({"command": "play", "use_media": True})
+    qapp.processEvents()
+
+    assert spy.count() == 1
+    command, payload = spy.at(0)
+    assert command == "play"
+    assert payload["filename"] == "folder/clip.mp4"
+    assert payload["loop"] is False
 
 
 def test_auto_apply_emitted_on_reorder(commands_tab: CommandsTab, qapp: QApplication) -> None:
@@ -279,3 +394,20 @@ def test_display_center_pending_clears_on_ack(commands_tab: CommandsTab, qapp: Q
 
     assert commands_tab._display_center_pending is None
     assert checkbox.isChecked() is True
+
+
+def test_test_pattern_command_emits_dimensions(commands_tab: CommandsTab, qapp: QApplication) -> None:
+    commands_tab.set_targets_selected(True)
+    commands_tab._test_width.setValue(1920)
+    commands_tab._test_height.setValue(1080)
+    commands_tab._test_offset_x.setValue(20)
+    commands_tab._test_offset_y.setValue(40)
+
+    spy = QSignalSpy(commands_tab.miscCommandTriggered)
+    commands_tab._emit_test_on()
+    qapp.processEvents()
+
+    assert spy.count() == 1
+    command, payload = spy.at(0)
+    assert command == "test_on"
+    assert payload == {"width": 1920, "height": 1080, "offsetX": 20, "offsetY": 40}

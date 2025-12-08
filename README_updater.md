@@ -128,6 +128,9 @@ python massive_update.py --threads 100
 
 # Porta server locale personalizzata
 python massive_update.py --serve-port 9000
+
+# Limita gli update concorrenti (default 4)
+python massive_update.py --max-parallel 2
 ```
 
 ### Con API Key (se i player la richiedono)

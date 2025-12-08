@@ -1718,7 +1718,12 @@ def _udp_handle_plain_text(
     if cmd == "STOP":
         stop_secs = _parse_float(args_tokens[0]) if args_tokens else None
         if stop_secs and stop_secs > 0:
-            schedule(lambda seconds=stop_secs: api_visual_ftb(seconds))
+            def _ftb_then_stop(seconds=stop_secs):
+                try:
+                    api_visual_ftb(seconds)
+                finally:
+                    api_stop()
+            schedule(_ftb_then_stop)
         else:
             schedule(api_stop)
         send_reply("OK STOP")
@@ -1806,11 +1811,20 @@ def _udp_handle_plain_text(
         send_reply("ERR FADE usage")
         return True
     if cmd == "BRIGHTNESS":
-        if len(args_tokens) >= 2:
+        if len(args_tokens) >= 1:
             value = _parse_float(args_tokens[0])
-            seconds = _parse_float(args_tokens[1], 0.5)
+            seconds = _parse_float(args_tokens[1], 0.5) if len(args_tokens) >= 2 else 0.5
             if value is not None:
-                schedule(lambda v=value, s=seconds or 0.5: api_visual_brightness(v, s))
+                def _apply_brightness(v=value, s=seconds or 0.5):
+                    try:
+                        print(f"[UDP] BRIGHTNESS apply v={v} s={s}", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        api_visual_brightness(v, s)
+                    except Exception as exc:
+                        print(f"[UDP] BRIGHTNESS error: {exc}", flush=True)
+                schedule(_apply_brightness)
                 send_reply(f"OK BRIGHTNESS {value}")
             else:
                 send_reply("ERR BRIGHTNESS invalid value")
@@ -2193,6 +2207,10 @@ def _udp_thread():
             # Ignora EAGAIN/EWOULDBLOCK senza loggare
             if getattr(e, 'errno', None) in (errno.EAGAIN, errno.EWOULDBLOCK):
                 time.sleep(0.01)
+                continue
+            # Windows: WinError 10054 = ICMP port unreachable su socket UDP
+            if getattr(e, "winerror", None) == 10054:
+                print("[UDP] Ignoro WinError 10054 (ICMP port unreachable) e continuo", flush=True)
                 continue
             print(f"[UDP] Errore loop (OS): {e}", flush=True)
         except Exception as e:

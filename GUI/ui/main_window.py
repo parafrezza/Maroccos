@@ -1552,11 +1552,13 @@ class MainWindow(QMainWindow):
                 self._playlist_pending.clear()
         if "loop" in response and "prepared" in response:
             # Playlist apply successo: torna verde il LED se non ci sono warning
-            if not response.get("missing") and not response.get("invalid"):
+            success = not response.get("missing") and not response.get("invalid")
+            if success:
                 try:
                     self._commands_tab.set_playlist_led("green")
                 except Exception:
                     pass
+            self._finalize_playlist_push(ip, success=success)
         if "mode" in response and "visible" in response:
             try:
                 mode_val = response.get("mode")
@@ -1568,6 +1570,25 @@ class MainWindow(QMainWindow):
                 self._commands_tab.set_hud_state(mode, count)
             if self._selected_players:
                 self._controller.refresh_status(self._selected_players[0])
+
+    def _finalize_playlist_push(self, ip: str, *, success: bool) -> None:
+        if not self._playlist_pending:
+            return
+        if ip not in self._playlist_pending:
+            return
+        self._playlist_pending.discard(ip)
+        if self._playlist_pending:
+            return
+        self._playlist_active = False
+        if success:
+            try:
+                self._commands_tab.set_banner("Playlist pronta su tutti i device", level="success")
+            except Exception:
+                pass
+        try:
+            self._update_playlist_led_state()
+        except Exception:
+            pass
 
     def _handle_device_media_refresh(self) -> None:
         if not self._selected_players:

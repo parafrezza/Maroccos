@@ -738,8 +738,8 @@ class CommandsTab(QWidget):
         device_layout.addLayout(dev_controls)
 
         self._device_media_list = MediaListWidget()
-        # Permetti la selezione singola per scegliere il media per fast-start
-        self._device_media_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Consenti multi-selezione per operazioni in batch sui media del device
+        self._device_media_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._device_media_list.itemSelectionChanged.connect(self._on_device_media_selection_changed)
         # Abilita drop: trascinando elementi dalla libreria o file dal filesystem parte l'upload
         self._device_media_list.setAcceptDrops(True)
@@ -1129,14 +1129,35 @@ class CommandsTab(QWidget):
         """Aggiorna la lista dei media presenti sul device selezionato.
         items attesi come lista di dict: {name, size, modified, type}
         """
+        selected_payloads: set[str] = set()
+        selected_labels: set[str] = set()
+        try:
+            for selected in self._device_media_list.selectedItems():
+                payload = selected.data(Qt.UserRole)
+                if payload:
+                    selected_payloads.add(str(payload))
+                else:
+                    selected_labels.add(selected.text())
+        except Exception:
+            selected_payloads.clear()
+            selected_labels.clear()
+
         self._device_media_list.clear()
         self._device_media_names = set()
+        restored_selection = False
+        prepared_items: list[tuple[str, dict]] = []
         for it in (items or []):
             try:
                 name = str(it.get("name") or it.get("path") or "?")
-                # Filtra: mostra solo immagini/video
-                if not self._is_allowed_media(name):
-                    continue
+            except Exception:
+                name = str(it)
+            # Filtra: mostra solo immagini/video
+            if not self._is_allowed_media(name):
+                continue
+            prepared_items.append((name, it))
+
+        for name, it in sorted(prepared_items, key=lambda entry: entry[0].casefold()):
+            try:
                 size = float(it.get("size", 0.0))
                 mb = size / (1024 * 1024)
                 label = f"{name}  ({mb:.1f} MB)"
@@ -1149,13 +1170,25 @@ class CommandsTab(QWidget):
             except Exception:
                 pass
             self._device_media_list.addItem(item)
+            try:
+                payload_value = item.data(Qt.UserRole)
+            except Exception:
+                payload_value = None
+            key = str(payload_value) if payload_value is not None else None
+            if key and key in selected_payloads:
+                item.setSelected(True)
+                restored_selection = True
+            elif item.text() in selected_labels:
+                item.setSelected(True)
+                restored_selection = True
             base = self._normalize_device_basename(name)
             if base:
                 self._device_media_names.add(base)
-        try:
-            self._device_media_list.clearSelection()
-        except Exception:
-            pass
+        if not restored_selection:
+            try:
+                self._device_media_list.clearSelection()
+            except Exception:
+                pass
         self._device_media_seen = True
         self._apply_playlist_availability_styles()
         self._update_device_remove_state()
@@ -1299,12 +1332,17 @@ class CommandsTab(QWidget):
 
     def set_media_items(self, items: list[dict]) -> None:
         self._media_list.clear()
-        for item in items:
+        allowed_items: list[tuple[str, dict, str, str]] = []
+        for item in items or []:
             # Filtra per estensioni consentite (video/immagini)
             label = str(item.get("label") or "")
             p = str(item.get("path") or label)
             if not self._is_allowed_media(p):
                 continue
+            sort_key = (label or p).casefold()
+            allowed_items.append((sort_key, item, label, p))
+
+        for _, item, label, p in sorted(allowed_items, key=lambda entry: entry[0]):
             list_item = QListWidgetItem(label or p)
             list_item.setData(Qt.UserRole, item.get("path") or p)
             list_item.setData(self._RELATIVE_ROLE, item.get("relative"))

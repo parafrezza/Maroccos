@@ -2684,7 +2684,16 @@ class ApplicationController(QObject):
             raise
         host_ip = self._host_ip(targets)
         bundle_url = f"http://{host_ip}:{cfg.update.serve_port}/{bundle_path.name}"
+        log_hook = getattr(updater, "set_log_hook", None)
+        hook_installed = False
+        parallel = min(4, max(1, len(targets)))
         try:
+            if callable(log_hook):
+                try:
+                    log_hook(lambda msg: self.logMessage.emit(f"[UPDATE] {msg}"))
+                    hook_installed = True
+                except Exception:
+                    hook_installed = False
             players_payload = [{"ip": p.ip, "port": cfg.network.player_port} for p in targets]
             results = updater.apply_update(
                 players_payload,
@@ -2693,9 +2702,15 @@ class ApplicationController(QObject):
                 sha=sha,
                 api_key=cfg.network.api_key,
                 verbose=False,
+                max_parallel=parallel,
             )
             return {"results": results, "bundle": str(bundle_path), "url": bundle_url}
         finally:
+            try:
+                if hook_installed and callable(log_hook):
+                    log_hook(None)
+            except Exception:
+                pass
             update_server.stop()
 
     def _handle_deploy_done(self, future: concurrent.futures.Future[dict]) -> None:

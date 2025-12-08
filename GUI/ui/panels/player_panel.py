@@ -67,6 +67,11 @@ class PlayerPanel(QWidget):
         controls_row = QHBoxLayout(self._controls_container)
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(6)
+        self._select_all_button = QPushButton("Seleziona tutti")
+        self._select_all_button.setToolTip("Seleziona tutti i player nella lista")
+        self._select_all_button.setFixedHeight(26)
+        self._select_all_button.clicked.connect(self._select_all_players)
+        controls_row.addWidget(self._select_all_button)
         self._refresh_button = QPushButton("Scansiona")
         self._refresh_button.clicked.connect(self.refreshRequested.emit)
         controls_row.addWidget(self._refresh_button)
@@ -389,6 +394,13 @@ class PlayerPanel(QWidget):
             self._sync_button.setEnabled(False)
             return
         self._sync_button.setEnabled(enabled)
+
+    def _select_all_players(self) -> None:
+        try:
+            self._table.selectAll()
+            self.selectionChanged.emit(self.selected_ips())
+        except Exception:
+            pass
 
     def set_sync_lock(self, reason: str | None) -> None:
         """Blocca il pulsante Sync media durante operazioni lunghe, mostrando il motivo."""

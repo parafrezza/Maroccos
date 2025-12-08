@@ -32,7 +32,7 @@ Richiede 'requests'.
 import argparse, concurrent.futures, ipaddress, json, os, queue, re, socket, subprocess, sys, threading, time, hashlib
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional
 
 try:
     import requests
@@ -52,11 +52,26 @@ RELEASES_DIR = APP_DIR / 'releases'
 MAKE_BUNDLE = SCRIPT_ROOT / 'make_bundle.py'
 
 LOG_LOCK = threading.Lock()
+LOG_HOOK: Optional[Callable[[str], None]] = None
+
+
+def set_log_hook(handler: Optional[Callable[[str], None]]) -> None:
+    """Register a callable that mirrors log lines (set None to disable)."""
+    global LOG_HOOK
+    LOG_HOOK = handler
+
 
 def log(msg: str):
+    ts = time.strftime('%H:%M:%S')
+    line = f"[{ts}] {msg}"
+    handler = LOG_HOOK
     with LOG_LOCK:
-        ts = time.strftime('%H:%M:%S')
-        print(f"[{ts}] {msg}")
+        print(line)
+        if handler:
+            try:
+                handler(line)
+            except Exception:
+                pass
 
 class BundleResult:
     def __init__(self):
@@ -324,44 +339,52 @@ def apply_update(
     timeout=3.0,
     verbose: bool = False,
     system_reboot: bool = False,
+    max_parallel: Optional[int] = None,
 ):
-    results = []
+    total = len(players)
+    if total == 0:
+        log("Nessun player da aggiornare")
+        return []
+
     headers = {'Content-Type': 'application/json'}
     if api_key:
         headers['X-API-KEY'] = api_key
-    
-    log(f"Avvio update a 2 fasi per {len(players)} player (version={version})")
+
+    if max_parallel is None:
+        max_parallel = min(4, total)
+    max_parallel = max(1, max_parallel)
+
+    log(f"Avvio update a 2 fasi per {total} player (version={version}, parallel={max_parallel})")
     log(f"FASE 1: Download del bundle da {url}")
-    
-    # FASE 1: Download del bundle
+
     download_payload = {'version': version, 'url': url}
     if sha:
         download_payload['sha256'] = sha
-    
+
     if verbose:
         log(f"DEBUG UPDATE: Headers: {headers}")
         log(f"DEBUG UPDATE: Download payload: {download_payload}")
-    
-    for p in players:
-        ip = p['ip']; port = p['port']
+
+    def _update_worker(idx: int, player: Dict) -> Dict:
+        ip = player['ip']
+        port = player['port']
         download_endpoint = f"http://{ip}:{port}/download_update"
-        
+
         try:
-            _ensure_permissions(p, headers, timeout, verbose)
+            _ensure_permissions(player, headers, timeout, verbose)
         except Exception as exc:
             if verbose:
                 log(f"DEBUG PERM: {ip} ensure_permissions eccezione: {exc}")
 
         if verbose:
             log(f"DEBUG UPDATE: FASE 1 - Chiamando {download_endpoint}")
-            
+
         try:
-            # FASE 1: Download
-            r = requests.post(download_endpoint, headers=headers, data=json.dumps(download_payload), timeout=timeout*2)  # timeout più lungo per download
-            
+            r = requests.post(download_endpoint, headers=headers, data=json.dumps(download_payload), timeout=timeout * 2)
+
             if verbose:
                 log(f"DEBUG UPDATE: {ip} download response status: {r.status_code}")
-                
+
             try:
                 response_json = r.json() if r.content else None
                 if verbose and response_json:
@@ -371,23 +394,21 @@ def apply_update(
                     log(f"DEBUG UPDATE: {ip} invalid JSON download response: {json_err}")
                     log(f"DEBUG UPDATE: {ip} raw download response: {r.text[:200]}")
                 response_json = None
-                
+
             download_ok = r.status_code == 200 and (response_json and response_json.get('ok'))
-            
+
             if not download_ok:
                 status_msg = f"HTTP {r.status_code}"
                 if response_json:
                     error_msg = response_json.get('error') or response_json.get('message') or 'download fallito'
                     status_msg += f" - {error_msg}"
                 log(f"✗ Download {ip}: FAIL ({status_msg})")
-                results.append({'ip': ip, 'port': port, 'response': response_json, 'ok': False, 'status_code': r.status_code, 'phase': 'download'})
-                continue
-                
+                return {'ip': ip, 'port': port, 'response': response_json, 'ok': False, 'status_code': r.status_code, 'phase': 'download'}
+
             log(f"✓ Download {ip}: OK - Bundle scaricato")
 
-            # Attendi che il device segnali 'downloaded' (o 100%) prima dell'apply
             status_endpoint = f"http://{ip}:{port}/status"
-            wait_deadline = time.time() + 180  # max 3 minuti di attesa
+            wait_deadline = time.time() + 180
             ready = False
             last_pct = -1
             while time.time() < wait_deadline:
@@ -398,7 +419,6 @@ def apply_update(
                         st = (js or {}).get('update_status')
                         prog = int((js or {}).get('update_progress') or 0)
                         if prog != last_pct and prog % 10 == 0 and prog > 0:
-                            # log minimale ogni 10%
                             log(f"… {ip} download {prog}%")
                             last_pct = prog
                         if st in ('downloaded', 'ok') or prog >= 100:
@@ -408,12 +428,10 @@ def apply_update(
                             err = (js or {}).get('update_error') or 'errore download'
                             log(f"✗ {ip} download errore: {err}")
                             break
-                    # non pronto: attesa breve
                     time.sleep(0.8)
                 except Exception:
                     time.sleep(1.0)
 
-            # FASE 2: Apply update (con retry se il pacchetto non è ancora visibile)
             apply_endpoint = f"http://{ip}:{port}/update"
             apply_payload = {'restart': not system_reboot}
             if system_reboot:
@@ -432,7 +450,6 @@ def apply_update(
             while apply_attempt < max_apply_attempts and not apply_ok:
                 apply_attempt += 1
                 try:
-                    # L'apply può richiedere più tempo (copia file + riavvio). Usa timeout generoso.
                     r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=apply_timeout)
                     try:
                         apply_response_json = r2.json() if r2.content else None
@@ -443,19 +460,16 @@ def apply_update(
                     if apply_ok:
                         break
 
-                    # Se il device risponde 400 Nessun pacchetto scaricato, attendi e riprova
                     msg = (apply_response_json or {}).get('error') or (apply_response_json or {}).get('message') or ''
                     if r2.status_code == 400 and 'Nessun pacchetto scaricato' in msg:
                         time.sleep(2.0)
                         continue
-                    # Se permessi negati, prova una riparazione veloce e ritenta una volta
                     msg_lower = (msg or "").lower()
                     if (r2.status_code in (403, 500)) and ("permesso negato" in msg_lower or "permission" in msg_lower):
                         if verbose:
                             log(f"DEBUG UPDATE: {ip} apply PermissionError: provo /maintenance/fix_permissions e retry")
                         try:
                             fx = requests.post(f"http://{ip}:{port}/maintenance/fix_permissions", headers=headers, timeout=5.0)
-                            # Poll breve fino a ok/error
                             t_dead = time.time() + 20.0
                             while time.time() < t_dead:
                                 st = requests.get(f"http://{ip}:{port}/maintenance/status", headers=headers, timeout=3.0)
@@ -468,7 +482,6 @@ def apply_update(
                         except Exception as _exc:
                             if verbose:
                                 log(f"DEBUG UPDATE: {ip} fix_permissions errore: {_exc}")
-                        # Effettua un solo retry immediato
                         try:
                             r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=max(timeout, 10.0))
                             apply_response_json = r2.json() if r2.content else None
@@ -479,7 +492,6 @@ def apply_update(
                         except Exception:
                             pass
 
-                        # Fallback 2: se ancora PermissionError, tenta fix via SSH (extra/extra)
                         if not apply_ok and (paramiko is not None):
                             if verbose:
                                 log(f"DEBUG UPDATE: {ip} retry fallito: tento fix SSH permessi e nuovo retry apply")
@@ -501,7 +513,6 @@ def apply_update(
                                     stdin.flush()
                                 except Exception:
                                     pass
-                                # attende fine comando
                                 _ = stdout.channel.recv_exit_status()  # type: ignore[attr-defined]
                             except Exception as _exc:
                                 if verbose:
@@ -511,7 +522,6 @@ def apply_update(
                                     client.close()
                                 except Exception:
                                     pass
-                            # Ritenta apply ancora una volta
                             try:
                                 r2 = requests.post(apply_endpoint, headers=headers, data=json.dumps(apply_payload), timeout=max(timeout, 10.0))
                                 apply_response_json = r2.json() if r2.content else None
@@ -522,7 +532,6 @@ def apply_update(
                             except Exception:
                                 pass
 
-                    # altri errori: non vale la pena ritentare
                     break
                 except requests.exceptions.Timeout as exc:
                     last_apply_error = f"timeout after {apply_timeout:.0f}s: {exc}"
@@ -531,7 +540,6 @@ def apply_update(
                     time.sleep(1.0)
                     continue
                 except requests.exceptions.ConnectionError:
-                    # Probabile riavvio in corso -> consideriamo apply riuscita
                     apply_ok = True
                     apply_response_json = {'ok': True, 'restarting': True}
                     break
@@ -542,44 +550,64 @@ def apply_update(
 
             if apply_ok:
                 log(f"✓ Update {ip}: OK - Player si sta riavviando")
-                results.append({'ip': ip, 'port': port, 'response': apply_response_json, 'ok': True, 'status_code': (r2.status_code if r2 else 200), 'phase': 'apply'})
-            else:
-                status_msg = f"HTTP {(r2.status_code if r2 else 'n/a')}"
-                if apply_response_json:
-                    error_msg = apply_response_json.get('error') or apply_response_json.get('message') or 'apply fallito'
-                    status_msg += f" - {error_msg}"
-                elif last_apply_error:
-                    status_msg += f" - {last_apply_error}"
-                log(f"✗ Apply {ip}: FAIL ({status_msg})")
-                results.append({
-                    'ip': ip,
-                    'port': port,
-                    'response': apply_response_json,
-                    'ok': False,
-                    'status_code': (r2.status_code if r2 else -1),
-                    'phase': 'apply',
-                    'error': last_apply_error,
-                })
-                
+                return {'ip': ip, 'port': port, 'response': apply_response_json, 'ok': True, 'status_code': (r2.status_code if r2 else 200), 'phase': 'apply'}
+
+            status_msg = f"HTTP {(r2.status_code if r2 else 'n/a')}"
+            if apply_response_json:
+                error_msg = apply_response_json.get('error') or apply_response_json.get('message') or 'apply fallito'
+                status_msg += f" - {error_msg}"
+            elif last_apply_error:
+                status_msg += f" - {last_apply_error}"
+            log(f"✗ Apply {ip}: FAIL ({status_msg})")
+            return {
+                'ip': ip,
+                'port': port,
+                'response': apply_response_json,
+                'ok': False,
+                'status_code': (r2.status_code if r2 else -1),
+                'phase': 'apply',
+                'error': last_apply_error,
+            }
+
         except requests.exceptions.ConnectTimeout:
             error_msg = f"connection timeout ({timeout}s)"
-            results.append({'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'})
             log(f"✗ Update {ip}: ERRORE {error_msg}")
+            return {'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'}
         except requests.exceptions.ConnectionError as e:
-            # Se siamo nella fase apply e la connessione si chiude, probabilmente il player si sta riavviando (successo!)
-            if 'apply_endpoint' in locals():  # significa che siamo arrivati alla fase apply
+            if 'apply_endpoint' in locals():
                 log(f"✓ Update {ip}: OK - Player si sta riavviando (connessione chiusa durante apply)")
-                results.append({'ip': ip, 'port': port, 'response': {'ok': True, 'restarting': True}, 'ok': True, 'phase': 'apply'})
-            else:
-                error_msg = f"connection error: {e}"
-                results.append({'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'})
-                log(f"✗ Update {ip}: ERRORE {error_msg}")
+                return {'ip': ip, 'port': port, 'response': {'ok': True, 'restarting': True}, 'ok': True, 'phase': 'apply'}
+            error_msg = f"connection error: {e}"
+            log(f"✗ Update {ip}: ERRORE {error_msg}")
+            return {'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'}
         except Exception as e:
             error_msg = f"unexpected error: {type(e).__name__}: {e}"
-            results.append({'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'})
             log(f"✗ Update {ip}: ERRORE {error_msg}")
-            
-    return results
+            return {'ip': ip, 'port': port, 'error': error_msg, 'ok': False, 'phase': 'download'}
+
+    results_by_idx: Dict[int, Dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        future_map = {
+            executor.submit(_update_worker, idx, player): idx
+            for idx, player in enumerate(players, start=1)
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results_by_idx[idx] = future.result()
+            except Exception as exc:
+                player = players[idx - 1]
+                ip = player.get('ip', '?')
+                log(f"✗ Update {ip}: errore interno {exc}")
+                results_by_idx[idx] = {
+                    'ip': ip,
+                    'port': player.get('port'),
+                    'error': f'internal error: {exc}',
+                    'ok': False,
+                    'phase': 'internal',
+                }
+
+    return [results_by_idx[i] for i in range(1, total + 1) if i in results_by_idx]
 
 def stream_progress(players: List[Dict], port: int, api_key: Optional[str], version: str, duration: float = 300.0, verbose: bool = False):
     """MVP: poll /admin/update/status e /admin/update/log per ogni player e mostra progress compatto.
@@ -770,6 +798,7 @@ def parse_args():
     ap.add_argument('--verify-timeout', type=float, default=120.0)
     ap.add_argument('--verbose', '-v', action='store_true', help='Output verbose per debug')
     ap.add_argument('--system-reboot', action='store_true', help='Richiedi reboot di sistema dopo l\'apply invece del solo restart del servizio')
+    ap.add_argument('--max-parallel', type=int, default=4, help='Numero massimo di player aggiornati in parallelo (default 4)')
     return ap.parse_args()
 
 
@@ -919,6 +948,7 @@ def main():
         args.api_key,
         verbose=args.verbose,
         system_reboot=args.system_reboot,
+        max_parallel=args.max_parallel,
     )
     # Avvia monitoraggio progressi (MVP sempre attivo)
     stream_progress(players, args.port_player, args.api_key, version, verbose=args.verbose)
